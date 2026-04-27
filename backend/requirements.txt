@@ -1,8 +1,0 @@
-fastapi==0.115.*
-uvicorn[standard]==0.32.*
-paho-mqtt==2.1.*
-pydantic==2.*
-sqlalchemy==2.*
-aiofiles==24.1.*
-websockets==13.*
-httpx==0.27.*
