@@ -326,6 +326,35 @@ export class Caicai {
   }
 
   /**
+   * 点头动画（认同/确认）
+   */
+  nodHead(): void {
+    this.scene.tweens.add({
+      targets: this.body,
+      y: { from: this.body.y, to: this.body.y + 6 },
+      duration: 120,
+      ease: 'Sine.easeInOut',
+      yoyo: true,
+      repeat: 1,
+    });
+  }
+
+  /**
+   * 摇头动画（否定/纠结）
+   */
+  shakeHead(): void {
+    this.scene.tweens.add({
+      targets: this.body,
+      x: { from: this.body.x - 4, to: this.body.x + 4 },
+      duration: 90,
+      ease: 'Sine.easeInOut',
+      yoyo: true,
+      repeat: 3,
+      onComplete: () => this.body.setX(this.body.x),
+    });
+  }
+
+  /**
    * 获取崽崽当前位置
    */
   getPosition(): { x: number; y: number } {

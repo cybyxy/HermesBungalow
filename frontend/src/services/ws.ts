@@ -6,7 +6,9 @@ import { type Expression } from '../store/gameState';
 // 状态
 // ========================
 let ws: WebSocket | null = null;
-const WS_URL = `/ws/caicai`;
+const WS_URL = import.meta.env.DEV
+  ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8000/ws/caicai`
+  : `/ws/caicai`;
 
 function updateMessages(
   updater: (messages: ChatMessage[]) => ChatMessage[],
@@ -190,6 +192,11 @@ function handleWSEvent(data: any): void {
         _streaming: false,
       };
       updateMessages((prev) => [...prev.slice(0, -1), finalMsg], { isTyping: false });
+
+      // 通知 Phaser：可根据最终回复文本做互动兜底（即使 events 为空）
+      window.dispatchEvent(new CustomEvent('caicai-chat-reply', {
+        detail: { reply: finalMsg.text, events },
+      }));
 
       // 处理事件
       if (events.length > 0) {

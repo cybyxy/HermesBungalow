@@ -12,6 +12,8 @@ import type { ExpressionType } from './entities/Caicai';
  * - 地面铺砖: floot (32x32)
  */
 export class GameScene extends Phaser.Scene {
+  // 调试开关：关闭崽崽位移测试（巡逻/走位）
+  private static readonly ENABLE_MOVEMENT_TEST = false;
   private caicai!: Caicai;
   private coffeeCup!: Phaser.GameObjects.Container;
   private coffeeSteam: Phaser.Particles.Arcade.Emitter | null = null;
@@ -20,6 +22,7 @@ export class GameScene extends Phaser.Scene {
   private isPatrolling: boolean = false;
   private patrolQueue: Array<{ x: number; y: number }> = [];
   private patrolProcessing: boolean = false;
+  private lastChatInteractAt = 0;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -101,10 +104,12 @@ export class GameScene extends Phaser.Scene {
           }, 500);
 
           // === 迎宾结束后等2秒再开始巡逻（确保挥手动画完成）===
-          setTimeout(() => {
-            console.log('[巡逻] 开始自动巡逻');
-            this.startPatrol(width, height);
-          }, 2000);
+          if (GameScene.ENABLE_MOVEMENT_TEST) {
+            setTimeout(() => {
+              console.log('[巡逻] 开始自动巡逻');
+              this.startPatrol(width, height);
+            }, 2000);
+          }
         }
       );
     }, 800);
@@ -328,28 +333,86 @@ export class GameScene extends Phaser.Scene {
    * 设置Gateway事件监听 — LLM回复驱动崽崽表情/动作
    */
   private setupGatewayEventListeners(): void {
+    const mapExpression = (expr: string): ExpressionType => {
+      const mapped: Record<string, ExpressionType> = {
+        happy: 'happy',
+        thinking: 'thinking',
+        surprised: 'surprised',
+        sweat: 'sweating',
+        sweating: 'sweating',
+        confused: 'surprised',
+        cry: 'crying',
+        crying: 'crying',
+        eating: 'eating',
+      };
+      return mapped[expr] ?? 'happy';
+    };
+
+    const handleAction = (action: string) => {
+      const { width, height } = this.scale;
+      switch (action) {
+        case 'wave':
+        case 'wave_hand':
+          this.caicai.waveHand();
+          break;
+        case 'spin':
+          this.caicai.spinHappy();
+          break;
+        case 'nod_head':
+          this.caicai.nodHead();
+          break;
+        case 'shake_head':
+          this.caicai.shakeHead();
+          break;
+        case 'walk_to_desk':
+        case 'search_documents':
+          if (GameScene.ENABLE_MOVEMENT_TEST) {
+            this.caicai.walkTo(width * 0.2, height * 0.78);
+          }
+          this.caicai.showExpression('thinking', 2200);
+          break;
+        case 'type_on_keyboard':
+          if (GameScene.ENABLE_MOVEMENT_TEST) {
+            this.caicai.walkTo(width * 0.28, height * 0.79, () => this.caicai.showExpression('thinking', 1800));
+          } else {
+            this.caicai.showExpression('thinking', 1800);
+          }
+          break;
+        case 'drink_coffee':
+          if (GameScene.ENABLE_MOVEMENT_TEST) {
+            this.caicai.walkTo(width * 0.68, height * 0.82, () => {
+              this.caicai.showExpression('eating', 1800);
+              this.caicai.spinHappy();
+            });
+          } else {
+            this.caicai.showExpression('eating', 1800);
+            this.caicai.spinHappy();
+          }
+          break;
+        default:
+          break;
+      }
+    };
+
     // 监听来自后端的表情指令
     window.addEventListener('gateway-expression', (e: Event) => {
       const detail = (e as CustomEvent).detail as { type: ExpressionType };
       if (detail?.type) {
-        this.caicai.showExpression(detail.type);
+        this.caicai.showExpression(mapExpression(detail.type));
       }
     });
 
     // 监听来自后端的动作指令
     window.addEventListener('gateway-action', (e: Event) => {
       const detail = (e as CustomEvent).detail as { action: string };
-      switch (detail?.action) {
-        case 'wave':
-          this.caicai.waveHand();
-          break;
-        case 'spin':
-          this.caicai.spinHappy();
-          break;
-        case 'walk_to_desk':
-          const { width } = this.scale;
-          this.caicai.walkTo(width * 0.2, this.scale.height * 0.78);
-          break;
+      if (detail?.action) handleAction(detail.action);
+    });
+
+    // 监听 ws.ts 分发的动作事件
+    window.addEventListener('caicai-action', (e: Event) => {
+      const detail = (e as CustomEvent).detail as { type: string; value: string };
+      if (detail?.type === 'action' && detail.value) {
+        handleAction(detail.value);
       }
     });
 
@@ -359,6 +422,33 @@ export class GameScene extends Phaser.Scene {
       if (detail?.tag) {
         this.caicai.setExpressionFromSemantic(detail.tag);
       }
+    });
+
+    // 聊天结果兜底：当没有结构化事件时，按回复文本关键词触发互动
+    window.addEventListener('caicai-chat-reply', (e: Event) => {
+      const detail = (e as CustomEvent).detail as { reply?: string; events?: Array<{ type: string; value: string }> };
+      const now = Date.now();
+      if (now - this.lastChatInteractAt < 400) return;
+      this.lastChatInteractAt = now;
+
+      if (detail?.events && detail.events.length > 0) return;
+      const text = (detail?.reply || '').toLowerCase();
+      if (!text) return;
+
+      if (text.includes('咖啡')) {
+        handleAction('drink_coffee');
+        return;
+      }
+      if (text.includes('文档') || text.includes('需求') || text.includes('分析')) {
+        handleAction('search_documents');
+        return;
+      }
+      if (text.includes('谢谢') || text.includes('欢迎')) {
+        this.caicai.showExpression('happy', 2000);
+        this.caicai.waveHand();
+        return;
+      }
+      this.caicai.showExpression('thinking', 1800);
     });
   }
 

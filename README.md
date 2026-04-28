@@ -2,7 +2,7 @@
 
 > **2D像素风交互式虚拟工作室** — 走进崽崽的办公室，跟崽崽对话，看她用表情和动作回应你！
 
-[![PRD v1.2](https://img.shields.io/badge/PRD-v1.2-blue)](docs/PRD.md) [![Phase](https://img.shields.io/badge/Phase-2%2F6-yellow)](docs/IMPLEMENTATION_PLAN.md)
+[![PRD v1.2](https://img.shields.io/badge/PRD-v1.2-blue)](docs/PRD.md) [![Phase](https://img.shields.io/badge/Phase-5%2F6-yellow)](docs/IMPLEMENTATION_PLAN.md)
 
 ---
 
@@ -166,14 +166,14 @@ HermesBungalow/
 
 > **走进像素办公室 → 跟崽崽对话 → 崽崽有表情和动作回应 → 能查看文档**
 
-| # | 验证项 | 状态 |
-|---|--------|------|
-| 1 | 2D像素办公室场景加载（office.png） | 🟡 代码已写，待联调 |
-| 2 | 崽崽精灵 + 表情切换（expression1/expression2） | 🟡 代码已写，待联调 |
-| 3 | Hermes Gateway 桥接层跑通 | 🟡 后端未启动验证 |
-| 4 | 访客→崽崽对话→表情/动作变化 | 🟡 全链路待端到端测试 |
-| 5 | 文档墙展示PRD列表 | ⬜ DocumentWall组件缺失 |
-| 6 | 崽崽行走和挥手动画 | 🟡 代码已写，待联调 |
+| # | 验证项 | 状态 | 备注 |
+|---|--------|------|------|
+| 1 | 2D像素办公室场景加载（tiles素材） | ✅ 完成 | 使用 tiles/ 目录素材构建温馨小屋 |
+| 2 | 崽崽精灵 + 表情切换（expression1/expression2） | ✅ 完成 | 头顶气泡表情+四方向行走动画 |
+| 3 | Hermes Gateway 桥接层跑通 | ✅ 完成 | MiniMax API 正常响应（2026-04-28 验证） |
+| 4 | 访客→崽崽对话→表情/动作变化 | ✅ 完成 | WebSocket全链路验证通过 |
+| 5 | 文档墙展示PRD列表 | 🟡 基础完成 | 静态卡片，待丰富交互 |
+| 6 | 崽崽行走和挥手动画 | ✅ 完成 | 迎宾动画+多种动作支持 |
 
 ---
 
@@ -182,12 +182,12 @@ HermesBungalow/
 详见 [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)
 
 ```
-Phase 1: 项目脚手架搭建 ✅ (代码完成，环境待验证)
-Phase 2: Phaser像素场景   🟡 (核心逻辑已写，缺TilemapLoader/HotzoneManager)
-Phase 3: Gateway桥接      🟡 (全链路代码存在，待联调)
-Phase 4: 崽崽交互系统     🟡 (事件→动画映射已实现)
-Phase 5: 文档墙+UI覆盖层  ⬜ (缺DocumentWall组件)
-Phase 6: 联调测试         ⬜
+Phase 1: 项目脚手架搭建 ✅ (已完成)
+Phase 2: 前端核心 — Phaser像素场景 ✅ (已完成)
+Phase 3: Gateway桥接      ✅ (已完成，MiniMax API已验证)
+Phase 4: 崽崽交互系统     ✅ (已完成)
+Phase 5: 文档墙+UI覆盖层  🟡 (基础完成，待丰富交互)
+Phase 6: 联调测试         🟡 (部分验证通过，待完整端到端测试)
 ```
 
 ---
