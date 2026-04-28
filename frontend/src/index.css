@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'PressStart2P';
+  src: url('/assets/fonts/pressstart2p.ttf') format('truetype');
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #0a0a14;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+}
+
+/* 像素化渲染 */
+canvas {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
