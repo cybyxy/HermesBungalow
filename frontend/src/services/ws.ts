@@ -201,6 +201,14 @@ function handleWSEvent(data: any): void {
       // 处理事件
       if (events.length > 0) {
         store.handleGatewayEvents(events);
+        // 兼容：有些后端只在 chat_reply 里返回 events，不会单独发 caicai_event
+        for (const ev of events) {
+          if (ev.type === 'action') {
+            window.dispatchEvent(new CustomEvent('caicai-action', {
+              detail: { type: 'action', value: ev.value },
+            }));
+          }
+        }
       }
       break;
     }
@@ -225,6 +233,10 @@ function handleWSEvent(data: any): void {
     case 'typing':
       store.setIsTyping(true);
       break;
+
+    case 'chat_stopped':
+      store.setIsTyping(false);
+      break;
   }
 }
 
@@ -242,6 +254,11 @@ export function sendChatMessage(text: string, images?: ImageData[]): void {
     payload.images = images;
   }
   ws.send(JSON.stringify(payload));
+}
+
+export function stopChatMessage(): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'stop' }));
 }
 
 // ========================

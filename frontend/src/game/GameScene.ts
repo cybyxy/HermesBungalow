@@ -12,8 +12,9 @@ import type { ExpressionType } from './entities/Caicai';
  * - 地面铺砖: floot (32x32)
  */
 export class GameScene extends Phaser.Scene {
-  // 调试开关：关闭崽崽位移测试（巡逻/走位）
-  private static readonly ENABLE_MOVEMENT_TEST = false;
+  // 调试开关：关闭自动巡逻，但保留模型事件触发的互动走位
+  private static readonly ENABLE_AUTO_PATROL = false;
+  private static readonly ENABLE_ACTION_MOVEMENT = true;
   private caicai!: Caicai;
   private coffeeCup!: Phaser.GameObjects.Container;
   private coffeeSteam: Phaser.Particles.Arcade.Emitter | null = null;
@@ -23,6 +24,14 @@ export class GameScene extends Phaser.Scene {
   private patrolQueue: Array<{ x: number; y: number }> = [];
   private patrolProcessing: boolean = false;
   private lastChatInteractAt = 0;
+  private computerSprite: Phaser.GameObjects.Image | null = null;
+  private deskPos: { x: number; y: number } = { x: 0, y: 0 };
+  private ySortedObjects: Phaser.GameObjects.Image[] = [];
+  private anchoredLayerObjects: Array<{
+    child: Phaser.GameObjects.Image;
+    parent: Phaser.GameObjects.Image;
+    offset: number;
+  }> = [];
 
   constructor() {
     super({ key: 'GameScene' });
@@ -56,15 +65,40 @@ export class GameScene extends Phaser.Scene {
     this.load.image('desk', '/assets/tiles/desk.png');               // 91x46
     this.load.image('sofa', '/assets/tiles/sofa.png');               // 96x52
     this.load.image('table', '/assets/tiles/table.png');             // 96x44
-    this.load.image('glasscoffeetable', '/assets/tiles/glasscoffeetable.png'); // 52x32
+    this.load.image('glasscoffeetable', '/assets/tiles/glasscoffeetablenew.png'); // 78x48 新版茶几
     this.load.image('office_chair', '/assets/tiles/office_chair.png'); // 30x36
+
+    // === 书架 & 书籍 ===
+    this.load.image('bookshelf', '/assets/tiles/Bookshelf.png');     // 96x63
+    this.load.image('book', '/assets/tiles/book.png');               // 17x17 单本书
+    this.load.image('books_1', '/assets/tiles/books_1.png');         // 28x26 书堆
+    this.load.image('books_2', '/assets/tiles/books_2.png');          // 20x14 书堆
+    this.load.image('books_3', '/assets/tiles/books_3.png');         // 17x26 书堆
 
     // === 电器 & 装饰 ===
     this.load.image('computer_idle', '/assets/tiles/computer_idle.png');     // 29x29
     this.load.image('computer_work', '/assets/tiles/computer_work.png');     // 29x29
+    this.load.image('computer_1', '/assets/tiles/computer_1.png');           // 12x28 老式显示器
     this.load.image('coffeemachine_idle', '/assets/tiles/coffeemachine_idle.png');   // 29x32
     this.load.image('coffeemachine_work', '/assets/tiles/coffeemachine_work.png');   // 29x32
+    this.load.image('coffeemachinebase', '/assets/tiles/coffeemachinebase.png');   // 32x54 咖啡机底座
     this.load.image('whiteboard', '/assets/tiles/whiteboard.png');            // 88x64
+    this.load.image('whiteboard_2', '/assets/tiles/whiteboard_2.png');        // 58x36 小白板
+
+    // === 墙面装饰 ===
+    this.load.image('clock', '/assets/tiles/clock.png');               // 20x18
+    this.load.image('wallpainting', '/assets/tiles/WallPainting.png'); // 24x28 装饰画
+    this.load.image('sticker', '/assets/tiles/Sticker.png');           // 17x22 贴纸
+    this.load.image('opticaldisc', '/assets/tiles/OpticalDisc.png');   // 22x22 光盘
+
+    // === 打印机 & 光盘 ===
+    this.load.image('printer', '/assets/tiles/printer.png');           // 32x29
+
+    // === 分区隔板 ===
+    this.load.image('partition_1', '/assets/tiles/Partition_1.png');   // 64x42
+    this.load.image('partition_2', '/assets/tiles/Partition_2.png');   // 59x42
+    this.load.image('partition_3', '/assets/tiles/Partition_3.png');   // 5x32
+    this.load.image('partition_4', '/assets/tiles/Partition_4.png');   // 5x38
 
     // === 绿植 ===
     this.load.image('houseplants_1', '/assets/tiles/houseplants_1.png');   // 26x60
@@ -104,7 +138,7 @@ export class GameScene extends Phaser.Scene {
           }, 500);
 
           // === 迎宾结束后等2秒再开始巡逻（确保挥手动画完成）===
-          if (GameScene.ENABLE_MOVEMENT_TEST) {
+          if (GameScene.ENABLE_AUTO_PATROL) {
             setTimeout(() => {
               console.log('[巡逻] 开始自动巡逻');
               this.startPatrol(width, height);
@@ -226,87 +260,187 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * 使用 tiles/ 素材构建崽崽的温馨小屋
+   * 崽崽的温馨小屋 — 丰富版布局
    *
-   * 布局设计:
-   * ┌─────────────────────────────────────┐
-   * │  wall      whiteboard     wall      │ <- 墙面
-   * │  coffeemachine                        │
-   * ├─────────────────────────────────────┤
-   * │ desk+computer  sofa+table            │ <- 家具层
-   * │ chair          plant                 │
-   * └─────────────────────────────────────┘ <- floor铺满
+   * 布局设计（三分区）：
+   * ┌─────────────────────────────────────────────────────────────────┐
+   * │ [clock]          [whiteboard+partition_2]     [wallpainting]   │ <- 墙面装饰
+   * │  [sticker]    [opticaldisc]                                          │
+   * ├──────────────┬────────────────────────┬──────────────────────────┤
+   * │              │                        │                         │
+   * │  bookshelf   │  desk+computer_1       │   sofa+glasscoffee      │ <- 家具层
+   * │  (书墙)      │  books堆   printer     │   coffeemachine+base   │
+   * │              │  chair                 │   plants_2              │
+   * │  plants_1    │                        │                         │
+   * └──────────────┴────────────────────────┴──────────────────────────┘ <- floor
    */
   private buildCozyScene(width: number, height: number): void {
-    // === 深色背景底色 ===
-    const bg = this.add.rectangle(0, 0, width, height, 0x1a1a2e).setOrigin(0);
+    const floorY = height * 0.5;  // 地板起始Y
 
-    // === 地板 — 用 floot.png (32x32) 铺满下半区域 ===
-    const floorY = height * 0.5;
+    // === 辅助函数 ===
+    const addYSortedImage = (x: number, y: number, key: string): Phaser.GameObjects.Image => {
+      const img = this.add.image(x, y, key);
+      const bottomY = y + img.displayHeight * (1 - img.originY);
+      img.setDepth(bottomY);
+      this.ySortedObjects.push(img);
+      return img;
+    };
+    const addAnchoredImage = (
+      x: number, y: number, key: string,
+      parent: Phaser.GameObjects.Image, offset = 1
+    ): Phaser.GameObjects.Image => {
+      const img = this.add.image(x, y, key);
+      img.setDepth(parent.depth + offset);
+      this.anchoredLayerObjects.push({ child: img, parent, offset });
+      return img;
+    };
+
+    // ─────────────────────────────────────────────────
+    // 1. 背景 & 地板
+    // ─────────────────────────────────────────────────
+    this.add.rectangle(0, 0, width, height, 0x1a1a2e).setOrigin(0).setDepth(-1000);
+
+    // 地板铺砖
     for (let x = 0; x < width; x += 32) {
       for (let y = floorY; y < height; y += 32) {
         this.add.image(x + 16, y + 16, 'floor');
       }
     }
 
-    // === 墙壁 — 用 wall.png (96x64) 铺满上半区域 ===
+    // 墙壁（只铺到 floorY 上方一点，留出墙面装饰空间）
     for (let x = 0; x < width; x += 96) {
-      this.add.image(x + 48, height * 0.25, 'wall');
+      this.add.image(x + 48, height * 0.22, 'wall').setDepth(-100);
+    }
+    const remainingWall = width % 96;
+    if (remainingWall > 32) {
+      this.add.image(width - 16, height * 0.22, 'wall_short').setDepth(-100);
     }
 
-    // 右侧补一块短墙
-    const remainingWidth = width % 96;
-    if (remainingWidth > 32) {
-      this.add.image(width - 16, height * 0.25, 'wall_short');
-    }
+    // ─────────────────────────────────────────────────
+    // 2. 墙面装饰（挂在墙上，depth 浅）
+    // ─────────────────────────────────────────────────
 
-    // === 白板 — 挂在左侧墙上 ===
-    const whiteboard = this.add.image(width * 0.2, height * 0.38, 'whiteboard');
+    // 时钟 — 左上角（工作时间提示～）
+    const wallY = height * 0.28;  // 墙壁中下方
+    this.add.image(width * 0.08, wallY, 'clock').setDepth(-80);
 
-    // === 咖啡机 — 放在茶几上（崽崽的专属咖啡供应站）===
-    const coffeeMachine = this.add.image(width * 0.68, height * 0.82 - 24, 'coffeemachine_idle');
+    // 装饰画 — 右侧墙
+    this.add.image(width * 0.9, wallY, 'wallpainting').setDepth(-80);
 
-    // === 左侧工作区：书桌 + 电脑 + 椅子 ===
-    const deskX = width * 0.2;
-    const deskY = height * 0.72;
-    this.add.image(deskX, deskY, 'desk');
+    // 贴纸 — 左中墙
+    this.add.image(width * 0.25, wallY + 20, 'sticker').setDepth(-80);
 
-    // 电脑上放 computer_idle（崽崽不工作时）
-    this.add.image(deskX - 5, deskY - 18, 'computer_idle');
+    // 光盘 — 右中墙（崽崽珍藏的开发资料光盘😆）
+    this.add.image(width * 0.75, wallY + 15, 'opticaldisc').setDepth(-80);
 
-    // 办公椅放在书桌前（与办公桌垂直对齐）
-    const chair = this.add.image(width * 0.2, height * 0.82, 'office_chair');
+    // ─────────────────────────────────────────────────
+    // 3. 左侧工作区 — 书架 + 书桌 + 办公椅
+    // ─────────────────────────────────────────────────
 
-    // === 右侧休闲区：沙发 + 玻璃茶几 ===
-    const sofaX = width * 0.68;
-    const sofaY = height * 0.74;
-    this.add.image(sofaX, sofaY, 'sofa');
+    // 书架（左侧，占据从地板到墙面的高度）
+    const bookshelfX = width * 0.12;
+    const bookshelfY = floorY + 5;
+    const bookshelf = addYSortedImage(bookshelfX, bookshelfY, 'bookshelf');
 
-    // 玻璃茶几放在沙发前
-    this.add.image(width * 0.68, height * 0.82, 'glasscoffeetable');
+    // 书架上方的书籍（小装饰，挂在书架格子里）
+    // books_1 放在书架格子里（基于书架位置偏移）
+    this.add.image(bookshelfX - 20, bookshelfY - 45, 'books_1').setDepth(bookshelf.depth - 1);
+    this.add.image(bookshelfX + 25, bookshelfY - 45, 'books_3').setDepth(bookshelf.depth - 1);
+    this.add.image(bookshelfX - 5, bookshelfY - 50, 'book').setDepth(bookshelf.depth - 1);
 
-    // === 绿植装饰 — 给小屋增添生机 🌿 ===
-    // 角落放一盆大绿植
-    this.add.image(width * 0.92, height * 0.76, 'houseplants_2');
+    // ─────────────────────────────────────────────────
+    // 4. 中间工作区 — 书桌 + 电脑 + 打印机 + 办公椅
+    // ─────────────────────────────────────────────────
 
-    // 书桌旁也放一小盆
-    this.add.image(width * 0.08, deskY - 5, 'houseplants_1');
+    const deskX = width * 0.42;
+    const deskY = floorY + 8;
 
-    // === 咖啡杯（在玻璃茶几上，可交互）===
-    const coffeeX = width * 0.68;
-    const coffeeY = height * 0.82 - 14;
-    this.add.image(coffeeX, coffeeY, 'coffeecup_empty');
+    // 书桌
+    const desk = addYSortedImage(deskX, deskY, 'desk');
+    this.deskPos = { x: deskX, y: deskY };
 
-    // === 氛围灯光效果 — 暖色调 ===
-    const light = this.add.circle(width / 2, height * 0.5, width * 0.6, 0xffe4b5, 0.08);
+    // 台式机显示器（computer_1 = 竖向老式显示器，computer_idle = 现代显示器）
+    // 现代显示器放桌上
+    this.computerSprite = addAnchoredImage(deskX - 8, deskY - 24, 'computer_idle', desk, 2);
+
+    // 老式小显示器（computer_1）放桌角，叠在主显示器旁边
+    addAnchoredImage(deskX + 15, deskY - 22, 'computer_1', desk, 2);
+
+    // 桌面上散落的书堆
+    addAnchoredImage(deskX + 35, deskY - 14, 'books_2', desk, 1);
+
+    // 办公椅（在书桌正下方偏前）
+    addYSortedImage(deskX - 5, floorY + 32, 'office_chair');
+
+    // 打印机（在书桌右边的小柜子上）
+    const printerX = deskX + 80;
+    const printerY = floorY + 12;
+    addYSortedImage(printerX, printerY, 'printer');
+
+    // 打印机上方墙上：小白板 whiteboard_2
+    this.add.image(printerX, wallY + 10, 'whiteboard_2').setDepth(-90);
+
+    // 小绿植在打印机旁边
+    addYSortedImage(printerX + 25, floorY + 10, 'houseplants_1');
+
+    // ─────────────────────────────────────────────────
+    // 5. 右侧休闲区 — 沙发 + 茶几 + 咖啡机 + 绿植
+    // ─────────────────────────────────────────────────
+
+    const sofaX = width * 0.72;
+    const sofaY = floorY + 4;
+
+    // 沙发（右侧主家具）
+    addYSortedImage(sofaX, sofaY, 'sofa');
+
+    // 玻璃茶几（沙发前）
+    const coffeeTableX = sofaX - 20;
+    const coffeeTableY = floorY + 20;
+    const coffeeTable = addYSortedImage(coffeeTableX, coffeeTableY, 'glasscoffeetable');
+
+    // 咖啡机底座（放在茶几旁边）
+    addYSortedImage(sofaX + 55, floorY + 18, 'coffeemachinebase');
+
+    // 咖啡机主体（叠在底座上）
+    addAnchoredImage(sofaX + 55, floorY + 18 - 30, 'coffeemachine_idle', this.ySortedObjects.find(o => o.texture.key === 'coffeemachinebase')!, 2);
+
+    // 咖啡杯（茶几上，可交互）
+    addAnchoredImage(coffeeTableX - 15, coffeeTableY - 10, 'coffeecup_empty', coffeeTable, 3);
+
+    // 右侧大绿植（沙发旁角落）
+    addYSortedImage(width * 0.95, floorY + 18, 'houseplants_2');
+
+    // 沙发旁边的小绿植
+    addYSortedImage(sofaX + 60, floorY + 8, 'houseplants_1');
+
+    // ─────────────────────────────────────────────────
+    // 6. 分区隔板 — 用 partition_1/2 划分工作区和休闲区
+    // ─────────────────────────────────────────────────
+    // partition_2 放在工作区和休闲区之间（做软隔断）
+    this.add.image(width * 0.6, floorY - 15, 'partition_2').setDepth(-50);
+    this.add.image(width * 0.6 + 50, floorY - 10, 'partition_1').setDepth(-50);
+
+    // ─────────────────────────────────────────────────
+    // 7. 氛围灯光 + 装饰
+    // ─────────────────────────────────────────────────
+    // 暖色氛围光
+    const ambientLight = this.add.circle(width * 0.5, height * 0.45, width * 0.55, 0xffe4b5, 0.06);
+    ambientLight.setDepth(-500);
+
+    // 墙面点缀 — 让大白墙不那么空
+    // 在沙发上方墙面加一个隔板装饰
+    this.add.image(sofaX - 30, wallY + 30, 'partition_3').setDepth(-85);
+    this.add.image(sofaX - 30, wallY + 55, 'partition_4').setDepth(-85);
   }
 
   /**
    * 创建咖啡杯交互区域
    */
   private createCoffeeCup(width: number, height: number): void {
-    const coffeeX = width * 0.68;
-    const coffeeY = height * 0.82 - 14;
+    const floorY = height * 0.5;
+    // 咖啡杯在玻璃茶几上（位置与 buildCozyScene 中一致）
+    const coffeeX = width * 0.72 - 20 - 15;  // sofaX - 20(table offset) - 15(cup offset)
+    const coffeeY = floorY + 20 - 10;         // coffeeTableY - 10
 
     // 点击区域
     const coffeeZone = this.add.zone(coffeeX, coffeeY, 30, 30).setInteractive();
@@ -333,6 +467,11 @@ export class GameScene extends Phaser.Scene {
    * 设置Gateway事件监听 — LLM回复驱动崽崽表情/动作
    */
   private setupGatewayEventListeners(): void {
+    const setComputerWorking = (isWorking: boolean) => {
+      if (!this.computerSprite) return;
+      this.computerSprite.setTexture(isWorking ? 'computer_work' : 'computer_idle');
+    };
+
     const mapExpression = (expr: string): ExpressionType => {
       const mapped: Record<string, ExpressionType> = {
         happy: 'happy',
@@ -366,21 +505,23 @@ export class GameScene extends Phaser.Scene {
           break;
         case 'walk_to_desk':
         case 'search_documents':
-          if (GameScene.ENABLE_MOVEMENT_TEST) {
+          if (GameScene.ENABLE_ACTION_MOVEMENT) {
             this.caicai.walkTo(width * 0.2, height * 0.78);
           }
           this.caicai.showExpression('thinking', 2200);
           break;
         case 'type_on_keyboard':
-          if (GameScene.ENABLE_MOVEMENT_TEST) {
-            this.caicai.walkTo(width * 0.28, height * 0.79, () => this.caicai.showExpression('thinking', 1800));
+          setComputerWorking(true);
+          if (GameScene.ENABLE_ACTION_MOVEMENT) {
+            this.caicai.walkTo(this.deskPos.x + 8, this.deskPos.y, () => this.caicai.showExpression('thinking', 1800));
           } else {
             this.caicai.showExpression('thinking', 1800);
           }
+          this.time.delayedCall(4500, () => setComputerWorking(false));
           break;
         case 'drink_coffee':
-          if (GameScene.ENABLE_MOVEMENT_TEST) {
-            this.caicai.walkTo(width * 0.68, height * 0.82, () => {
+          if (GameScene.ENABLE_ACTION_MOVEMENT) {
+            this.caicai.walkTo(width * 0.72 + 55, height * 0.5 + 18, () => {
               this.caicai.showExpression('eating', 1800);
               this.caicai.spinHappy();
             });
@@ -453,6 +594,18 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(): void {
-    // 每帧更新逻辑（如需要）
+    // 按Y排序：越靠近底部，层级越高
+    for (const obj of this.ySortedObjects) {
+      if (!obj.active) continue;
+      const bottomY = obj.y + obj.displayHeight * (1 - obj.originY);
+      obj.setDepth(bottomY);
+    }
+    // 桌面/茶几上的物件：始终相对承载物提高一层
+    for (const item of this.anchoredLayerObjects) {
+      if (!item.child.active || !item.parent.active) continue;
+      item.child.setDepth(item.parent.depth + item.offset);
+    }
+    const pos = this.caicai.getPosition();
+    this.caicai.setBodyDepth(pos.y);
   }
 }

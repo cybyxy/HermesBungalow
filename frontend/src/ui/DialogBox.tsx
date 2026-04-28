@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useGameState, type ChatMessage, type ImageData } from '../store/gameState';
-import { connectWS, disconnectWS, sendChatMessage } from '../services/ws';
+import { connectWS, disconnectWS, sendChatMessage, stopChatMessage } from '../services/ws';
 import { ChatImagePreview } from './ChatImagePreview';
 
 // 连接状态指示器配置
@@ -9,6 +9,14 @@ const STATUS_CONFIG: Record<string, { dot: string; label: string }> = {
   connecting:   { dot: 'bg-blue-400 animate-pulse', label: '连接中...' },
   reconnecting: { dot: 'bg-yellow-400 animate-pulse', label: '重连中...' },
   disconnected: { dot: 'bg-red-400',     label: '已断开' },
+};
+
+const CAICAI_STATE_LABEL: Record<string, string> = {
+  IDLE: '待机',
+  THINKING: '思考中',
+  WORKING: '工作中',
+  TALKING: '对话中',
+  SEARCHING: '查找中',
 };
 
 // 图片大小限制：2MB
@@ -39,6 +47,7 @@ export function DialogBox() {
   const setExpression = useGameState((s) => s.setExpression);
   const addCoffee = useGameState((s) => s.addCoffee);
   const wsStatus = useGameState((s) => s.wsStatus);
+  const caicaiState = useGameState((s) => s.caicaiState);
 
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -249,6 +258,12 @@ export function DialogBox() {
     }
   };
 
+  const handleStop = () => {
+    if (!isTyping) return;
+    stopChatMessage();
+    setIsTyping(false);
+  };
+
   const quickActions = [
     { label: '📋 查看PRD', action: () => handleSend('查看PRD') },
     { label: '🚀 了解项目', action: () => handleSend('了解项目') },
@@ -283,7 +298,12 @@ export function DialogBox() {
             className="w-14 h-14 rounded-lg border-2 border-pink-500 object-contain bg-gray-800"
           />
           <div>
-            <h3 className="text-xs text-yellow-400 font-bold">崽崽 💖</h3>
+            <h3 className="text-xs text-yellow-400 font-bold flex items-center gap-1">
+              <span>崽崽 💖</span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-800/80 border border-indigo-600 text-cyan-300">
+                {CAICAI_STATE_LABEL[caicaiState] || caicaiState}
+              </span>
+            </h3>
             <p className="text-[10px] text-gray-400">软件需求分析师 | 在线</p>
           </div>
 
@@ -358,7 +378,7 @@ export function DialogBox() {
 
               {msg.text && (
                 <div
-                  className={`text-[10px] leading-relaxed p-2 rounded-lg max-w-[85%] ${
+                  className={`text-[10px] leading-relaxed p-2 rounded-lg w-fit max-w-full ${
                     msg.sender === 'caicai'
                       ? 'bg-indigo-900/60 text-gray-100 rounded-tl-none'
                       : 'bg-pink-600 text-white rounded-tr-none'
@@ -443,11 +463,14 @@ export function DialogBox() {
           className="flex-1 text-[10px] px-3 py-2 bg-indigo-900/50 border-2 border-indigo-700 text-gray-100 rounded focus:border-pink-500 outline-none placeholder:text-gray-600 disabled:opacity-40"
         />
         <button
-          onClick={() => handleSend()}
-          disabled={wsStatus !== 'open' || (!inputText.trim() && pendingImages.length === 0)}
-          className="px-4 py-2 bg-pink-600 text-white rounded hover:bg-pink-500 transition-colors text-xs disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+          onClick={() => (isTyping ? handleStop() : handleSend())}
+          disabled={wsStatus !== 'open' || (!isTyping && !inputText.trim() && pendingImages.length === 0)}
+          className={`px-4 py-2 text-white rounded transition-colors text-xs disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 ${
+            isTyping ? 'bg-gray-700 hover:bg-gray-600' : 'bg-pink-600 hover:bg-pink-500'
+          }`}
+          title={isTyping ? '停止当前推理' : '发送消息'}
         >
-          ➤
+          {isTyping ? '停止' : '➤'}
         </button>
       </div>
     </div>

@@ -2,6 +2,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi import FastAPI
 import json
+import asyncio
 
 router = APIRouter(prefix="/api", tags=["Gateway"])
 
@@ -44,6 +45,76 @@ async def ws_endpoint(websocket: WebSocket):
     except Exception:
         pass
 
+    current_chat_task: asyncio.Task | None = None
+
+    async def run_chat_stream(text: str, images: list):
+        from ..services.chat_service import chat_service
+        from ..services.state_machine import state_machine, CaicaiState
+
+        state_machine.transition(CaicaiState.THINKING)
+        full_reply = ""
+        caicai_events = []
+
+        try:
+            async for chunk in chat_service.send_message(text, images):
+                chunk_type = chunk.get("type")
+
+                if chunk_type == "token":
+                    token = chunk.get("text", "")
+                    if token:
+                        full_reply += token
+                        for conn in active_connections[:]:
+                            try:
+                                await conn.send_json({"type": "token", "text": token})
+                            except Exception:
+                                active_connections.remove(conn)
+
+                elif chunk_type == "caicai_event":
+                    events = chunk.get("events", [])
+                    for ev in events:
+                        caicai_events.append(ev)
+                        for conn in active_connections[:]:
+                            try:
+                                await conn.send_json({"type": "caicai_event", "event": ev})
+                            except Exception:
+                                active_connections.remove(conn)
+
+                elif chunk_type == "done":
+                    for conn in active_connections[:]:
+                        try:
+                            await conn.send_json({
+                                "type": "chat_reply",
+                                "reply": full_reply.strip(),
+                                "events": caicai_events,
+                            })
+                        except Exception:
+                            active_connections.remove(conn)
+                    state_machine.transition(CaicaiState.TALKING)
+
+                elif chunk_type == "error":
+                    error_msg = chunk.get("message", "Unknown error")
+                    for conn in active_connections[:]:
+                        try:
+                            await conn.send_json({"type": "error", "message": error_msg})
+                        except Exception:
+                            active_connections.remove(conn)
+                    state_machine.transition(CaicaiState.IDLE)
+        except asyncio.CancelledError:
+            for conn in active_connections[:]:
+                try:
+                    await conn.send_json({"type": "chat_stopped"})
+                except Exception:
+                    active_connections.remove(conn)
+            state_machine.transition(CaicaiState.IDLE)
+            raise
+        except Exception as e:
+            for conn in active_connections[:]:
+                try:
+                    await conn.send_json({"type": "error", "message": f"连接失败: {str(e)}"})
+                except Exception:
+                    active_connections.remove(conn)
+            state_machine.transition(CaicaiState.IDLE)
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -61,79 +132,32 @@ async def ws_endpoint(websocket: WebSocket):
                 continue
 
             if msg_type == "chat":
+                if current_chat_task and not current_chat_task.done():
+                    current_chat_task.cancel()
+                    try:
+                        await current_chat_task
+                    except asyncio.CancelledError:
+                        pass
                 text = msg.get("message", "")
                 images = msg.get("images", [])
-
-                from ..services.chat_service import chat_service
-                from ..services.state_machine import state_machine, CaicaiState
-
-                state_machine.transition(CaicaiState.THINKING)
-
-                full_reply = ""
-                caicai_events = []
-                error_occurred = False
-
-                try:
-                    async for chunk in chat_service.send_message(text, images):
-                        chunk_type = chunk.get("type")
-
-                        if chunk_type == "token":
-                            token = chunk.get("text", "")
-                            if token:
-                                full_reply += token
-                                for conn in active_connections[:]:
-                                    try:
-                                        await conn.send_json({"type": "token", "text": token})
-                                    except Exception:
-                                        active_connections.remove(conn)
-
-                        elif chunk_type == "caicai_event":
-                            events = chunk.get("events", [])
-                            for ev in events:
-                                caicai_events.append(ev)
-                                for conn in active_connections[:]:
-                                    try:
-                                        await conn.send_json({"type": "caicai_event", "event": ev})
-                                    except Exception:
-                                        active_connections.remove(conn)
-
-                        elif chunk_type == "done":
-                            for conn in active_connections[:]:
-                                try:
-                                    await conn.send_json({
-                                        "type": "chat_reply",
-                                        "reply": full_reply.strip(),
-                                        "events": caicai_events,
-                                    })
-                                except Exception:
-                                    active_connections.remove(conn)
-                            state_machine.transition(CaicaiState.TALKING)
-
-                        elif chunk_type == "error":
-                            error_msg = chunk.get("message", "Unknown error")
-                            error_occurred = True
-                            for conn in active_connections[:]:
-                                try:
-                                    await conn.send_json({"type": "error", "message": error_msg})
-                                except Exception:
-                                    active_connections.remove(conn)
-                            state_machine.transition(CaicaiState.IDLE)
-
-                except Exception as e:
-                    # 连接 hermes-webui 失败
-                    error_occurred = True
-                    for conn in active_connections[:]:
-                        try:
-                            await conn.send_json({"type": "error", "message": f"连接失败: {str(e)}"})
-                        except Exception:
-                            active_connections.remove(conn)
-                    state_machine.transition(CaicaiState.IDLE)
+                current_chat_task = asyncio.create_task(run_chat_stream(text, images))
+            elif msg_type == "stop":
+                if current_chat_task and not current_chat_task.done():
+                    current_chat_task.cancel()
+                    try:
+                        await current_chat_task
+                    except asyncio.CancelledError:
+                        pass
+                else:
+                    await websocket.send_json({"type": "chat_stopped"})
             else:
                 await websocket.send_json({"type": "error", "message": f"Unsupported message type: {msg_type}"})
 
     except WebSocketDisconnect:
         pass
     finally:
+        if current_chat_task and not current_chat_task.done():
+            current_chat_task.cancel()
         if websocket in active_connections:
             active_connections.remove(websocket)
 

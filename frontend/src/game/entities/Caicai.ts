@@ -128,6 +128,7 @@ export class Caicai {
     const y = this.body.y - 30; // 在崽崽头顶上方（原大小32x48）
 
     this.expressionBubble = this.scene.add.container(x, y);
+    this.expressionBubble.setDepth(10_000); // 表情气泡始终在最上层
     this.expressionBubble.setVisible(false);
   }
 
@@ -359,6 +360,13 @@ export class Caicai {
    */
   getPosition(): { x: number; y: number } {
     return { x: this.body.x, y: this.body.y };
+  }
+
+  /**
+   * 外部场景按Y排序时设置身体层级
+   */
+  setBodyDepth(depth: number): void {
+    this.body.setDepth(depth);
   }
 
   /**
