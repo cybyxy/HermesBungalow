@@ -5,9 +5,9 @@ import { ChatImagePreview } from './ChatImagePreview';
 
 // 连接状态指示器配置
 const STATUS_CONFIG: Record<string, { dot: string; label: string }> = {
-  open:         { dot: 'bg-green-400',   label: '在线' },
-  connecting:   { dot: 'bg-blue-400 animate-pulse', label: '连接中...' },
-  reconnecting: { dot: 'bg-yellow-400 animate-pulse', label: '重连中...' },
+  open:         { dot: 'bg-emerald-400',   label: '在线' },
+  connecting:   { dot: 'bg-amber-400 animate-pulse', label: '连接中...' },
+  reconnecting: { dot: 'bg-amber-400 animate-pulse', label: '重连中...' },
   disconnected: { dot: 'bg-red-400',     label: '已断开' },
 };
 
@@ -27,6 +27,11 @@ const COMPRESS_THRESHOLD = 500 * 1024;
 const MAX_DIMENSION = 1920;
 // 压缩质量
 const COMPRESS_QUALITY = 0.85;
+const AVATAR_MAX_DIMENSION = 256;
+const AVATAR_COMPRESS_QUALITY = 0.8;
+// 能量衰减：正常 8 小时耗尽，工作中为 3 倍
+const ENERGY_DRAIN_PER_SEC_IDLE = 100 / (8 * 60 * 60); // 8h from 100 -> 0
+const ENERGY_DRAIN_MULTIPLIER_WORKING = 3;
 
 // 待发送图片项
 interface PendingImage {
@@ -35,7 +40,23 @@ interface PendingImage {
 }
 
 // 对话框组件 — 崽崽说话气泡 + 聊天输入
-export function DialogBox() {
+interface DialogBoxProps {
+  healthOk?: boolean | null;
+  hermesVersion?: string;
+  modelName?: string;
+  serviceStatus?: {
+    chat: boolean | null;
+    skills: boolean | null;
+    config: boolean | null;
+  };
+}
+
+export function DialogBox({
+  healthOk: _healthOk = null,
+  hermesVersion,
+  modelName,
+  serviceStatus = { chat: null, skills: null, config: null },
+}: DialogBoxProps) {
   const [inputText, setInputText] = useState('');
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -43,14 +64,22 @@ export function DialogBox() {
   const messages = useGameState((s) => s.messages);
   const isTyping = useGameState((s) => s.isTyping);
   const addMessage = useGameState((s) => s.addMessage);
+  const clearMessages = useGameState((s) => s.clearMessages);
+  const coffeeEnergy = useGameState((s) => s.coffeeEnergy);
   const setIsTyping = useGameState((s) => s.setIsTyping);
   const setExpression = useGameState((s) => s.setExpression);
   const addCoffee = useGameState((s) => s.addCoffee);
   const wsStatus = useGameState((s) => s.wsStatus);
   const caicaiState = useGameState((s) => s.caicaiState);
+  const sessionId = useGameState((s) => s.sessionId);
+  const userAvatar = useGameState((s) => s.userAvatar);
+  const setUserAvatar = useGameState((s) => s.setUserAvatar);
 
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const userAvatarInputRef = useRef<HTMLInputElement>(null);
+  const hasExhaustedNotifiedRef = useRef(false);
+  const energySyncTimerRef = useRef<number | null>(null);
 
   // 组件挂载时自动连接 WS，卸载时断开
   useEffect(() => {
@@ -65,37 +94,111 @@ export function DialogBox() {
     }
   }, [messages, isTyping]);
 
-  // ========================
-  // 图片压缩
-  // ========================
+  const scheduleEnergySync = useCallback((energy: number) => {
+    if (energySyncTimerRef.current) {
+      window.clearTimeout(energySyncTimerRef.current);
+    }
+    energySyncTimerRef.current = window.setTimeout(async () => {
+      try {
+        await fetch('/api/hermes/energy', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ energy }),
+        });
+      } catch {
+        // ignore
+      }
+    }, 400);
+  }, []);
+
+  // 从后端恢复能量值（服务重启后仍可保留）
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const resp = await fetch('/api/hermes/energy');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (!mounted) return;
+        const energy = Number(data?.energy ?? 80);
+        useGameState.getState().setCoffeeEnergy(energy);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      mounted = false;
+      if (energySyncTimerRef.current) {
+        window.clearTimeout(energySyncTimerRef.current);
+      }
+    };
+  }, []);
+
+  // ===== 咖啡能量自动衰减 =====
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const state = useGameState.getState();
+      const currentEnergy = state.coffeeEnergy;
+      const working = state.caicaiState === 'WORKING';
+      const decay = working
+        ? ENERGY_DRAIN_PER_SEC_IDLE * ENERGY_DRAIN_MULTIPLIER_WORKING
+        : ENERGY_DRAIN_PER_SEC_IDLE;
+      const next = Math.max(0, currentEnergy - decay);
+
+      if (Math.abs(next - currentEnergy) > 0.001) {
+        state.setCoffeeEnergy(next);
+        scheduleEnergySync(next);
+      }
+
+      // 能量耗尽：暂停当前工作，等待加咖啡
+      if (next <= 0) {
+        if (!hasExhaustedNotifiedRef.current) {
+          hasExhaustedNotifiedRef.current = true;
+          if (state.isTyping) {
+            stopChatMessage();
+            state.setIsTyping(false);
+          }
+          if (state.caicaiState === 'WORKING') {
+            state.setCaicaiState('IDLE');
+          }
+          state.addMessage({
+            id: `energy-empty-${Date.now()}`,
+            sender: 'caicai',
+            text: '⚠️ 崽崽能量耗尽，先暂停工作啦～请点击“加咖啡”补充能量。',
+            timestamp: new Date(),
+          });
+        }
+      } else if (next > 5) {
+        // 喝咖啡恢复后解除“已提醒”锁
+        hasExhaustedNotifiedRef.current = false;
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // ===== 图片压缩 =====
   const compressImage = useCallback(async (dataUrl: string, mimeType: string): Promise<string> => {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
         let { width, height } = img;
-
-        // 等比缩放
         if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
           const ratio = Math.min(MAX_DIMENSION / width, MAX_DIMENSION / height);
           width = Math.round(width * ratio);
           height = Math.round(height * ratio);
         }
-
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d')!;
         ctx.drawImage(img, 0, 0, width, height);
-
         resolve(canvas.toDataURL(mimeType, COMPRESS_QUALITY));
       };
       img.src = dataUrl;
     });
   }, []);
 
-  // ========================
-  // 图片文件处理 — 转 base64 + 获取尺寸 + 压缩
-  // ========================
+  // ===== 图片文件处理 =====
   const processImageFile = async (file: File): Promise<PendingImage> => {
     if (!file.type.startsWith('image/')) {
       throw new Error('仅支持图片格式');
@@ -103,7 +206,6 @@ export function DialogBox() {
     if (file.size > MAX_IMAGE_SIZE) {
       throw new Error(`图片过大（${(file.size / 1024 / 1024).toFixed(1)}MB），请选小于2MB的图片`);
     }
-
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = async (e) => {
@@ -111,18 +213,11 @@ export function DialogBox() {
         const img = new Image();
         img.onload = async () => {
           let finalDataUrl = dataUrl;
-          // 超过压缩阈值则压缩
           if (file.size > COMPRESS_THRESHOLD) {
-            console.log(`[Image] 图片 ${file.name} (${(file.size / 1024).toFixed(0)}KB) > ${COMPRESS_THRESHOLD / 1024}KB，执行压缩`);
             finalDataUrl = await compressImage(dataUrl, file.type);
           }
           resolve({
-            image: {
-              data_url: finalDataUrl,
-              mime_type: file.type,
-              width: img.width,
-              height: img.height,
-            },
+            image: { data_url: finalDataUrl, mime_type: file.type, width: img.width, height: img.height },
             fileName: file.name,
           });
         };
@@ -134,39 +229,30 @@ export function DialogBox() {
     });
   };
 
-  // ========================
-  // 拖拽上传
-  // ========================
+  // ===== 拖拽上传 =====
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(true);
   };
-
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
   };
-
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-
     const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
     if (files.length === 0) return;
-
     await addImagesFromFiles(files);
   };
 
-  // ========================
-  // 文件选择器
-  // ========================
+  // ===== 文件选择器 =====
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
-
     await addImagesFromFiles(files);
     e.target.value = '';
   };
@@ -174,7 +260,6 @@ export function DialogBox() {
   const addImagesFromFiles = async (files: File[]) => {
     const newImages: PendingImage[] = [];
     const errors: string[] = [];
-
     for (const file of files) {
       try {
         const result = await processImageFile(file);
@@ -183,7 +268,6 @@ export function DialogBox() {
         errors.push(`${file.name}: ${(err as Error).message}`);
       }
     }
-
     if (newImages.length > 0) {
       setPendingImages(prev => [...prev, ...newImages]);
     }
@@ -192,52 +276,76 @@ export function DialogBox() {
     }
   };
 
-  // ========================
-  // 粘贴板处理 — 支持多图
-  // ========================
+  const handleUserAvatarSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('请选择图片文件作为头像');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_IMAGE_SIZE) {
+      alert('头像图片不能超过 2MB');
+      e.target.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const dataUrl = String(evt.target?.result || '');
+      if (!dataUrl) return;
+      // 头像自动压缩：限制到 256px，降低存储占用和渲染开销
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > AVATAR_MAX_DIMENSION || height > AVATAR_MAX_DIMENSION) {
+          const ratio = Math.min(AVATAR_MAX_DIMENSION / width, AVATAR_MAX_DIMENSION / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, width);
+        canvas.height = Math.max(1, height);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          setUserAvatar(dataUrl);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const compressed = canvas.toDataURL(file.type || 'image/png', AVATAR_COMPRESS_QUALITY);
+        setUserAvatar(compressed);
+      };
+      img.onerror = () => setUserAvatar(dataUrl);
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  // ===== 粘贴板处理 =====
   const handlePaste = async (e: React.ClipboardEvent) => {
     const items = Array.from(e.clipboardData.items);
     const imageItems = items.filter(item => item.type.startsWith('image/'));
-
     if (imageItems.length === 0) return;
-
     e.preventDefault();
-
-    const files = imageItems
-      .map(item => item.getAsFile())
-      .filter((f): f is File => f !== null);
-
+    const files = imageItems.map(item => item.getAsFile()).filter((f): f is File => f !== null);
     await addImagesFromFiles(files);
   };
 
-  // ========================
-  // 移除单张图片
-  // ========================
+  // ===== 移除单张图片 =====
   const handleRemoveImage = (index: number) => {
     setPendingImages(prev => prev.filter((_, i) => i !== index));
   };
 
-  // ========================
-  // 发送消息
-  // ========================
-  // 发送锁 — 防止 React re-render 或快速点击导致重复发送
+  // ===== 发送消息 =====
   const isSendingRef = useRef(false);
-
   const handleSend = async (prefilledText?: string) => {
     const textToSend = prefilledText ?? inputText.trim();
     if (!textToSend && pendingImages.length === 0) return;
     if (isSendingRef.current) return;
     isSendingRef.current = true;
-
     try {
-      if (wsStatus !== 'open') {
-        console.warn('[DialogBox] WS not connected, cannot send');
-        return;
-      }
-
+      if (wsStatus !== 'open') return;
       const imagesToSend = pendingImages.map(p => p.image);
-
-      // 用户消息
       const userMsg: ChatMessage = {
         id: Date.now().toString(),
         sender: 'user',
@@ -246,10 +354,7 @@ export function DialogBox() {
         images: imagesToSend.length > 0 ? imagesToSend : undefined,
       };
       addMessage(userMsg);
-
-      // 通过 WS 发送消息（支持多图）
       sendChatMessage(textToSend, imagesToSend);
-
       setInputText('');
       setPendingImages([]);
       setIsTyping(true);
@@ -267,212 +372,509 @@ export function DialogBox() {
   const quickActions = [
     { label: '📋 查看PRD', action: () => handleSend('查看PRD') },
     { label: '🚀 了解项目', action: () => handleSend('了解项目') },
-    { label: '☕ 加咖啡', action: () => {
-      addCoffee();
-      handleSend('加杯咖啡');
-    }},
+    { label: '☕ 加咖啡', action: () => { addCoffee(); handleSend('加杯咖啡'); }},
   ];
 
   const showWelcome = messages.length === 0;
 
+  // 服务状态指示器
+  const serviceDotClass = (status: boolean | null) => {
+    if (status === true) return 'bg-emerald-400';
+    if (status === false) return 'bg-red-400';
+    return 'bg-slate-500';
+  };
+
   return (
     <div
-      className={`h-full bg-gray-900/95 border-l-4 border-indigo-900 flex flex-col relative ${isDragOver ? 'ring-2 ring-pink-500 ring-inset' : ''}`}
+      className="h-full flex flex-col relative"
+      style={{
+        background: 'linear-gradient(180deg, rgba(13,13,26,0.97) 0%, rgba(19,19,42,0.98) 100%)',
+        borderLeft: '1px solid rgba(139,92,246,0.25)',
+      }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       {/* 拖拽遮罩 */}
       {isDragOver && (
-        <div className="absolute inset-0 z-20 bg-pink-900/30 flex items-center justify-center pointer-events-none">
-          <div className="text-pink-400 font-bold text-sm">📋 拖拽图片到这里</div>
+        <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none"
+          style={{ background: 'rgba(244,114,182,0.15)', backdropFilter: 'blur(4px)', border: '2px dashed rgba(244,114,182,0.5)', borderRadius: '12px', margin: '8px' }}>
+          <div className="text-pink-300 font-bold text-sm flex items-center gap-2">
+            <span className="text-lg">🖼️</span> 拖拽图片到这里
+          </div>
         </div>
       )}
 
-      {/* 崽崽信息卡 */}
-      <div className="p-4 bg-gradient-to-b from-purple-900/50 to-transparent border-b-2 border-indigo-900">
-        <div className="flex items-center gap-3 mb-3">
-          <img
-            src="/assets/sprites/expression1.png"
-            alt="崽崽"
-            className="w-14 h-14 rounded-lg border-2 border-pink-500 object-contain bg-gray-800"
-          />
-          <div>
-            <h3 className="text-xs text-yellow-400 font-bold flex items-center gap-1">
-              <span>崽崽 💖</span>
-              <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-800/80 border border-indigo-600 text-cyan-300">
-                {CAICAI_STATE_LABEL[caicaiState] || caicaiState}
-              </span>
-            </h3>
-            <p className="text-[10px] text-gray-400">软件需求分析师 | 在线</p>
+      {/* ===== 崽崽信息卡 ===== */}
+      <div
+        className="px-5 pt-4 pb-3 shrink-0"
+        style={{
+          background: 'linear-gradient(180deg, rgba(88,28,135,0.25) 0%, transparent 100%)',
+          borderBottom: '1px solid rgba(139,92,246,0.2)',
+        }}
+      >
+        <input
+          ref={userAvatarInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/gif,image/webp"
+          onChange={handleUserAvatarSelect}
+          className="hidden"
+        />
+        <div className="flex items-center gap-4">
+          {/* 头像 */}
+          <div className="relative shrink-0">
+            <img
+              src={userAvatar}
+              alt="崽崽"
+              className="w-14 h-14 rounded-2xl border-2 object-contain"
+              style={{
+                borderColor: 'rgba(244,114,182,0.5)',
+                boxShadow: '0 0 20px rgba(244,114,182,0.2), 0 4px 12px rgba(0,0,0,0.4)',
+              }}
+            />
+            {/* 在线状态环 */}
+            <div
+              className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 flex items-center justify-center text-[8px]"
+              style={{
+                background: 'rgba(13,13,26,0.9)',
+                borderColor: 'rgba(139,92,246,0.3)',
+              }}
+            >
+              <div className={`w-2 h-2 rounded-full ${STATUS_CONFIG[wsStatus]?.dot || 'bg-red-400'}`} />
+            </div>
           </div>
 
-          <div className={`ml-auto flex items-center gap-1.5 px-2 py-1 rounded-full bg-gray-800/60 border border-gray-700`}>
-            <span className={`w-2 h-2 rounded-full ${STATUS_CONFIG[wsStatus]?.dot || 'bg-red-400'}`}></span>
-            <span className="text-[9px] text-gray-300">{STATUS_CONFIG[wsStatus]?.label || '已断开'}</span>
+          {/* 文字信息 */}
+          <div className="flex-1 min-w-0">
+            {/* 咖啡能量条 */}
+            <div className="mb-1.5">
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="text-[9px]" style={{ color: 'rgba(167,139,250,0.6)' }}>☕</span>
+                <span className="text-[9px]" style={{ color: 'rgba(167,139,250,0.5)' }}>能量</span>
+                <span className="text-[9px] font-mono" style={{ color: 'rgba(167,139,250,0.7)' }}>{coffeeEnergy.toFixed(1)}%</span>
+              </div>
+              <div
+                className="w-full h-1.5 rounded-full overflow-hidden"
+                style={{ background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.2)' }}
+              >
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${coffeeEnergy}%`,
+                    background: coffeeEnergy > 60
+                      ? 'linear-gradient(90deg, #4ade80, #86efac)'
+                      : coffeeEnergy > 30
+                      ? 'linear-gradient(90deg, #fbbf24, #fcd34d)'
+                      : 'linear-gradient(90deg, #f87171, #fca5a5)',
+                    boxShadow: coffeeEnergy > 60
+                      ? '0 0 6px rgba(74,222,128,0.5)'
+                      : coffeeEnergy > 30
+                      ? '0 0 6px rgba(251,191,36,0.5)'
+                      : '0 0 6px rgba(248,113,113,0.5)',
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-sm font-bold" style={{ color: '#f9a8d4' }}>
+                崽崽 💖
+              </h3>
+              <span
+                className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+                style={{
+                  background: 'rgba(139,92,246,0.2)',
+                  color: '#c4b5fd',
+                  border: '1px solid rgba(139,92,246,0.3)',
+                }}
+              >
+                {CAICAI_STATE_LABEL[caicaiState] || caicaiState}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-0.5">软件需求分析师</p>
+            <button
+              type="button"
+              onClick={() => userAvatarInputRef.current?.click()}
+              className="mt-1 text-[10px] px-2 py-0.5 rounded-lg border"
+              style={{
+                background: 'rgba(139,92,246,0.12)',
+                borderColor: 'rgba(139,92,246,0.25)',
+                color: '#c4b5fd',
+              }}
+            >
+              修改我的头像
+            </button>
+          </div>
+
+          {/* 服务状态标签组 */}
+          <div
+            className="flex items-center gap-3 px-3 py-1.5 rounded-xl shrink-0"
+            style={{
+              background: 'rgba(19,19,42,0.8)',
+              border: '1px solid rgba(139,92,246,0.2)',
+            }}
+          >
+            {[
+              { key: 'chat', label: 'Chat' },
+              { key: 'skills', label: 'Skills' },
+              { key: 'config', label: 'Config' },
+            ].map(({ key, label }) => {
+              const status = serviceStatus[key as keyof typeof serviceStatus];
+              return (
+                <div key={key} className="flex items-center gap-1.5 text-[9px] text-slate-300" title={label}>
+                  <div className={`w-1.5 h-1.5 rounded-full ${serviceDotClass(status)}`}
+                    style={{ boxShadow: status === true ? '0 0 4px rgba(74,222,128,0.6)' : 'none' }} />
+                  <span className="hidden sm:inline">{label}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
 
         {/* 表情切换 */}
-        <div className="flex gap-1 flex-wrap">
-          {['happy', 'thinking', 'sweat', 'cry'].map((expr) => (
+        <div className="flex gap-2 mt-3 flex-wrap">
+          {[
+            { key: 'happy', label: '😀 开心', color: 'rgba(74,222,128,0.15)', border: 'rgba(74,222,128,0.3)', text: '#86efac' },
+            { key: 'thinking', label: '🤔 思考', color: 'rgba(251,191,36,0.15)', border: 'rgba(251,191,36,0.3)', text: '#fcd34d' },
+            { key: 'sweat', label: '💧 流汗', color: 'rgba(103,232,249,0.15)', border: 'rgba(103,232,249,0.3)', text: '#a5f3fc' },
+            { key: 'cry', label: '😭 哭泣', color: 'rgba(248,113,113,0.15)', border: 'rgba(248,113,113,0.3)', text: '#fca5a5' },
+          ].map((expr) => (
             <button
-              key={expr}
-              onClick={() => setExpression(expr as any)}
-              className="text-[8px] px-2 py-1 bg-indigo-900/50 text-gray-400 border border-indigo-700 rounded hover:bg-pink-600 hover:text-white transition-colors"
+              key={expr.key}
+              onClick={() => setExpression(expr.key as any)}
+              className="text-[10px] px-3 py-1.5 rounded-lg border transition-all hover:scale-105 active:scale-95"
+              style={{
+                background: expr.color,
+                borderColor: expr.border,
+                color: expr.text,
+              }}
             >
-              {expr === 'happy' ? '😀开心' : expr === 'thinking' ? '🤔思考' : expr === 'sweat' ? '💧流汗' : '😭哭泣'}
+              {expr.label}
             </button>
           ))}
         </div>
-      </div>
 
-      {/* 聊天区域 */}
-      <div ref={chatAreaRef} className="flex-1 overflow-y-auto p-3 space-y-2">
-        {showWelcome && (
-          <div className="text-center py-8">
-            <div className="text-4xl mb-3">👋</div>
-            <p className="text-xs text-yellow-400 font-bold mb-1">你好！我是崽崽</p>
-            <p className="text-[10px] text-gray-400 mb-1">软件需求分析师</p>
-            <p className="text-[10px] text-gray-500">有什么可以帮你的吗？</p>
+        {sessionId && (
+          <div className="mt-2 text-[9px] text-slate-600 font-mono truncate">
+            Session: {sessionId}
           </div>
         )}
 
-        {messages.map((msg) => (
-          <div key={msg.id} className={`flex gap-2 ${msg.sender === 'user' ? 'flex-row-reverse' : ''}`}>
-            <img
-              src="/assets/sprites/expression1.png"
-              alt="avatar"
-              className="w-6 h-6 rounded object-contain flex-shrink-0"
-            />
-            <div>
-              {/* 多图消息气泡渲染 */}
-              {msg.images && msg.images.length > 0 && (
-                <div className={`flex flex-wrap gap-1 mb-1 ${msg.sender === 'user' ? 'justify-end' : ''}`}>
-                  {msg.images.map((img, i) => (
-                    <img
-                      key={i}
-                      src={img.data_url}
-                      alt={`图片${i + 1}`}
-                      className={`max-w-full max-h-40 rounded-lg object-contain border ${
-                        msg.sender === 'user'
-                          ? 'border-pink-500/50'
-                          : 'border-indigo-700/50'
-                      }`}
-                    />
-                  ))}
-                </div>
-              )}
-              {/* 兼容单图 */}
-              {msg.image && !msg.images && (
+        {/* Hermes 版本 + 当前模型 — 始终展示，占位待填充 */}
+        <div className="flex items-center gap-3 mt-2 flex-wrap">
+          <div
+            className="flex items-center gap-1.5 text-[10px] px-2 py-1 rounded-lg"
+            style={{
+              background: 'rgba(139,92,246,0.12)',
+              border: '1px solid rgba(139,92,246,0.25)',
+              color: '#a78bfa',
+            }}
+          >
+            <span>🦉</span>
+            <span className="font-mono">Hermes Agent {hermesVersion || 'v--'}</span>
+          </div>
+          <div
+            className="flex items-center gap-1.5 text-[10px] px-2 py-1 rounded-lg"
+            style={{
+              background: 'rgba(236,72,153,0.12)',
+              border: '1px solid rgba(236,72,153,0.25)',
+              color: '#f9a8d4',
+            }}
+          >
+            <span>🤖</span>
+            <span className="font-mono truncate max-w-[200px]">{modelName || '--'}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ===== 聊天区域 ===== */}
+      <div
+        ref={chatAreaRef}
+        className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
+      >
+        {/* 聊天头部：清空按钮 */}
+        <div className="flex justify-end mb-1">
+          {messages.length > 0 && (
+            <button
+              onClick={() => clearMessages()}
+              className="text-[9px] px-2 py-1 rounded-md border transition-all hover:scale-105 active:scale-95"
+              style={{
+                background: 'rgba(248,113,113,0.1)',
+                borderColor: 'rgba(248,113,113,0.25)',
+                color: 'rgba(248,113,113,0.7)',
+              }}
+              title="清空对话"
+            >
+              🗑️ 清空
+            </button>
+          )}
+        </div>
+
+        {showWelcome && (
+          <div className="text-center py-10 animate-fade-in">
+            <div className="text-5xl mb-4">👋</div>
+            <p className="text-sm font-bold mb-1" style={{ color: '#f9a8d4' }}>你好！我是崽崽</p>
+            <p className="text-[11px] text-slate-400 mb-1">软件需求分析师</p>
+            <p className="text-[11px] text-slate-500">有什么可以帮你的吗？</p>
+            {/* 欢迎提示快捷操作 */}
+            <div className="flex gap-2 justify-center mt-4 flex-wrap">
+              {quickActions.map((qa) => (
+                <button
+                  key={qa.label}
+                  onClick={qa.action}
+                  disabled={wsStatus !== 'open'}
+                  className="text-[10px] px-3 py-2 rounded-lg border transition-all hover:scale-105 disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{
+                    background: 'rgba(139,92,246,0.1)',
+                    borderColor: 'rgba(139,92,246,0.3)',
+                    color: '#c4b5fd',
+                  }}
+                >
+                  {qa.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((msg) => {
+          const isUser = msg.sender === 'user';
+          const isCaicai = msg.sender === 'caicai';
+          return (
+            <div
+              key={msg.id}
+              className={`flex gap-2.5 animate-fade-in ${isUser ? 'flex-row-reverse' : ''}`}
+            >
+              {/* 头像 */}
+              {!isUser && (
                 <img
-                  src={msg.image.data_url}
-                  alt="图片消息"
-                  className={`max-w-full max-h-48 rounded-lg mb-1 object-contain border ${
-                    msg.sender === 'user'
-                      ? 'border-pink-500/50'
-                      : 'border-indigo-700/50'
-                  }`}
+                  src={userAvatar}
+                  alt="崽崽"
+                  className="w-7 h-7 rounded-lg object-contain flex-shrink-0 mt-0.5"
+                  style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}
                 />
               )}
 
-              {msg.text && (
-                <div
-                  className={`text-[10px] leading-relaxed p-2 rounded-lg w-fit max-w-full ${
-                    msg.sender === 'caicai'
-                      ? 'bg-indigo-900/60 text-gray-100 rounded-tl-none'
-                      : 'bg-pink-600 text-white rounded-tr-none'
-                  }`}
-                >
-                  {msg.text.split('\n').map((line, i) => (
-                    <span key={i}>{line}<br /></span>
-                  ))}
-                </div>
+              <div className={`flex flex-col gap-1 max-w-[80%] ${isUser ? 'items-end' : 'items-start'}`}>
+                {/* 多图消息 */}
+                {msg.images && msg.images.length > 0 && (
+                  <div className={`flex flex-wrap gap-1.5 ${isUser ? 'justify-end' : ''}`}>
+                    {msg.images.map((img, i) => (
+                      <img
+                        key={i}
+                        src={img.data_url}
+                        alt={`图片${i + 1}`}
+                        className="max-w-[180px] max-h-40 rounded-xl object-contain border"
+                        style={{
+                          borderColor: isUser ? 'rgba(244,114,182,0.4)' : 'rgba(139,92,246,0.3)',
+                          boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {/* 文字气泡 */}
+                {msg.text && (
+                  <div
+                    className="text-[12px] leading-relaxed px-4 py-2.5"
+                    style={{
+                      background: isUser
+                        ? 'linear-gradient(135deg, rgba(236,72,153,0.35) 0%, rgba(167,139,250,0.35) 100%)'
+                        : msg._thinking
+                        ? 'rgba(30,41,59,0.8)'
+                        : 'rgba(139,92,246,0.12)',
+                      border: `1px solid ${isUser ? 'rgba(236,72,153,0.55)' : 'rgba(139,92,246,0.25)'}`,
+                      borderRadius: isUser ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                      color: isUser ? '#fce7f3' : isCaicai ? '#e2e8f0' : '#cbd5e1',
+                      fontStyle: msg._thinking ? 'italic' : 'normal',
+                      boxShadow: isUser
+                        ? '0 4px 16px rgba(236,72,153,0.25), 0 2px 8px rgba(0,0,0,0.25)'
+                        : '0 2px 8px rgba(0,0,0,0.2)',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {msg.text.split('\n').map((line, i) => (
+                      <span key={i}>{line}<br /></span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 用户头像 */}
+              {isUser && (
+                <img
+                  src={userAvatar}
+                  alt="我的头像"
+                  className="w-7 h-7 rounded-lg object-cover flex-shrink-0 mt-0.5"
+                  style={{
+                    border: '1px solid rgba(236,72,153,0.4)',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+                    background: 'rgba(19,19,42,0.8)',
+                  }}
+                />
               )}
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {/* 打字指示器 */}
         {isTyping && (
-          <div className="flex gap-2">
-            <img src="/assets/sprites/expression1.png" alt="avatar" className="w-6 h-6 rounded object-contain flex-shrink-0" />
-            <div className="text-[10px] text-gray-400 p-3 bg-indigo-900/30 rounded-lg">
-              <span>崽崽正在思考</span>
-              <span className="inline-flex gap-1 ml-1">
-                <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-              </span>
+          <div className="flex gap-2.5 animate-fade-in">
+            <img
+              src={userAvatar}
+              alt="崽崽"
+              className="w-7 h-7 rounded-lg object-contain flex-shrink-0"
+              style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}
+            />
+            <div
+              className="px-4 py-3 rounded-2xl rounded-tl-none"
+              style={{
+                background: 'rgba(139,92,246,0.1)',
+                border: '1px solid rgba(139,92,246,0.2)',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+              }}
+            >
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-slate-300">崽崽正在思考</span>
+                <div className="flex items-center gap-0.5 ml-1">
+                  {[0, 150, 300].map((delay) => (
+                    <div
+                      key={delay}
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{
+                        background: '#a78bfa',
+                        animation: `bounce 1.2s ease-in-out ${delay}ms infinite`,
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* 快捷操作 */}
-      <div className="flex gap-1 p-2 flex-wrap">
+      {/* ===== 快捷操作 ===== */}
+      <div
+        className="px-4 py-2 flex gap-2 flex-wrap shrink-0"
+        style={{ borderTop: '1px solid rgba(139,92,246,0.12)' }}
+      >
         {quickActions.map((qa) => (
           <button
             key={qa.label}
             onClick={qa.action}
             disabled={wsStatus !== 'open'}
-            className="text-[8px] px-3 py-2 bg-indigo-900/50 text-gray-400 border border-indigo-700 rounded hover:bg-pink-600 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="text-[10px] px-3 py-1.5 rounded-lg border transition-all hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{
+              background: 'rgba(139,92,246,0.08)',
+              borderColor: 'rgba(139,92,246,0.25)',
+              color: '#a78bfa',
+            }}
           >
             {qa.label}
           </button>
         ))}
       </div>
 
-      {/* 多图预览区域 */}
+      {/* ===== 多图预览 ===== */}
       {pendingImages.length > 0 && (
-        <ChatImagePreview
-          images={pendingImages}
-          onRemove={handleRemoveImage}
-        />
+        <ChatImagePreview images={pendingImages} onRemove={handleRemoveImage} />
       )}
 
-      {/* 输入框 + 图片选择按钮 */}
-      <div className="flex gap-2 p-3 items-end">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/jpeg,image/png,image/gif,image/webp"
-          multiple
-          onChange={handleFileSelect}
-          className="hidden"
-        />
-
-        {/* 图片选择按钮 */}
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={wsStatus !== 'open'}
-          className="px-2 py-2 bg-indigo-900/50 text-gray-400 border border-indigo-700 rounded hover:bg-pink-600 hover:text-white transition-colors disabled:opacity-40 flex-shrink-0"
-          title="选择图片（也可直接拖拽或 Ctrl+V 粘贴）"
+      {/* ===== 输入区域 ===== */}
+      <div
+        className="p-4 pt-2 shrink-0"
+        style={{ borderTop: '1px solid rgba(139,92,246,0.15)' }}
+      >
+        <div
+          className="flex gap-2 items-end rounded-2xl px-1 py-1.5"
+          style={{
+            background: 'rgba(19,19,42,0.9)',
+            border: '1px solid rgba(139,92,246,0.25)',
+            boxShadow: '0 -4px 24px rgba(0,0,0,0.2)',
+          }}
         >
-          🖼️
-        </button>
+          {/* 图片选择 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            multiple
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={wsStatus !== 'open'}
+            className="p-2.5 rounded-xl transition-all hover:scale-105 active:scale-95 disabled:opacity-40 shrink-0"
+            style={{
+              background: 'rgba(139,92,246,0.12)',
+              border: '1px solid rgba(139,92,246,0.2)',
+              color: '#a78bfa',
+            }}
+            title="选择图片（也可直接拖拽或 Ctrl+V 粘贴）"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+          </button>
 
-        <input
-          type="text"
-          value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          onPaste={handlePaste}
-          onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          placeholder={wsStatus !== 'open' ? '连接中...' : '跟崽崽说点什么...（支持拖拽/粘贴图片）'}
-          disabled={wsStatus !== 'open'}
-          className="flex-1 text-[10px] px-3 py-2 bg-indigo-900/50 border-2 border-indigo-700 text-gray-100 rounded focus:border-pink-500 outline-none placeholder:text-gray-600 disabled:opacity-40"
-        />
-        <button
-          onClick={() => (isTyping ? handleStop() : handleSend())}
-          disabled={wsStatus !== 'open' || (!isTyping && !inputText.trim() && pendingImages.length === 0)}
-          className={`px-4 py-2 text-white rounded transition-colors text-xs disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 ${
-            isTyping ? 'bg-gray-700 hover:bg-gray-600' : 'bg-pink-600 hover:bg-pink-500'
-          }`}
-          title={isTyping ? '停止当前推理' : '发送消息'}
-        >
-          {isTyping ? '停止' : '➤'}
-        </button>
+          {/* 输入框 */}
+          <input
+            type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onPaste={handlePaste}
+            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+            placeholder={wsStatus !== 'open' ? '连接中...' : '跟崽崽说点什么...'}
+            disabled={wsStatus !== 'open'}
+            className="flex-1 text-[12px] px-3 py-2 bg-transparent text-slate-100 outline-none placeholder:text-slate-600 disabled:opacity-40 rounded-lg"
+            style={{ minWidth: 0 }}
+          />
+
+          {/* 发送/停止按钮 */}
+          <button
+            onClick={() => isTyping ? handleStop() : handleSend()}
+            disabled={wsStatus !== 'open' || (!isTyping && !inputText.trim() && pendingImages.length === 0)}
+            className="p-2.5 rounded-xl font-bold text-sm transition-all hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+            style={{
+              background: isTyping
+                ? 'rgba(100,116,139,0.3)'
+                : 'linear-gradient(135deg, rgba(236,72,153,0.4), rgba(167,139,250,0.4))',
+              border: `1px solid ${isTyping ? 'rgba(100,116,139,0.4)' : 'rgba(244,114,182,0.4)'}`,
+              color: isTyping ? '#94a3b8' : '#fce7f3',
+              boxShadow: !isTyping ? '0 0 16px rgba(244,114,182,0.2)' : 'none',
+            }}
+            title={isTyping ? '停止当前推理' : '发送消息'}
+          >
+            {isTyping ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="1" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            )}
+          </button>
+        </div>
+
+        {/* 提示文字 */}
+        <div className="text-[9px] text-slate-600 mt-1.5 px-1 text-center">
+          {wsStatus === 'open' ? '支持拖拽图片 · Ctrl+V 粘贴 · Enter 发送' : '正在连接崽崽...'}
+        </div>
       </div>
+
+      <style>{`
+        @keyframes bounce {
+          0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
+          40% { transform: scale(1); opacity: 1; }
+        }
+      `}</style>
     </div>
   );
 }

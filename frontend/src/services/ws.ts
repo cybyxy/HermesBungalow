@@ -20,6 +20,24 @@ function updateMessages(
   }));
 }
 
+function removeThinkingBubbles(messages: ChatMessage[]): ChatMessage[] {
+  return messages.filter((m) => !m._thinking);
+}
+
+function stripThinkTags(text: string): string {
+  if (!text) return text;
+  let out = text;
+  // Remove full thinking blocks including their content
+  out = out.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '');
+  out = out.replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, '');
+  // Fallback: strip dangling opening/closing tags if model output is malformed
+  out = out.replace(/<\/?think\b[^>]*>/gi, '');
+  out = out.replace(/<\/?thinking\b[^>]*>/gi, '');
+  // Remove leading "think:" style labels
+  out = out.replace(/^\s*(think|thinking)\s*[:：]\s*/i, '');
+  return out.trim();
+}
+
 // 心跳
 const HEARTBEAT_INTERVAL = 30_000;
 const HEARTBEAT_TIMEOUT  = 60_000;
@@ -36,7 +54,8 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 // 连接管理
 // ========================
 export function connectWS(): void {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
+  // 防止重复建连：OPEN / CONNECTING 都不再创建新连接
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
   const store = useGameState.getState();
   store.setWsStatus('connecting');
@@ -171,31 +190,50 @@ function handleWSEvent(data: any): void {
 
     case 'chat_reply': {
       // 最终回复 — 替换流式消息
-      const messages = store.messages;
+      const messages = removeThinkingBubbles(store.messages);
       const lastMsg = messages[messages.length - 1];
-      if (!lastMsg) break;
-
-      // 防止重复处理：如果已经不是 streaming 状态，跳过
-      if (!lastMsg._streaming) break;
-
       // 合并事件
       const events: GatewayEvent[] = (data.events || []).map((e: any) => ({
         type: e.type,
         value: e.value,
       }));
-      const finalMsg: ChatMessage = {
-        id: lastMsg.id,
-        sender: 'caicai',
-        text: data.reply || lastMsg.text,
-        timestamp: lastMsg.timestamp,
-        events,
-        _streaming: false,
-      };
-      updateMessages((prev) => [...prev.slice(0, -1), finalMsg], { isTyping: false });
+      const fallbackText = '*崽崽这次没有返回可显示文本*';
+      const finalText = (typeof data.reply === 'string' && data.reply.trim())
+        ? stripThinkTags(data.reply)
+        : (lastMsg?.sender === 'caicai' ? lastMsg.text : fallbackText);
+
+      if (lastMsg && lastMsg.sender === 'caicai' && lastMsg._streaming) {
+        const finalMsg: ChatMessage = {
+          id: lastMsg.id,
+          sender: 'caicai',
+          text: finalText,
+          timestamp: lastMsg.timestamp,
+          events,
+          _streaming: false,
+        };
+        updateMessages((prev) => {
+          const cleaned = removeThinkingBubbles(prev);
+          return [...cleaned.slice(0, -1), finalMsg];
+        }, { isTyping: false });
+      } else {
+        const finalMsg: ChatMessage = {
+          id: `reply-${Date.now()}`,
+          sender: 'caicai',
+          text: finalText,
+          timestamp: new Date(),
+          events,
+          _streaming: false,
+        };
+        updateMessages((prev) => [...removeThinkingBubbles(prev), finalMsg], { isTyping: false });
+      }
+      if (typeof data.session_id === 'string' && data.session_id) {
+        store.setSessionId(data.session_id);
+      }
+      store.clearThinkingTrace();
 
       // 通知 Phaser：可根据最终回复文本做互动兜底（即使 events 为空）
       window.dispatchEvent(new CustomEvent('caicai-chat-reply', {
-        detail: { reply: finalMsg.text, events },
+        detail: { reply: finalText, events },
       }));
 
       // 处理事件
@@ -213,6 +251,21 @@ function handleWSEvent(data: any): void {
       break;
     }
 
+    case 'thinking':
+      if (data.text) {
+        const thinkMsg: ChatMessage = {
+          id: `think-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          sender: 'caicai',
+          text: String(data.text),
+          timestamp: new Date(),
+          _thinking: true,
+          _streaming: false,
+        };
+        updateMessages((prev) => [...prev, thinkMsg]);
+        store.appendThinkingTrace(String(data.text));
+      }
+      break;
+
     case 'state_update':
       console.log('[WS] State update:', data.state);
       break;
@@ -220,6 +273,7 @@ function handleWSEvent(data: any): void {
     case 'error':
       console.error('[WS] Error:', data.message);
       store.setIsTyping(false);
+      store.clearThinkingTrace();
       // 出错时添加错误消息
       const errMsg: ChatMessage = {
         id: Date.now().toString(),
@@ -227,7 +281,7 @@ function handleWSEvent(data: any): void {
         text: `*崽崽遇到了点问题* 💦\n${data.message}`,
         timestamp: new Date(),
       };
-      updateMessages((prev) => [...prev, errMsg]);
+      updateMessages((prev) => [...removeThinkingBubbles(prev), errMsg]);
       break;
 
     case 'typing':
@@ -236,6 +290,8 @@ function handleWSEvent(data: any): void {
 
     case 'chat_stopped':
       store.setIsTyping(false);
+      store.clearThinkingTrace();
+      updateMessages((prev) => removeThinkingBubbles(prev));
       break;
   }
 }
@@ -250,6 +306,12 @@ export function sendChatMessage(text: string, images?: ImageData[]): void {
   }
 
   const payload: Record<string, any> = { type: 'chat', message: text };
+  useGameState.getState().clearThinkingTrace();
+  updateMessages((prev) => removeThinkingBubbles(prev));
+  const currentSessionId = useGameState.getState().sessionId;
+  if (currentSessionId) {
+    payload.session_id = currentSessionId;
+  }
   if (images && images.length > 0) {
     payload.images = images;
   }

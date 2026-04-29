@@ -9,7 +9,7 @@ import * as Phaser from 'phaser';
  *   - Row 1 (frames 3-5): 向左
  *   - Row 2 (frames 6-8): 向右
  *   - Row 3 (frames 9-11): 向上（背面）
- * - 表情: expression1/expression2 (精灵图, 400x800, 5列x8行=40格, 每格80x100)
+ * - 表情: expression1/expression2 (RPG风格图标，根据交互内容显示在头顶)
  */
 
 // 表情类型定义 — 对应Llm回复中的语义标签
@@ -43,15 +43,14 @@ export const SEMANTIC_TO_EXPRESSION: Record<string, ExpressionType> = {
   coffee: 'happy',
 };
 
-// 表情素材帧索引映射 (spritesheet: 5列x8行, frameWidth=80, frameHeight=100)
-// expression1: 😈💬💀🔥💧 | expression2: 💦💧等
-const EXPRESSION_FRAMES: Record<ExpressionType, { key: string; frame: number }> = {
-  happy:       { key: 'expression1', frame: 0 },     // Row0-Col0 😈
-  thinking:    { key: 'expression1', frame: 5 },     // Row1-Col0 💬
-  surprised:   { key: 'expression1', frame: 9 },     // Row2-Col4 💀
-  sweating:    { key: 'expression2', frame: 35 },    // Row7-Col0 💦
-  crying:      { key: 'expression2', frame: 36 },    // Row7-Col1 💦
-  eating:      { key: 'expression2', frame: 21 },    // Row5-Col1 🔥
+// 表情素材中的帧索引映射 (expression1/expression2 是网格排列的图标集)
+const EXPRESSION_FRAMES: Record<ExpressionType, { key: string; frameX: number; frameY: number }> = {
+  happy:       { key: 'expression1', frameX: 0, frameY: 0 },     // 爱心眼
+  thinking:    { key: 'expression1', frameX: 3, frameY: 1 },     // 戴眼镜思考
+  surprised:   { key: 'expression1', frameX: 4, frameY: 0 },     // 惊讶脸
+  sweating:    { key: 'expression2', frameX: 0, frameY: 3 },     // 流汗
+  crying:      { key: 'expression2', frameX: 0, frameY: 5 },     // 哭泣
+  eating:      { key: 'expression2', frameX: 2, frameY: 4 },     // 吃东西
   none:        null as any,
 };
 
@@ -61,7 +60,7 @@ export type WalkDirection = 'down' | 'left' | 'right' | 'up';
 /**
  * 构建动画帧数组 - Phaser 3 需要 { key, frame } 对象格式
  */
-function makeFrames(key: string, indices: number[]): Phaser.Animations.AnimationFrame[] {
+function makeFrames(key: string, indices: number[]): Phaser.Types.Animations.AnimationFrame[] {
   return indices.map((i) => ({ key, frame: i }));
 }
 
@@ -128,7 +127,6 @@ export class Caicai {
     const y = this.body.y - 30; // 在崽崽头顶上方（原大小32x48）
 
     this.expressionBubble = this.scene.add.container(x, y);
-    this.expressionBubble.setDepth(10_000); // 表情气泡始终在最上层
     this.expressionBubble.setVisible(false);
   }
 
@@ -161,13 +159,12 @@ export class Caicai {
     if (!frameInfo) return;
 
     // 清除旧表情
-    while (this.expressionBubble.count > 0) {
+    while (this.expressionBubble.length > 0) {
       this.expressionBubble.removeAt(0, true);
     }
 
-    // 从精灵图中选帧显示对应图标 — setFrame 是 spritesheet 的关键！
+    // 从表情素材中裁剪对应图标
     const icon = this.scene.add.sprite(0, -20, frameInfo.key)
-      .setFrame(frameInfo.frame)   // ⬅️ 关键：选择精灵图中的具体帧
       .setScale(1.5)
       .setAlpha(0.9);
 
@@ -327,32 +324,42 @@ export class Caicai {
   }
 
   /**
-   * 点头动画（认同/确认）
+   * 点头动作
    */
   nodHead(): void {
     this.scene.tweens.add({
       targets: this.body,
       y: { from: this.body.y, to: this.body.y + 6 },
       duration: 120,
-      ease: 'Sine.easeInOut',
       yoyo: true,
       repeat: 1,
+      ease: 'Sine.easeInOut',
     });
   }
 
   /**
-   * 摇头动画（否定/纠结）
+   * 摇头动作
    */
   shakeHead(): void {
     this.scene.tweens.add({
       targets: this.body,
-      x: { from: this.body.x - 4, to: this.body.x + 4 },
+      angle: { from: -8, to: 8 },
       duration: 90,
-      ease: 'Sine.easeInOut',
       yoyo: true,
       repeat: 3,
-      onComplete: () => this.body.setX(this.body.x),
+      ease: 'Sine.easeInOut',
+      onComplete: () => this.body.setAngle(0),
     });
+  }
+
+  /**
+   * 设置身体深度（用于按 Y 排序）
+   */
+  setBodyDepth(depth: number): void {
+    this.body.setDepth(depth);
+    if (this.expressionBubble.visible) {
+      this.expressionBubble.setDepth(depth + 1000);
+    }
   }
 
   /**
@@ -360,13 +367,6 @@ export class Caicai {
    */
   getPosition(): { x: number; y: number } {
     return { x: this.body.x, y: this.body.y };
-  }
-
-  /**
-   * 外部场景按Y排序时设置身体层级
-   */
-  setBodyDepth(depth: number): void {
-    this.body.setDepth(depth);
   }
 
   /**

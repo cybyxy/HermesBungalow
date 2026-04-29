@@ -16,13 +16,9 @@ export class GameScene extends Phaser.Scene {
   private static readonly ENABLE_AUTO_PATROL = false;
   private static readonly ENABLE_ACTION_MOVEMENT = true;
   private caicai!: Caicai;
-  private coffeeCup!: Phaser.GameObjects.Container;
-  private coffeeSteam: Phaser.Particles.Arcade.Emitter | null = null;
 
   // === 巡逻相关 ===
   private isPatrolling: boolean = false;
-  private patrolQueue: Array<{ x: number; y: number }> = [];
-  private patrolProcessing: boolean = false;
   private lastChatInteractAt = 0;
   private computerSprite: Phaser.GameObjects.Image | null = null;
   private deskPos: { x: number; y: number } = { x: 0, y: 0 };
@@ -93,6 +89,7 @@ export class GameScene extends Phaser.Scene {
 
     // === 打印机 & 光盘 ===
     this.load.image('printer', '/assets/tiles/printer.png');           // 32x29
+    this.load.image('phone', '/assets/tiles/telphone.png');            // 电话素材（用户新增）
 
     // === 分区隔板 ===
     this.load.image('partition_1', '/assets/tiles/Partition_1.png');   // 64x42
@@ -323,17 +320,22 @@ export class GameScene extends Phaser.Scene {
     // ─────────────────────────────────────────────────
     const wallY = height * 0.28;
 
-    // 时钟 — 左上角
-    this.add.image(width * 0.06, wallY, 'clock').setDepth(-80);
+    // 时钟 — 墙上正中间，略高一些（20x18像素区域）
+    // 用 Graphics 绘制实时时钟，放在 Container 里以便交互缩放
+    const clockX = width * 0.5;
+    const clockY = height * 0.18;
+    const clockRadius = 9;
+    this.initInteractiveClock(clockX, clockY, clockRadius);
 
-    // 小白板 — 左中墙上（代替原来单一的 whiteboard）
-    this.add.image(width * 0.18, wallY + 5, 'whiteboard_2').setDepth(-80);
+    // 小白板（记忆物品）— 左中墙上，点击后查看 Hermes 永久记忆
+    const memoryBoard = this.add.image(width * 0.18, wallY + 5, 'whiteboard_2').setDepth(-80);
+    memoryBoard.setInteractive({ cursor: 'pointer' });
+    memoryBoard.on('pointerdown', () => {
+      window.dispatchEvent(new CustomEvent('memory-board-click'));
+    });
 
     // 贴纸 — 左中墙偏右
     this.add.image(width * 0.28, wallY + 10, 'sticker').setDepth(-80);
-
-    // 光盘 — 中右墙
-    this.add.image(width * 0.5, wallY + 15, 'opticaldisc').setDepth(-80);
 
     // 装饰画 — 右侧墙
     this.add.image(width * 0.88, wallY, 'wallpainting').setDepth(-80);
@@ -344,21 +346,30 @@ export class GameScene extends Phaser.Scene {
 
     // 书架（左侧，占据从地板到墙面的高度）
     const bookshelfX = width * 0.08;
-    const bookshelfY = floorY + 5;
+    const bookshelfY = floorY + 8;
     const bookshelf = addYSortedImage(bookshelfX, bookshelfY, 'bookshelf');
+    bookshelf.setInteractive({ cursor: 'pointer' });
+    bookshelf.on('pointerdown', () => {
+      window.dispatchEvent(new CustomEvent('bookshelf-click'));
+    });
 
-    // 书架格子里的书籍装饰
-    this.add.image(bookshelfX - 18, bookshelfY - 45, 'books_1').setDepth(bookshelf.depth - 1);
-    this.add.image(bookshelfX + 22, bookshelfY - 45, 'books_3').setDepth(bookshelf.depth - 1);
-    this.add.image(bookshelfX - 2, bookshelfY - 50, 'book').setDepth(bookshelf.depth - 1);
+    // 书架格子里的书籍装饰（书放书架内部，向下移）
+    this.add.image(bookshelfX - 18, bookshelfY - 15, 'books_1').setDepth(bookshelf.depth - 1);
+    this.add.image(bookshelfX + 22, bookshelfY - 15, 'books_3').setDepth(bookshelf.depth - 1);
+    this.add.image(bookshelfX - 2, bookshelfY - 18, 'book').setDepth(bookshelf.depth - 1);
 
-    // desk_B — 打印机/资料桌（在书架右侧）
+    // desk_B — 打印机/资料桌（在书架右侧，底线与书架对齐）
     const deskBX = width * 0.22;
-    const deskBY = floorY + 10;
+    const deskBY = floorY + 8;
     const deskB = addYSortedImage(deskBX, deskBY, 'desk');
 
     // 打印机（桌上）
-    addAnchoredImage(deskBX - 20, deskBY - 18, 'printer', deskB, 2);
+    const printer = addAnchoredImage(deskBX - 20, deskBY - 18, 'printer', deskB, 2);
+    printer.setInteractive({ cursor: 'pointer' });
+    printer.on('pointerdown', () => {
+      window.dispatchEvent(new CustomEvent('printer-click'));
+    });
+
 
     // 桌上书籍堆
     addAnchoredImage(deskBX + 15, deskBY - 12, 'books_1', deskB, 2);
@@ -381,26 +392,15 @@ export class GameScene extends Phaser.Scene {
     // 老式显示器（叠在主显示器旁边）
     addAnchoredImage(deskAX + 12, deskAY - 22, 'computer_1', deskA, 2);
 
-    // 桌面上散落的书堆
-    addAnchoredImage(deskAX + 35, deskAY - 14, 'books_2', deskA, 1);
+    // 电话（主办公桌上，可交互：展示 Hermes channel 配置）
+    const phone = addAnchoredImage(deskAX + 36, deskAY - 18, 'phone', deskA, 3);
+    phone.setInteractive({ cursor: 'pointer' });
+    phone.on('pointerdown', () => {
+      window.dispatchEvent(new CustomEvent('phone-click'));
+    });
 
     // 办公椅（主工作台前）
     addYSortedImage(deskAX - 5, floorY + 30, 'office_chair');
-
-    // ─────────────────────────────────────────────────
-    // 5. 隔断分区 — partition 划分工作区和休闲区
-    // ─────────────────────────────────────────────────
-
-    // 工作区和休闲区之间的隔板（垂直放置）
-    const partitionX = width * 0.62;
-    // partition_2 (59x42) — 主要隔断
-    this.add.image(partitionX, floorY - 5, 'partition_2').setDepth(-50);
-    // partition_1 (64x42) — 延续隔断
-    this.add.image(partitionX + 55, floorY - 5, 'partition_1').setDepth(-50);
-    // partition_3 (5x32) — 细隔条
-    this.add.image(partitionX + 100, floorY + 5, 'partition_3').setDepth(-50);
-    // partition_4 (5x38) — 另一根细条
-    this.add.image(partitionX + 110, floorY + 5, 'partition_4').setDepth(-50);
 
     // ─────────────────────────────────────────────────
     // 6. 右侧休闲区 — 沙发 + 茶几 + 咖啡机 + 绿植
@@ -420,29 +420,24 @@ export class GameScene extends Phaser.Scene {
     // 咖啡杯（茶几上，可交互）
     addAnchoredImage(coffeeTableX - 12, coffeeTableY - 10, 'coffeecup_empty', coffeeTable, 3);
 
-    // 咖啡机 — 靠右侧墙放（不再是底座+主机分离，而是直接靠墙）
-    const coffeeMachineX = width * 0.95;
-    const coffeeMachineY = floorY + 18;
-    addYSortedImage(coffeeMachineX, coffeeMachineY, 'coffeemachinebase');
-    // 咖啡机主体叠在底座上
+    // 咖啡机 — 靠右侧墙画下方，水平镜像（朝向室内）
+    const coffeeMachineX = width * 0.88;
+    const coffeeMachineY = floorY + 8;
+    const cmBaseImg = addYSortedImage(coffeeMachineX, coffeeMachineY, 'coffeemachinebase');
+    cmBaseImg.setFlipX(true);
     const cmBase = this.ySortedObjects.find(o => o.texture.key === 'coffeemachinebase')!;
-    addAnchoredImage(coffeeMachineX, coffeeMachineY - 28, 'coffeemachine_idle', cmBase, 2);
+    const cmIdleImg = addAnchoredImage(coffeeMachineX, coffeeMachineY - 28, 'coffeemachine_idle', cmBase, 2);
+    cmIdleImg.setFlipX(true);
 
     // 右侧大绿植（沙发旁角落）
     addYSortedImage(width * 0.98, floorY + 16, 'houseplants_2');
 
-    // 沙发旁边的小绿植（在隔断附近）
-    addYSortedImage(partitionX + 85, floorY + 10, 'houseplants_1');
+    // 沙发旁边的小绿植（休闲区，门口右侧）
+    addYSortedImage(width * 0.64, floorY + 10, 'houseplants_1');
 
-    // ─────────────────────────────────────────────────
-    // 7. 氛围灯光 + 墙面点缀
-    // ─────────────────────────────────────────────────
+    // 氛围灯光
     const ambientLight = this.add.circle(width * 0.5, height * 0.45, width * 0.55, 0xffe4b5, 0.06);
     ambientLight.setDepth(-500);
-
-    // 右侧墙面的 partition_3/4 装饰（沙发上方墙面点缀）
-    this.add.image(sofaX - 30, wallY + 25, 'partition_3').setDepth(-85);
-    this.add.image(sofaX - 30, wallY + 50, 'partition_4').setDepth(-85);
   }
 
   /**
@@ -459,9 +454,20 @@ export class GameScene extends Phaser.Scene {
 
     coffeeZone.on('pointerdown', () => {
       console.log('[GameScene] 给崽崽加了杯咖啡！');
-      window.dispatchEvent(new CustomEvent('add-coffee'));
-      this.caicai.spinHappy();
-      this.caicai.showExpression('happy', 3000);
+      // 点击咖啡时，先走到茶几旁再喝咖啡
+      const standX = coffeeX + 55;
+      const standY = coffeeY + 20;
+      if (GameScene.ENABLE_ACTION_MOVEMENT) {
+        this.caicai.walkTo(standX, standY, () => {
+          window.dispatchEvent(new CustomEvent('add-coffee'));
+          this.caicai.showExpression('eating', 1800);
+          this.caicai.spinHappy();
+        });
+      } else {
+        window.dispatchEvent(new CustomEvent('add-coffee'));
+        this.caicai.showExpression('eating', 1800);
+        this.caicai.spinHappy();
+      }
     });
 
     coffeeZone.on('pointerover', () => {
@@ -617,5 +623,197 @@ export class GameScene extends Phaser.Scene {
     }
     const pos = this.caicai.getPosition();
     this.caicai.setBodyDepth(pos.y);
+  }
+
+  /**
+   * 可交互的实时时钟 — 用 Graphics 绘制，hover 放大显示时间和日期
+   */
+  private initInteractiveClock(x: number, y: number, r: number): void {
+    // 创建 Container 包裹 Graphics（用于统一缩放）
+    const container = this.add.container(x, y, []);
+    container.setDepth(9999);
+    // 记录原始位置，供缩放中心使用
+    const originX = x;
+    const originY = y;
+
+    // Graphics — 绘制时钟
+    const g = this.add.graphics();
+    container.add([g]);
+
+    // ── 时钟绘制逻辑 ──────────────────────────────
+    const drawClock = () => {
+      g.clear();
+      const now = new Date();
+      const h = now.getHours() % 12;
+      const m = now.getMinutes();
+      const s = now.getSeconds();
+
+      // 外框
+      g.fillStyle(0x13132a, 0.85);
+      g.fillCircle(0, 0, r);
+      g.lineStyle(1, 0xa78bfa, 0.8);
+      g.strokeCircle(0, 0, r);
+
+      // 中心
+      g.fillStyle(0xa78bfa, 1);
+      g.fillCircle(0, 0, 1.2);
+
+      // 时刻度
+      for (let i = 0; i < 12; i++) {
+        const angle = (i / 12) * Math.PI * 2 - Math.PI / 2;
+        const ir = r - 2.5;
+        const or = r - 1;
+        g.lineStyle(0.8, 0xc4b5fd, 0.9);
+        g.beginPath();
+        g.moveTo(Math.cos(angle) * ir, Math.sin(angle) * ir);
+        g.lineTo(Math.cos(angle) * or, Math.sin(angle) * or);
+        g.strokePath();
+      }
+
+      // 时针
+      const hourAngle = ((h + m / 60) / 12) * Math.PI * 2 - Math.PI / 2;
+      g.lineStyle(1, 0xd8b4fe, 1);
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.lineTo(Math.cos(hourAngle) * r * 0.45, Math.sin(hourAngle) * r * 0.45);
+      g.strokePath();
+
+      // 分针
+      const minAngle = (m / 60) * Math.PI * 2 - Math.PI / 2;
+      g.lineStyle(0.8, 0xa78bfa, 1);
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.lineTo(Math.cos(minAngle) * r * 0.65, Math.sin(minAngle) * r * 0.65);
+      g.strokePath();
+
+      // 秒针
+      const secAngle = (s / 60) * Math.PI * 2 - Math.PI / 2;
+      g.lineStyle(0.6, 0xf87171, 1);
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.lineTo(Math.cos(secAngle) * r * 0.72, Math.sin(secAngle) * r * 0.72);
+      g.strokePath();
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.lineTo(-Math.cos(secAngle) * r * 0.18, -Math.sin(secAngle) * r * 0.18);
+      g.strokePath();
+    };
+
+    drawClock();
+    // 每秒重绘
+    this.time.addEvent({
+      delay: 1000,
+      loop: true,
+      callback: drawClock,
+    });
+
+    // ── 鼠标 hover 放大逻辑 ───────────────────────
+    // 创建 DOM 浮层容器（隐藏）
+    const el = document.createElement('div');
+    el.style.cssText = `
+      position: fixed;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      background: rgba(19, 19, 42, 0.92);
+      border: 1.5px solid rgba(167, 139, 250, 0.6);
+      border-radius: 12px;
+      padding: 14px 18px;
+      color: #e2e8f0;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      text-align: center;
+      box-shadow: 0 4px 24px rgba(139, 92, 246, 0.3), 0 0 0 1px rgba(139,92,246,0.1);
+      z-index: 99999;
+      white-space: nowrap;
+    `;
+    el.innerHTML = `
+      <div id="clock-pop-time" style="font-size: 28px; font-weight: 700; color: #c4b5fd; line-height: 1.2; animation: clockPopPulse 1s infinite steps(1);">--:--:--</div>
+      <div id="clock-pop-date" style="font-size: 12px; color: #94a3b8; margin-top: 4px;">----/--/-- --</div>
+    `;
+    if (!document.getElementById('clock-pop-style')) {
+      const style = document.createElement('style');
+      style.id = 'clock-pop-style';
+      style.textContent = `
+        @keyframes clockPopPulse {
+          0%   { transform: scale(1);    color: #c4b5fd; }
+          10%  { transform: scale(1.06); color: #e9d5ff; }
+          20%  { transform: scale(1);   color: #c4b5fd; }
+          100% { transform: scale(1);    color: #c4b5fd; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    document.body.appendChild(el);
+
+    const updatePopContent = () => {
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('zh-CN', { hour12: false });
+      const dateStr = now.toLocaleDateString('zh-CN', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        weekday: 'short',
+      });
+      el.querySelector('#clock-pop-time')!.textContent = timeStr;
+      el.querySelector('#clock-pop-date')!.textContent = dateStr;
+    };
+    updatePopContent();
+    const popTick = this.time.addEvent({
+      delay: 1000,
+      loop: true,
+      callback: () => {
+        if (el.style.opacity !== '0') {
+          updatePopContent();
+        }
+      },
+    });
+
+    let scaleTween: Phaser.Tweens.Tween | null = null;
+
+    const showPopover = () => {
+      if (scaleTween) scaleTween.stop();
+      const canvas = this.sys.game.canvas;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = rect.width / Number(canvas.dataset.width  || rect.width);
+      const scaleY = rect.height / Number(canvas.dataset.height || rect.height);
+      const screenX = rect.left + originX * scaleX;
+      const screenY = rect.top  + originY * scaleY;
+
+      updatePopContent();
+      el.style.left = `${screenX}px`;
+      el.style.top  = `${screenY + 36}px`;
+      el.style.opacity = '1';
+      // Phaser 容器放大动画
+      scaleTween = this.tweens.add({
+        targets: container,
+        scaleX: 3.5,
+        scaleY: 3.5,
+        duration: 200,
+        ease: 'Back.easeOut',
+      });
+    };
+
+    const hidePopover = () => {
+      el.style.opacity = '0';
+      if (scaleTween) scaleTween.stop();
+      scaleTween = this.tweens.add({
+        targets: container,
+        scaleX: 1,
+        scaleY: 1,
+        duration: 200,
+        ease: 'Quad.easeOut',
+      });
+    };
+
+    // 让 container 可交互（透明的 hit area 放大一些方便点击）
+    const hitArea = this.add.circle(originX, originY, r * 1.5, 0xffffff, 0);
+    hitArea.setDepth(-79);
+    hitArea.setInteractive({ cursor: 'pointer' });
+    hitArea.on('pointerover',  showPopover);
+    hitArea.on('pointerout',   hidePopover);
+
+    // 场景销毁时清理 DOM 和 timer，避免残留
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      popTick.remove(false);
+      el.remove();
+    });
   }
 }

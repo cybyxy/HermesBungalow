@@ -35,6 +35,7 @@ export interface ChatMessage {
   images?: ImageData[];    // 多图
   events?: GatewayEvent[];
   _streaming?: boolean;     // 流式进行中（内部标记）
+  _thinking?: boolean;      // 思考气泡（临时消息）
 }
 
 // PRD 文档
@@ -57,6 +58,9 @@ interface GameState {
   // 聊天
   messages: ChatMessage[];
   isTyping: boolean;
+  sessionId: string | null;
+  thinkingTrace: string;
+  userAvatar: string;
 
   // PRD文档
   prdDocs: PRDDoc[];
@@ -69,10 +73,29 @@ interface GameState {
   setCaicaiState: (state: CaicaiState) => void;
   setExpression: (expr: Expression) => void;
   addMessage: (msg: ChatMessage) => void;
+  clearMessages: () => void;
   setIsTyping: (typing: boolean) => void;
+  setSessionId: (sessionId: string | null) => void;
+  appendThinkingTrace: (text: string) => void;
+  clearThinkingTrace: () => void;
+  setUserAvatar: (avatar: string) => void;
+  setCoffeeEnergy: (energy: number) => void;
   handleGatewayEvents: (events: GatewayEvent[]) => void;
   addCoffee: () => void;
 }
+
+const DEFAULT_USER_AVATAR = '/assets/sprites/expression1.png';
+const USER_AVATAR_STORAGE_KEY = 'hb_user_avatar';
+
+const getInitialUserAvatar = (): string => {
+  try {
+    const saved = window.localStorage.getItem(USER_AVATAR_STORAGE_KEY);
+    if (saved && saved.trim()) return saved;
+  } catch {
+    // ignore
+  }
+  return DEFAULT_USER_AVATAR;
+};
 
 export const useGameState = create<GameState>((set, get) => ({
   wsStatus: 'disconnected',
@@ -80,6 +103,9 @@ export const useGameState = create<GameState>((set, get) => ({
   expression: 'happy',
   messages: [],
   isTyping: false,
+  sessionId: null,
+  thinkingTrace: '',
+  userAvatar: getInitialUserAvatar(),
   prdDocs: [],
   coffeeEnergy: 80,
 
@@ -109,7 +135,28 @@ export const useGameState = create<GameState>((set, get) => ({
     set({ messages: [...messages, msg], isTyping: false });
   },
 
+  clearMessages: () => set({ messages: [] }),
+
   setIsTyping: (typing) => set({ isTyping: typing }),
+  setSessionId: (sessionId) => set({ sessionId }),
+  appendThinkingTrace: (text) => set((state) => ({ thinkingTrace: `${state.thinkingTrace}${text}\n` })),
+  clearThinkingTrace: () => set({ thinkingTrace: '' }),
+  setUserAvatar: (avatar) => {
+    set({ userAvatar: avatar || DEFAULT_USER_AVATAR });
+    try {
+      if (avatar && avatar.trim()) {
+        window.localStorage.setItem(USER_AVATAR_STORAGE_KEY, avatar);
+      } else {
+        window.localStorage.removeItem(USER_AVATAR_STORAGE_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  },
+  setCoffeeEnergy: (energy) => {
+    const normalized = Math.max(0, Math.min(100, energy));
+    set({ coffeeEnergy: normalized });
+  },
 
   handleGatewayEvents: (events) => {
     for (const event of events) {
@@ -136,8 +183,7 @@ export const useGameState = create<GameState>((set, get) => ({
   },
 
   addCoffee: () => {
-    const { coffeeEnergy } = get();
-    set({ coffeeEnergy: Math.min(100, coffeeEnergy + 20) });
+    set({ coffeeEnergy: 100 });
     // 加咖啡后崽崽开心转圈
     get().setExpression('happy');
   },

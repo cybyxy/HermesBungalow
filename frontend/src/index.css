@@ -1,15 +1,59 @@
 @import "tailwindcss";
 
+/* ==================== 崽崽数字小屋 — 全局样式 ==================== */
+
+:root {
+  /* 背景层 */
+  --bg-base: #0d0d1a;
+  --bg-surface: #13132a;
+  --bg-elevated: #1a1a38;
+  --bg-glass: rgba(26, 26, 56, 0.8);
+
+  /* 边框 */
+  --border-subtle: rgba(139, 92, 246, 0.15);
+  --border-normal: rgba(139, 92, 246, 0.30);
+  --border-strong: rgba(139, 92, 246, 0.55);
+
+  /* 主色调 */
+  --accent-primary: #a78bfa;
+  --accent-warm: #f472b6;
+  --accent-info: #67e8f9;
+
+  /* 功能色 */
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+
+  /* 文字 */
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #475569;
+}
+
 @font-face {
   font-family: 'PressStart2P';
   src: url('/assets/fonts/pressstart2p.ttf') format('truetype');
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: #0a0a14;
+  background: var(--bg-base);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--text-primary);
 }
 
 #root {
@@ -17,9 +61,98 @@ body {
   height: 100vh;
 }
 
-/* 像素化渲染 */
+/* ==================== 像素化渲染 ==================== */
 canvas {
   image-rendering: pixelated;
   image-rendering: -moz-crisp-edges;
   image-rendering: crisp-edges;
+}
+
+/* ==================== 自定义滚动条 ==================== */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.30);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.55);
+}
+
+/* Firefox 滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 92, 246, 0.30) transparent;
+}
+
+/* ==================== 文本选中颜色 ==================== */
+::selection {
+  background: rgba(167, 139, 250, 0.35);
+  color: #e2e8f0;
+}
+
+/* ==================== 通用过渡 ==================== */
+button,
+input,
+a {
+  transition: all 200ms ease-out;
+}
+
+/* ==================== 焦点高亮（无障碍） ==================== */
+:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ==================== 毛玻璃效果 ==================== */
+.glass {
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* ==================== 卡片样式 ==================== */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+
+.card-elevated {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-normal);
+  border-radius: 12px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(139, 92, 246, 0.1);
+}
+
+/* ==================== 渐变文字 ==================== */
+.gradient-text {
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-info));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ==================== 动画 ==================== */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(167, 139, 250, 0.3); }
+  50%       { box-shadow: 0 0 16px rgba(167, 139, 250, 0.6); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 300ms ease-out forwards;
 }
