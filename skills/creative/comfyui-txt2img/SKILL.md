@@ -85,7 +85,8 @@ def extract_images(outputs):
     return images
 
 
-def generate_image(prompt_text, negative_text="", seed=0, steps=20, guidance=3.5):
+def generate_image(prompt_text, negative_text="", seed=0, steps=20,
+                   width=720, height=1280, batch_size=1):
     """
     文本生成图片主函数
 
@@ -94,50 +95,65 @@ def generate_image(prompt_text, negative_text="", seed=0, steps=20, guidance=3.5
         negative_text (str): 负向提示词，默认空
         seed          (int): 随机种子，0=随机，固定值可复现
         steps         (int): 采样步数，默认 20
-        guidance      (float): Flux 引导强度，默认 3.5
+        width         (int): 图片宽度，默认 720
+        height        (int): 图片高度，默认 1280
+        batch_size    (int): 批量大小，默认 1
 
     返回:
         dict: {"prompt_id", "images": [ {...}, ... ], "history_url"}
     """
-    # --- 节点 ID 需要根据实际工作流确认，这里以 Flux.2-Klein 典型结构为例 ---
-    # 建议先用 /object_info 获取实际节点 ID 后替换下方字典
+    # --- Flux.2-Klein 实际节点 ID（来自 API Export） ---
+    # 节点关系：85→EmptyLatent → 98(KSampler) → 84(VAEDecode) → 105(SaveImage)
+    #           91→CLIPLoader → 93(正向) / 86(负向) → 98
+    #           111→UnetLoader → 98
+    #           92→VAELoader → 84
     prompt_data = {
-        "3": {
-            "class_type": "CheckpointLoaderSimple",
-            "inputs": {"ckpt_name": "flux2_klein.safetensors"}
+        "85": {
+            "class_type": "EmptyFlux2LatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": batch_size}
         },
-        "4": {
+        "86": {
             "class_type": "CLIPTextEncode",
-            "inputs": {"text": prompt_text, "clip": ["3", 0]}
+            "inputs": {"text": negative_text or "", "clip": ["91", 0]}
         },
-        "5": {
+        "91": {
+            "class_type": "CLIPLoader",
+            "inputs": {"clip_name": "Flux.2-Klein\\qwen_3_8b_fp8mixed.safetensors", "type": "flux2", "device": "default"}
+        },
+        "92": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "Flux\\flux2-vae.safetensors"}
+        },
+        "93": {
             "class_type": "CLIPTextEncode",
-            "inputs": {"text": negative_text or "", "clip": ["3", 0]}
+            "inputs": {"text": prompt_text, "clip": ["91", 0]}
         },
-        "6": {
-            "class_type": "FluxGuidance",
-            "inputs": {"guidance": guidance}
-        },
-        "7": {
+        "98": {
             "class_type": "KSampler",
             "inputs": {
-                "model": ["3", 0],
-                "positive": ["4", 0],
-                "negative": ["5", 0],
                 "seed": seed,
                 "steps": steps,
                 "cfg": 1.0,
                 "sampler_name": "euler",
-                "scheduler": "normal"
+                "scheduler": "simple",
+                "denoise": 1.0,
+                "model": ["111", 0],
+                "positive": ["93", 0],
+                "negative": ["86", 0],
+                "latent_image": ["85", 0]
             }
         },
-        "8": {
-            "class_type": "VAEDecode",
-            "inputs": {"samples": ["7", 0], "vae": ["3", 1]}
-        },
-        "9": {
+        "105": {
             "class_type": "SaveImage",
-            "inputs": {"images": ["8", 0], "filename_prefix": "flux2_txt2img"}
+            "inputs": {"filename_prefix": "flux2_txt2img", "images": [["84", 0]]}
+        },
+        "111": {
+            "class_type": "UnetLoaderGGUF",
+            "inputs": {"unet_name": "Flux\\Flux.2-Klein\\flux-2-klein-9b-Q6_K.gguf"}
+        },
+        "84": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["98", 0], "vae": ["92", 0]}
         }
     }
 
@@ -177,7 +193,9 @@ curl -s http://192.168.1.3:3000/object_info | python3 -c "import json,sys;d=json
 | `negative_text` | string | `""` | 负向提示词，描述不想出现的内容 |
 | `seed` | int | `0` | 随机种子，0=随机，固定值可复现图片 |
 | `steps` | int | `20` | 采样步数，越高质量越好但更慢 |
-| `guidance` | float | `3.5` | Flux 引导强度 |
+| `width` | int | `720` | 图片宽度，像素 |
+| `height` | int | `1280` | 图片高度，像素 |
+| `batch_size` | int | `1` | 每批生成图片数量 |
 
 ## 调用示例
 
@@ -187,7 +205,8 @@ result = generate_image(
     negative_text="blurry, low quality, distorted, watermark",
     seed=12345,
     steps=25,
-    guidance=3.5
+    width=720,
+    height=1280
 )
 for img in result["images"]:
     print(img["url"])
