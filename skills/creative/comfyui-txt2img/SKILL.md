@@ -197,19 +197,139 @@ curl -s http://192.168.1.3:3000/object_info | python3 -c "import json,sys;d=json
 | `height` | int | `1280` | 图片高度，像素 |
 | `batch_size` | int | `1` | 每批生成图片数量 |
 
-## 调用示例
+## 生成 16 张便签并拼成一张大图
+
+需要额外增加 **ImageGridComposite** 节点（`112`）将 16 张图拼成 4×4 大图：
 
 ```python
-result = generate_image(
-    prompt_text="A majestic wolf standing on a cliff at golden hour, cinematic lighting, ultra detailed, 8k",
-    negative_text="blurry, low quality, distorted, watermark",
-    seed=12345,
-    steps=25,
-    width=720,
-    height=1280
+import requests
+import time
+
+COMFYUI_URL = "http://192.168.1.3:3000"
+
+def submit_prompt(prompt_json):
+    resp = requests.post(f"{COMFYUI_URL}/prompt", json=prompt_json, timeout=30)
+    resp.raise_for_status()
+    return resp.json()["prompt_id"]
+
+def poll_history(prompt_id, timeout=180, interval=3):
+    elapsed = 0
+    while elapsed < timeout:
+        time.sleep(interval)
+        elapsed += interval
+        resp = requests.get(f"{COMFYUI_URL}/history/{prompt_id}", timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if prompt_id in data and data[prompt_id].get("outputs"):
+            return data[prompt_id]
+    raise TimeoutError(f"任务 {prompt_id} 超过 {timeout}s 未完成")
+
+def generate_sticky_notes_grid(prompt_text, negative_text="", seed=0, steps=6,
+                                width=16, height=16, batch_size=16, columns=4):
+    """
+    生成 batch_size 张便签图，拼成 columns 列的网格大图
+
+    参数:
+        prompt_text (str): 便签描述
+        negative_text (str): 负向提示词
+        seed (int): 随机种子
+        steps (int): 采样步数，默认 6
+        width (int): 单张便签宽度，像素，默认 16
+        height (int): 单张便签高度，像素，默认 16
+        batch_size (int): 生成数量，默认 16
+        columns (int): 网格列数，默认 4（生成 4×4 大图）
+    """
+    # 空 Latent 用小尺寸（模型内部会按像素处理）
+    latent_w = width  # 16
+    latent_h = height  # 16
+    prompt_data = {
+        "85": {
+            "class_type": "EmptyFlux2LatentImage",
+            "inputs": {"width": latent_w, "height": latent_h, "batch_size": batch_size}
+        },
+        "86": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": negative_text or "", "clip": ["91", 0]}
+        },
+        "91": {
+            "class_type": "CLIPLoader",
+            "inputs": {"clip_name": "Flux.2-Klein\\qwen_3_8b_fp8mixed.safetensors",
+                       "type": "flux2", "device": "default"}
+        },
+        "92": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "Flux\\flux2-vae.safetensors"}
+        },
+        "93": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": prompt_text, "clip": ["91", 0]}
+        },
+        "98": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed, "steps": steps, "cfg": 1.0,
+                "sampler_name": "euler", "scheduler": "simple",
+                "denoise": 1.0,
+                "model": ["111", 0],
+                "positive": ["93", 0],
+                "negative": ["86", 0],
+                "latent_image": ["85", 0]
+            }
+        },
+        "84": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["98", 0], "vae": ["92", 0]}
+        },
+        # 将 batch_size 张图拼成 columns 列的网格
+        "112": {
+            "class_type": "ImageGridComposite",
+            "inputs": {
+                "images": ["84", 0],
+                "columns": columns,
+                "rows": batch_size // columns
+            }
+        },
+        "105": {
+            "class_type": "SaveImage",
+            "inputs": {"filename_prefix": "sticky_notes_grid",
+                       "images": [["112", 0]]}
+        },
+        "111": {
+            "class_type": "UnetLoaderGGUF",
+            "inputs": {"unet_name": "Flux\\Flux.2-Klein\\flux-2-klein-9b-Q6_K.gguf"}
+        }
+    }
+
+    print("提交任务...")
+    prompt_id = submit_prompt({"prompt": prompt_data})
+    print(f"prompt_id: {prompt_id}")
+    print("等待生成（可能需要几分钟）...")
+    history = poll_history(prompt_id)
+    images = []
+    for node_id, output in history["outputs"].items():
+        if "images" in output:
+            for img in output["images"]:
+                url = (f"{COMFYUI_URL}/view?filename={img['filename']}"
+                       f"&subfolder={img.get('subfolder','')}&type={img.get('type','output')}")
+                images.append(url)
+    print(f"✅ 完成！共 {len(images)} 张图片")
+    for url in images:
+        print(url)
+    return {"prompt_id": prompt_id, "images": images}
+
+
+# ============ 执行 ============
+# 生成 16 张 16×16 像素便签，拼成 4×4 大图
+result = generate_sticky_notes_grid(
+    prompt_text="16张大小为16像素的像素风格便签，每张颜色都不同，背景透明，PNG格式",
+    negative_text="white background",
+    seed=77,
+    steps=6,
+    width=16,
+    height=16,
+    batch_size=16,
+    columns=4
 )
-for img in result["images"]:
-    print(img["url"])
 ```
 
 ## 注意事项
