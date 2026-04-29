@@ -73,6 +73,7 @@ interface GameState {
   setCaicaiState: (state: CaicaiState) => void;
   setExpression: (expr: Expression) => void;
   addMessage: (msg: ChatMessage) => void;
+  setMessages: (messages: ChatMessage[]) => void;
   clearMessages: () => void;
   setIsTyping: (typing: boolean) => void;
   setSessionId: (sessionId: string | null) => void;
@@ -86,6 +87,7 @@ interface GameState {
 
 const DEFAULT_USER_AVATAR = '/assets/sprites/expression1.png';
 const USER_AVATAR_STORAGE_KEY = 'hb_user_avatar';
+const SESSION_ID_STORAGE_KEY = 'hb_session_id';
 
 const getInitialUserAvatar = (): string => {
   try {
@@ -97,13 +99,23 @@ const getInitialUserAvatar = (): string => {
   return DEFAULT_USER_AVATAR;
 };
 
+const getInitialSessionId = (): string | null => {
+  try {
+    const saved = window.localStorage.getItem(SESSION_ID_STORAGE_KEY);
+    if (saved && saved.trim()) return saved.trim();
+  } catch {
+    // ignore
+  }
+  return null;
+};
+
 export const useGameState = create<GameState>((set, get) => ({
   wsStatus: 'disconnected',
   caicaiState: 'IDLE',
   expression: 'happy',
   messages: [],
   isTyping: false,
-  sessionId: null,
+  sessionId: getInitialSessionId(),
   thinkingTrace: '',
   userAvatar: getInitialUserAvatar(),
   prdDocs: [],
@@ -134,11 +146,23 @@ export const useGameState = create<GameState>((set, get) => ({
     const { messages } = get();
     set({ messages: [...messages, msg], isTyping: false });
   },
+  setMessages: (messages) => set({ messages, isTyping: false }),
 
   clearMessages: () => set({ messages: [] }),
 
   setIsTyping: (typing) => set({ isTyping: typing }),
-  setSessionId: (sessionId) => set({ sessionId }),
+  setSessionId: (sessionId) => {
+    set({ sessionId });
+    try {
+      if (sessionId && sessionId.trim()) {
+        window.localStorage.setItem(SESSION_ID_STORAGE_KEY, sessionId);
+      } else {
+        window.localStorage.removeItem(SESSION_ID_STORAGE_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  },
   appendThinkingTrace: (text) => set((state) => ({ thinkingTrace: `${state.thinkingTrace}${text}\n` })),
   clearThinkingTrace: () => set({ thinkingTrace: '' }),
   setUserAvatar: (avatar) => {

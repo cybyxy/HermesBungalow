@@ -3,6 +3,19 @@ import { useGameState, type ChatMessage, type ImageData } from '../store/gameSta
 import { connectWS, disconnectWS, sendChatMessage, stopChatMessage } from '../services/ws';
 import { ChatImagePreview } from './ChatImagePreview';
 
+interface HermesSession {
+  id: string;        // frontend alias for session_id
+  preview: string;
+  created_at: string;
+  last_active: string;
+  source: string;
+}
+
+// Normalize: prefer session_id, fall back to id
+function getSessionId(s: HermesSession): string {
+  return (s as any).session_id || s.id;
+}
+
 // 连接状态指示器配置
 const STATUS_CONFIG: Record<string, { dot: string; label: string }> = {
   open:         { dot: 'bg-emerald-400',   label: '在线' },
@@ -60,6 +73,73 @@ export function DialogBox({
   const [inputText, setInputText] = useState('');
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [sessionsDrawerOpen, setSessionsDrawerOpen] = useState(false);
+  const [sessions, setSessions] = useState<HermesSession[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const fetchSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    try {
+      const res = await fetch('/api/hermes/sessions');
+      const data = await res.json();
+      setSessions(data.sessions ?? []);
+    } catch {
+      setSessions([]);
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, []);
+
+  const switchToSession = useCallback(async (sid: string) => {
+    const store = useGameState.getState();
+    store.setSessionId(sid);
+    store.clearMessages();
+    store.clearThinkingTrace();
+    store.setIsTyping(false);
+    setSessionsDrawerOpen(false);
+    try {
+      const resp = await fetch(`/api/hermes/session-history?session_id=${encodeURIComponent(sid)}`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const rows = Array.isArray(data?.messages) ? data.messages : [];
+      const history: ChatMessage[] = rows
+        .filter((m: any) => typeof m?.text === 'string' && m.text.trim())
+        .map((m: any, idx: number) => ({
+          id: String(m.id || `${sid}-${idx}`),
+          sender: m.sender === 'user' ? 'user' : 'caicai',
+          text: String(m.text || ''),
+          timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+          _streaming: false,
+        }));
+      store.setMessages(history);
+    } catch {
+      // ignore
+    } finally {
+      // 确保切换历史会话后 WS 恢复可用，避免输入框卡在“连接中”
+      disconnectWS();
+      setTimeout(() => connectWS(), 100);
+    }
+  }, []);
+
+  const startNewSession = useCallback(() => {
+    const store = useGameState.getState();
+    store.setSessionId(null);
+    store.clearMessages();
+    setSessionsDrawerOpen(false);
+    disconnectWS();
+    setTimeout(() => connectWS(), 100);
+  }, []);
+
+  const copySessionId = useCallback(() => {
+    const currentSid = useGameState.getState().sessionId;
+    if (currentSid) {
+      navigator.clipboard.writeText(currentSid).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      });
+    }
+  }, []);
 
   const messages = useGameState((s) => s.messages);
   const isTyping = useGameState((s) => s.isTyping);
@@ -78,6 +158,7 @@ export function DialogBox({
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const userAvatarInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const hasExhaustedNotifiedRef = useRef(false);
   const energySyncTimerRef = useRef<number | null>(null);
 
@@ -356,6 +437,9 @@ export function DialogBox({
       addMessage(userMsg);
       sendChatMessage(textToSend, imagesToSend);
       setInputText('');
+      if (inputRef.current) {
+        inputRef.current.style.height = 'auto';
+      }
       setPendingImages([]);
       setIsTyping(true);
     } finally {
@@ -369,6 +453,13 @@ export function DialogBox({
     setIsTyping(false);
   };
 
+  const adjustInputHeight = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, []);
+
   const quickActions = [
     { label: '📋 查看PRD', action: () => handleSend('查看PRD') },
     { label: '🚀 了解项目', action: () => handleSend('了解项目') },
@@ -376,6 +467,7 @@ export function DialogBox({
   ];
 
   const showWelcome = messages.length === 0;
+  const hasThinkingBubble = messages.some((m) => Boolean(m._thinking));
 
   // 服务状态指示器
   const serviceDotClass = (status: boolean | null) => {
@@ -492,6 +584,18 @@ export function DialogBox({
               </span>
             </div>
             <p className="text-[11px] text-slate-400 mt-0.5">软件需求分析师</p>
+            {sessionId && (
+              <div className="mt-0.5 flex items-center gap-1">
+                <span className="text-[9px] text-slate-500">SID:</span>
+                <button
+                  onClick={copySessionId}
+                  className="text-[9px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
+                  title="点击复制 session ID"
+                >
+                  {copied ? '✅ 已复制' : sessionId.slice(0, 12) + '…'}
+                </button>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => userAvatarInputRef.current?.click()}
@@ -529,6 +633,20 @@ export function DialogBox({
               );
             })}
           </div>
+
+          {/* 会话管理按钮 */}
+          <button
+            onClick={() => { fetchSessions(); setSessionsDrawerOpen(true); }}
+            className="px-3 py-1.5 rounded-xl text-[9px] shrink-0 transition-all hover:scale-105 active:scale-95"
+            style={{
+              background: sessionsDrawerOpen ? 'rgba(139,92,246,0.3)' : 'rgba(19,19,42,0.8)',
+              border: `1px solid ${sessionsDrawerOpen ? 'rgba(139,92,246,0.6)' : 'rgba(139,92,246,0.2)'}`,
+              color: sessionsDrawerOpen ? '#c4b5fd' : '#94a3b8',
+            }}
+            title="会话历史"
+          >
+            📋 会话
+          </button>
         </div>
 
         {/* 表情切换 */}
@@ -719,7 +837,7 @@ export function DialogBox({
         })}
 
         {/* 打字指示器 */}
-        {isTyping && (
+        {isTyping && !hasThinkingBubble && (
           <div className="flex gap-2.5 animate-fade-in">
             <img
               src={userAvatar}
@@ -823,16 +941,23 @@ export function DialogBox({
           </button>
 
           {/* 输入框 */}
-          <input
-            type="text"
+          <textarea
+            ref={inputRef}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onPaste={handlePaste}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+            onInput={adjustInputHeight}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void handleSend();
+              }
+            }}
             placeholder={wsStatus !== 'open' ? '连接中...' : '跟崽崽说点什么...'}
             disabled={wsStatus !== 'open'}
-            className="flex-1 text-[12px] px-3 py-2 bg-transparent text-slate-100 outline-none placeholder:text-slate-600 disabled:opacity-40 rounded-lg"
-            style={{ minWidth: 0 }}
+            rows={1}
+            className="flex-1 text-[12px] px-3 py-2 bg-transparent text-slate-100 outline-none placeholder:text-slate-600 disabled:opacity-40 rounded-lg resize-none overflow-y-auto"
+            style={{ minWidth: 0, maxHeight: 180 }}
           />
 
           {/* 发送/停止按钮 */}
@@ -868,6 +993,105 @@ export function DialogBox({
           {wsStatus === 'open' ? '支持拖拽图片 · Ctrl+V 粘贴 · Enter 发送' : '正在连接崽崽...'}
         </div>
       </div>
+
+      {/* ===== 会话列表抽屉 ===== */}
+      {sessionsDrawerOpen && (
+        <div
+          className="absolute inset-0 z-50 flex"
+          onClick={(e) => { if (e.target === e.currentTarget) setSessionsDrawerOpen(false); }}
+        >
+          {/* 遮罩 */}
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+
+          {/* 抽屉 */}
+          <div
+            className="relative ml-auto w-72 h-full flex flex-col"
+            style={{
+              background: 'linear-gradient(180deg, rgba(20,15,40,0.98) 0%, rgba(10,8,25,0.98) 100%)',
+              borderLeft: '1px solid rgba(139,92,246,0.3)',
+              boxShadow: '-8px 0 32px rgba(0,0,0,0.5)',
+            }}
+          >
+            {/* 头部 */}
+            <div className="flex items-center justify-between px-4 py-3 shrink-0"
+              style={{ borderBottom: '1px solid rgba(139,92,246,0.2)' }}>
+              <div className="flex items-center gap-2">
+                <span className="text-sm" style={{ color: '#c4b5fd' }}>📋</span>
+                <span className="text-sm font-bold" style={{ color: '#e9d5ff' }}>会话历史</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={startNewSession}
+                  className="text-[10px] px-2.5 py-1 rounded-lg border transition-all hover:scale-105 active:scale-95"
+                  style={{
+                    background: 'rgba(139,92,246,0.2)',
+                    borderColor: 'rgba(139,92,246,0.4)',
+                    color: '#c4b5fd',
+                  }}
+                >
+                  + 新会话
+                </button>
+                <button
+                  onClick={() => setSessionsDrawerOpen(false)}
+                  className="text-slate-400 hover:text-white transition-colors text-lg leading-none"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            {/* 列表 */}
+            <div className="flex-1 overflow-y-auto px-3 py-2">
+              {sessionsLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="text-slate-500 text-xs">加载中...</div>
+                </div>
+              ) : sessions.length === 0 ? (
+                <div className="text-center py-8">
+                  <div className="text-2xl mb-2">💬</div>
+                  <div className="text-slate-500 text-xs">暂无会话记录</div>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {sessions.map((s) => {
+                    const sid = getSessionId(s);
+                    const isCurrentSession = sid === sessionId;
+                    return (
+                      <button
+                        key={sid}
+                        onClick={() => isCurrentSession ? setSessionsDrawerOpen(false) : switchToSession(sid)}
+                        className="w-full text-left px-3 py-2.5 rounded-xl border transition-all hover:scale-[1.02] active:scale-[0.98]"
+                        style={{
+                          background: isCurrentSession ? 'rgba(139,92,246,0.2)' : 'rgba(139,92,246,0.08)',
+                          borderColor: isCurrentSession ? 'rgba(139,92,246,0.5)' : 'rgba(139,92,246,0.15)',
+                        }}
+                      >
+                        <div className="flex items-center justify-between mb-0.5">
+                          <span className="text-[11px] font-mono" style={{ color: isCurrentSession ? '#c4b5fd' : '#94a3b8' }}>
+                            {sid.slice(0, 16)}…
+                          </span>
+                          {isCurrentSession && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-full"
+                              style={{ background: 'rgba(139,92,246,0.4)', color: '#e9d5ff' }}>
+                              当前
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-500 truncate">
+                          {s.preview || '（空会话）'}
+                        </div>
+                        <div className="text-[9px] text-slate-600 mt-0.5">
+                          {s.last_active || s.created_at}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         @keyframes bounce {

@@ -147,11 +147,11 @@ export function App() {
   }, [isTyping]);
 
   useEffect(() => {
-    const runHealthCheck = async (silent = true) => {
+    const runHealthCheck = async (silent = true, includeChat = false) => {
       if (useGameState.getState().isTyping) return;
       if (!silent) setHealthCheckLoading(true);
       try {
-        const resp = await fetch('/api/hermes/health-check');
+        const resp = await fetch(`/api/hermes/health-check?include_chat=${includeChat ? 1 : 0}`);
         if (!resp.ok) return;
         setHealthCheck(await resp.json());
       } catch {
@@ -160,10 +160,11 @@ export function App() {
         if (!silent) setHealthCheckLoading(false);
       }
     };
-    runHealthCheck(true);
-    const timer = window.setInterval(() => runHealthCheck(true), 60000);
+    // 启动与后台轮询都使用无 chat 的轻量检查，避免污染 Hermes 会话历史
+    runHealthCheck(true, false);
+    const timer = window.setInterval(() => runHealthCheck(true, false), 60000);
     return () => window.clearInterval(timer);
-  }, [isTyping]);
+  }, []);
 
   useEffect(() => {
     const handleClick = () => {

@@ -46,14 +46,7 @@ GET  http://192.168.1.3:3000/system_stats
 首先需要获取 Flux.2-Klein 工作流的节点 ID 和各节点的输入槽位：
 
 ```bash
-curl -s http://192.168.1.3:3000/object_info | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-# 查找 Flux.2-Klein 相关节点（CLIPTextEncode、KSampler、VAEDecode 等）
-for k, v in data.items():
-    if 'flux' in k.lower() or 'klein' in k.lower():
-        print(k)
-"
+curl -s http://192.168.1.3:3000/object_info | python3 -c "import json,sys;data=json.load(sys.stdin);[print(k) for k in data]"
 ```
 
 ### Step 2: 构造 Prompt JSON 并提交

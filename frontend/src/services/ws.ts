@@ -6,6 +6,7 @@ import { type Expression } from '../store/gameState';
 // 状态
 // ========================
 let ws: WebSocket | null = null;
+let allowAutoReconnect = true;
 const WS_URL = import.meta.env.DEV
   ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8000/ws/caicai`
   : `/ws/caicai`;
@@ -56,21 +57,25 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 export function connectWS(): void {
   // 防止重复建连：OPEN / CONNECTING 都不再创建新连接
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  allowAutoReconnect = true;
 
   const store = useGameState.getState();
   store.setWsStatus('connecting');
 
   try {
-    ws = new WebSocket(WS_URL);
+    const socket = new WebSocket(WS_URL);
+    ws = socket;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+      if (ws !== socket) return;
       console.log('[WS] Connected to Gateway');
       reconnectAttempts = 0;
       store.setWsStatus('open');
       startHeartbeat();
     };
 
-    ws.onmessage = (event: MessageEvent) => {
+    socket.onmessage = (event: MessageEvent) => {
+      if (ws !== socket) return;
       try {
         const data = JSON.parse(event.data);
         handleWSEvent(data);
@@ -79,13 +84,19 @@ export function connectWS(): void {
       }
     };
 
-    ws.onclose = () => {
+    socket.onclose = () => {
+      if (ws === socket) ws = null;
       stopHeartbeat();
+      if (!allowAutoReconnect) {
+        store.setWsStatus('disconnected');
+        return;
+      }
       store.setWsStatus('reconnecting');
       scheduleReconnect();
     };
 
-    ws.onerror = (err) => {
+    socket.onerror = (err) => {
+      if (ws !== socket) return;
       console.error('[WS] Error:', err);
     };
   } catch (e) {
@@ -251,6 +262,27 @@ function handleWSEvent(data: any): void {
       break;
     }
 
+    case 'session_history': {
+      const sid = typeof data.session_id === 'string' ? data.session_id : '';
+      const rows = Array.isArray(data.messages) ? data.messages : [];
+      const history: ChatMessage[] = rows
+        .filter((m: any) => typeof m?.text === 'string' && m.text.trim())
+        .map((m: any, idx: number) => ({
+          id: String(m.id || `boot-${Date.now()}-${idx}`),
+          sender: m.sender === 'user' ? 'user' : 'caicai',
+          text: String(m.text || ''),
+          timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+          _streaming: false,
+        }));
+      if (sid) store.setSessionId(sid);
+      if (history.length > 0) {
+        store.setMessages(history);
+      }
+      store.setIsTyping(false);
+      store.clearThinkingTrace();
+      break;
+    }
+
     case 'thinking':
       if (data.text) {
         const thinkMsg: ChatMessage = {
@@ -311,6 +343,9 @@ export function sendChatMessage(text: string, images?: ImageData[]): void {
   const currentSessionId = useGameState.getState().sessionId;
   if (currentSessionId) {
     payload.session_id = currentSessionId;
+  } else {
+    // 显式告诉后端：这是“新建会话”后的首条消息
+    payload.new_session = true;
   }
   if (images && images.length > 0) {
     payload.images = images;
@@ -327,8 +362,14 @@ export function stopChatMessage(): void {
 // 连接清理
 // ========================
 export function disconnectWS(): void {
+  allowAutoReconnect = false;
   stopHeartbeat();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (ws) ws.close();
+  if (ws) {
+    const socket = ws;
+    ws = null;
+    try { socket.close(); } catch {}
+  }
+  useGameState.getState().setWsStatus('disconnected');
 }
 

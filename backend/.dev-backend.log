@@ -1,0 +1,12 @@
+INFO:     Started server process [80078]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[HermesGateway] started with backend lifecycle pid=80089
+[HermesWebUI] autostarted pid=80118 on 127.0.0.1:8787
+[HermesWebUI] ready on 127.0.0.1:8787
+[ChatService] skipped startup session (HERMES_SKIP_STARTUP_SESSION=1)
+INFO:     127.0.0.1:61675 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61677 - "GET /api/hermes/health-check?include_chat=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61687 - "POST /api/v1/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61716 - "POST /api/v1/chat HTTP/1.1" 200 OK
