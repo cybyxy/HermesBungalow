@@ -263,6 +263,17 @@ html, body, #root {
 .popup-body { padding: 12px; }
 .popup-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .popup-list { display: grid; gap: 8px; color: #e8dcc8; }
+.avatar-chip {
+  border: 1px solid #5a5040;
+  background: #3b342b;
+  color: #e8dcc8;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.avatar-chip.main {
+  border-color: #ffd700;
+  color: #ffd700;
+}
 
 .career-table { width: 100%; border-collapse: collapse; }
 .career-table th, .career-table td {

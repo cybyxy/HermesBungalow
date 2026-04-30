@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+frontend/.parcel-cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+backend/__pycache__/
+backend/*.pyc
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Hermes
+.hermes/
+*.log
+
+# Local assets
+# Keep game assets in docs/game_assets/tiles/
+# But ignore generated/cache files
+
+# Seeds/Saves (if any)
+*.sav
+*.save
