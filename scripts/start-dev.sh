@@ -98,7 +98,7 @@ echo "[start-dev] starting backend on 127.0.0.1:8000"
   HERMES_WEBUI_ENABLED=1 \
   HERMES_WEBUI_AUTOSTART=1 \
   HERMES_SKIP_STARTUP_SESSION=1 \
-  PYTHONPATH=. "${BACKEND_PYTHON}" -m uvicorn server:app --host 127.0.0.1 --port 8000
+  PYTHONPATH=. "${BACKEND_PYTHON}" -m uvicorn server:app --host 0.0.0.0 --port 8000
 ) >"${BACKEND_LOG}" 2>&1 &
 backend_pid=$!
 echo "${backend_pid}" > "${BACKEND_PID_FILE}"
@@ -107,9 +107,9 @@ echo "[start-dev] starting frontend on 127.0.0.1:3000"
 (
   cd "${ROOT_DIR}/frontend"
   if [[ -f "${ROOT_DIR}/frontend/node_modules/vite/bin/vite.js" ]]; then
-    exec node "${ROOT_DIR}/frontend/node_modules/vite/bin/vite.js" --host 127.0.0.1 --port 3000 --strictPort
+    exec node "${ROOT_DIR}/frontend/node_modules/vite/bin/vite.js" --host 0.0.0.0 --port 3000 --strictPort
   else
-    exec npm run dev -- --host 127.0.0.1 --port 3000 --strictPort
+    exec npm run dev -- --host 0.0.0.0 --port 3000 --strictPort
   fi
 ) >"${FRONTEND_LOG}" 2>&1 &
 frontend_pid=$!

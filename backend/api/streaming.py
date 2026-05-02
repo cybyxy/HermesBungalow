@@ -1216,8 +1216,10 @@ def _run_agent_streaming(
     _metering_thread.start()
 
     def put(event, data):
-        # If cancelled, drop all further events except the cancel event itself
-        if cancel_event.is_set() and event not in ('cancel', 'error'):
+        # If cancelled, drop further events except terminal / user-visible control events.
+        # Keep ``clarify`` so the UI can still show the card and POST /api/clarify/respond
+        # (otherwise the agent thread blocks until timeout with nothing shown).
+        if cancel_event.is_set() and event not in ('cancel', 'error', 'clarify', 'approval'):
             return
         try:
             q.put_nowait((event, data))
@@ -2041,27 +2043,30 @@ def _run_agent_streaming(
             except Exception:
                 logger.debug("Failed to drain pending steer for session %s", session_id)
             raw_session = s.compact() | {'messages': s.messages, 'tool_calls': tool_calls}
-            put('done', {'session': redact_session_data(raw_session), 'usage': usage})
-            # Emit metering stats for the header TPS label
-            meter_stats = meter().get_stats()
-            meter_stats['session_id'] = session_id
-            put('metering', meter_stats)
+            # NOTE: done/stream_end are NOT sent here. They are sent in the `finally`
+            # block below AFTER all events (including clarify resolutions) have been
+            # queued. This ensures SSE consumers receive everything before the stream closes.
+            _finalize_session = lambda: (
+                put('done', {'session': redact_session_data(raw_session), 'usage': usage}),
+                (lambda ms: (ms.__setitem__('session_id', session_id), put('metering', ms))(
+                    meter().get_stats()
+                )),
+            )
             if _should_bg_title and _u0 and _a0:
                 threading.Thread(
                     target=_run_background_title_update,
                     args=(s.session_id, _u0, _a0, str(s.title or '').strip(), put, agent),
                     daemon=True,
                 ).start()
-            else:
-                # Use the original session_id parameter (never reassigned), not s.session_id
-                # which may be rotated during context compression. The client captured
-                # activeSid = original session_id so they must match for stream_end to close.
-                put('stream_end', {'session_id': session_id})
-                # Adaptive title refresh: re-generate title from latest exchange
-                # every N exchanges (when enabled in settings). Runs after stream_end
-                # so it doesn't block the stream.
-                _maybe_schedule_title_refresh(s, put, agent)
+            _finalize_session()
+            # Adaptive title refresh runs after stream_end so it doesn't block
+            _maybe_schedule_title_refresh(s, put, agent)
         finally:
+            # stream_end is sent LAST — after ALL events (including any pending
+            # clarify resolutions queued by the blocking _clarify_callback_impl)
+            # are already in the Queue. This prevents SSE consumers from closing
+            # before clarify events arrive.
+            put('stream_end', {'session_id': session_id})
             # Stop the live metering ticker
             _metering_stop.set()
             # Unregister the gateway approval callback and unblock any threads

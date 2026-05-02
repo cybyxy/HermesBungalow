@@ -7,6 +7,7 @@ import { CenterStage } from './ui/CenterStage';
 import { RightPanel } from './ui/RightPanel';
 import { BottomBar } from './ui/BottomBar';
 import { AgentDetailModal } from './ui/AgentDetailModal';
+import { ClarifyModal } from './ui/ClarifyModal';
 
 /** 5 秒真实时间 ≈ 1 游戏分钟 */
 const GAME_TICK_MS = 5000;
@@ -112,6 +113,7 @@ export function App() {
         onClose={() => setAgentDetailOpen(false)}
         onProfileUpdated={() => void loadState()}
       />
+      <ClarifyModal />
     </div>
   );
 }

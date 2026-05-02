@@ -8,8 +8,12 @@ export function PopupSheet(props: {
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  /** Overlay stacking; clarify / blocking dialogs should sit above the bottom bar (≈1200). */
+  zIndex?: number;
+  /** 'bottom-sheet' (default) anchors to bottom; 'overlay' centers on screen. */
+  variant?: 'bottom-sheet' | 'overlay';
 }) {
-  const { open, title, onClose, children, footer } = props;
+  const { open, title, onClose, children, footer, zIndex = 1100, variant } = props;
 
   useEffect(() => {
     if (!open) return;
@@ -22,15 +26,22 @@ export function PopupSheet(props: {
 
   if (!open) return null;
 
+  const isBottomSheet = variant !== 'overlay';
+  const overlayAlign = isBottomSheet ? 'flex-end' : 'center';
+  const overlayJustify = isBottomSheet ? 'stretch' : 'center';
+  const overlayPadding = isBottomSheet ? `${layoutPx.bottomBar + 3}px 0 0 0` : '0';
+  const sheetMaxWidth = isBottomSheet ? '100%' : 520;
+  const sheetHeight = isBottomSheet ? 'min(41%, calc(100% - 8px))' : 'auto';
+  const sheetBorderRadius = isBottomSheet ? '12px 12px 0 0' : 12;
+  const overlayBg = isBottomSheet ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0.75)';
+
   return (
     <div
       role="presentation"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      style={overlayStyle}
+      onClick={isBottomSheet ? (e) => { if (e.target === e.currentTarget) onClose(); } : undefined}
+      style={{ ...overlayStyle, zIndex, alignItems: overlayAlign, justifyContent: overlayJustify, padding: overlayPadding, background: overlayBg }}
     >
-      <div style={sheetStyle}>
+      <div style={{ ...sheetStyle, maxWidth: sheetMaxWidth, height: sheetHeight, borderRadius: sheetBorderRadius, width: isBottomSheet ? '100%' : 'min(90vw, 520px)' }}>
         <div style={headerStyle}>
           <span style={{ color: colors.gold, fontWeight: 'bold', fontSize: 14 }}>{title}</span>
           <button type="button" onClick={onClose} style={closeStyle}>
@@ -53,7 +64,6 @@ const overlayStyle: CSSProperties = {
   justifyContent: 'stretch',
   padding: `0 0 ${layoutPx.bottomBar + 3}px 0`,
   boxSizing: 'border-box',
-  zIndex: 1100,
 };
 
 const sheetStyle: CSSProperties = {

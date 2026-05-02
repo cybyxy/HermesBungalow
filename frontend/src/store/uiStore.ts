@@ -19,6 +19,13 @@ export interface InferenceEntry {
   body: string;
 }
 
+/** Clarify modal payload — shared between SSE callback and modal renderer. */
+export interface ClarifyPrompt {
+  question: string;
+  choices_offered: string[];
+  resolve: (answer: string) => void;
+}
+
 /** 单个 Agent 在中央画布上的推理状态 */
 export interface AgentInferenceState {
   phase: 'idle' | 'thinking' | 'done';
@@ -55,6 +62,9 @@ interface UiStore {
   clearInferenceLog: () => void;
   setAgentStream: (agentId: string, streamId: string) => void;
   clearAgentStream: (agentId: string) => void;
+  /** Clarify modal — set when SSE sends a clarify event, cleared when user answers. */
+  clarifyPrompt: ClarifyPrompt | null;
+  setClarifyPrompt: (p: ClarifyPrompt | null) => void;
 }
 
 const MAX_INFERENCE = 200;
@@ -138,4 +148,6 @@ export const useUiStore = create<UiStore>((set) => ({
     }),
   clearInferenceLog: () =>
     set({ inferenceLog: [], agentInferState: {} }),
+  clarifyPrompt: null,
+  setClarifyPrompt: (p) => set({ clarifyPrompt: p }),
 }));

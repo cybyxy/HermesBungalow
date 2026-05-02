@@ -227,12 +227,41 @@ export async function submitClarifyResponse(sessionId: string, response: string)
   );
 }
 
-/** Payload from SSE ``event: clarify`` (model needs a disambiguation / choice). */
+/**
+ * Hermes clarify card — field names match SSE ``event: clarify`` and
+ * ``GET /api/clarify/pending`` JSON (snake_case).
+ */
 export type ClarifySsePayload = {
-  sessionId: string;
+  session_id: string;
   question: string;
-  choices: string[];
+  choices_offered: string[];
+  kind?: string;
+  requested_at?: number;
 };
+
+/** Normalize raw SSE ``data`` into ``ClarifySsePayload`` for UI / callbacks. */
+export function clarifyPayloadFromSseData(
+  data: Record<string, unknown>,
+  fallbackSessionId: string,
+): ClarifySsePayload {
+  const session_id =
+    typeof data.session_id === 'string' && data.session_id.trim() !== ''
+      ? String(data.session_id).trim()
+      : fallbackSessionId;
+  const question =
+    typeof data.question === 'string' && data.question.trim() !== ''
+      ? data.question
+      : '请确认一项后继续。';
+  const raw = data.choices_offered;
+  const choices_offered = Array.isArray(raw)
+    ? raw.map((c) => String(c)).filter((t) => t.length > 0)
+    : [];
+  const out: ClarifySsePayload = { session_id, question, choices_offered };
+  if (typeof data.kind === 'string' && data.kind) out.kind = data.kind;
+  const ra = data.requested_at;
+  if (typeof ra === 'number' && Number.isFinite(ra)) out.requested_at = ra;
+  return out;
+}
 
 /** Upload a single image file, returns the server path. */
 export async function uploadImage(file: File, sessionId: string): Promise<{ filename: string; path: string; size: number }> {
@@ -259,11 +288,45 @@ export type StreamChatSseOptions = {
   /** Attachment paths to include in the chat message (uploaded via /api/upload). */
   attachments?: string[];
   /**
-   * Model sent a clarify card (choices). Should return the exact string to POST to
-   * ``/api/clarify/respond``. Blocks the SSE reader until the promise resolves.
+   * Model sent a clarify card. Payload uses Hermes wire keys (``session_id``, ``choices_offered``).
+   * Return the exact string for ``POST /api/clarify/respond``. Blocks the SSE reader until resolved.
    */
   onClarifyRequest?: (payload: ClarifySsePayload) => Promise<string>;
 };
+
+function normalizeSseChunks(buf: string): string {
+  return buf.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function looksLikeClarifyPayload(d: Record<string, unknown>): boolean {
+  if (d.kind === 'clarify') return true;
+  return typeof d.question === 'string' && Array.isArray(d.choices_offered);
+}
+
+/** One SSE block: optional ``event:`` plus one or more ``data:`` lines (joined per SSE spec). */
+function parseSseEventBlock(block: string): { eventName: string; data: Record<string, unknown> | null } {
+  const lines = block.split('\n');
+  let eventName = '';
+  const dataLines: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (!line || line.startsWith(':')) continue;
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (!dataLines.length) return { eventName, data: null };
+  const joined = dataLines.join('\n');
+  try {
+    return { eventName, data: JSON.parse(joined) as Record<string, unknown> };
+  } catch {
+    return { eventName, data: null };
+  }
+}
 
 /** Consume SSE from POST /api/chat/stream (local Hermes mock). */
 export async function streamChatSse(
@@ -320,19 +383,15 @@ export async function streamChatSse(
     const { done, value } = await reader.read();
     if (done) break;
     buffer += dec.decode(value, { stream: true });
+    buffer = normalizeSseChunks(buffer);
     const parts = buffer.split('\n\n');
     buffer = parts.pop() ?? '';
     for (const block of parts) {
-      const eventLine = block.split('\n').find((l) => l.startsWith('event: '));
-      const dataLine = block.split('\n').find((l) => l.startsWith('data: '));
-      if (!dataLine) continue;
-      const eventName = eventLine?.slice(7).trim() ?? '';
-      const raw = dataLine.slice(6).trim();
-      let data: Record<string, unknown>;
-      try {
-        data = JSON.parse(raw) as Record<string, unknown>;
-      } catch {
-        continue;
+      const { eventName: rawName, data } = parseSseEventBlock(block);
+      if (!data) continue;
+      let eventName = rawName.trim();
+      if ((!eventName || eventName === 'message') && looksLikeClarifyPayload(data)) {
+        eventName = 'clarify';
       }
       if (eventName === 'apperror') {
         const msg =
@@ -369,29 +428,14 @@ export async function streamChatSse(
         continue;
       }
       if (eventName === 'clarify') {
-        const clarifySid =
-          typeof data.session_id === 'string' && data.session_id.trim() !== ''
-            ? String(data.session_id).trim()
-            : sid;
-        const question =
-          typeof data.question === 'string' && data.question.trim() !== ''
-            ? data.question
-            : '请确认一项后继续。';
-        const rawChoices = data.choices_offered;
-        const choices = Array.isArray(rawChoices)
-          ? rawChoices.map((c) => String(c)).filter((t) => t.length > 0)
-          : [];
+        const payload = clarifyPayloadFromSseData(data, sid);
         const fallback =
-          choices[0] ||
+          payload.choices_offered[0] ||
           '请在不向用户追加提问的前提下，根据上下文做出合理选择并继续执行任务。';
         let responseText: string;
         try {
           if (options?.onClarifyRequest) {
-            responseText = await options.onClarifyRequest({
-              sessionId: clarifySid,
-              question,
-              choices,
-            });
+            responseText = await options.onClarifyRequest(payload);
           } else {
             responseText = fallback;
           }
@@ -399,7 +443,7 @@ export async function streamChatSse(
           responseText = fallback;
         }
         const trimmed = String(responseText ?? '').trim() || fallback;
-        await submitClarifyResponse(clarifySid, trimmed);
+        await submitClarifyResponse(payload.session_id, trimmed);
         continue;
       }
       if (eventName === 'reasoning' && typeof data.text === 'string' && data.text.length > 0) {
