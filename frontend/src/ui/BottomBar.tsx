@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import type { CSSProperties } from 'react';
 import * as gameApi from '../services/gameApi';
+import type { ClarifySsePayload } from '../services/gameApi';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
 import type { Agent, GameWorldSnapshot } from '../types/game';
@@ -140,13 +142,10 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
   const [newTaskName, setNewTaskName] = useState('新任务');
   const [newTaskProf, setNewTaskProf] = useState('程序员');
   const [toast, setToast] = useState<string | null>(null);
-  /** Hermes clarify: agent blocked until user picks / types and we POST /api/clarify/respond */
-  const [clarifyPrompt, setClarifyPrompt] = useState<{
-    sessionId: string;
-    question: string;
-    choices: string[];
-    resolve: (s: string) => void;
-  } | null>(null);
+  /** Open clarify modal: Hermes wire payload + Promise resolver (same keys as SSE ``clarify``). */
+  const [clarifyPrompt, setClarifyPrompt] = useState<(ClarifySsePayload & { resolve: (s: string) => void }) | null>(
+    null,
+  );
   const [clarifyOther, setClarifyOther] = useState('');
 
   const selectedAgent = snapshot?.agents.find((a) => a.id === selectedAgentId) ?? null;
@@ -232,12 +231,9 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
           attachments,
           onClarifyRequest: (p) =>
             new Promise<string>((resolve) => {
-              setClarifyOther('');
-              setClarifyPrompt({
-                sessionId: p.sessionId,
-                question: p.question,
-                choices: p.choices ?? [],
-                resolve,
+              flushSync(() => {
+                setClarifyOther('');
+                setClarifyPrompt({ ...p, resolve });
               });
             }),
         },
@@ -706,7 +702,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
         onClose={() => {
           if (!clarifyPrompt) return;
           const fb =
-            clarifyPrompt.choices[0] ||
+            clarifyPrompt.choices_offered[0] ||
             '请在不向用户追加提问的前提下自行判断并继续执行任务。';
           clarifyPrompt.resolve(fb);
           setClarifyPrompt(null);
@@ -727,10 +723,10 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
             >
               {clarifyPrompt.question}
             </p>
-            {clarifyPrompt.choices.length > 0 && (
+            {clarifyPrompt.choices_offered.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <span style={{ fontSize: 11, color: colors.text }}>点选一项：</span>
-                {clarifyPrompt.choices.map((c, i) => (
+                {clarifyPrompt.choices_offered.map((c, i) => (
                   <button
                     key={`${i}-${c.slice(0, 64)}`}
                     type="button"
@@ -780,7 +776,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
                 if (!clarifyPrompt) return;
                 const t = clarifyOther.trim();
                 const fb =
-                  clarifyPrompt.choices[0] ||
+                  clarifyPrompt.choices_offered[0] ||
                   '请在不向用户追加提问的前提下自行判断并继续执行任务。';
                 clarifyPrompt.resolve(t || fb);
                 setClarifyPrompt(null);
