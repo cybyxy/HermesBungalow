@@ -321,8 +321,8 @@ def list_profiles_api() -> list:
         from hermes_cli.profiles import list_profiles
         infos = list_profiles()
     except ImportError:
-        # hermes_cli not available -- return just the default
-        return [_default_profile_dict()]
+        # hermes_cli not available -- scan ~/.hermes/profiles/ directly
+        infos = _scan_profiles_dir()
 
     active = get_active_profile_name()
     result = []
@@ -332,13 +332,44 @@ def list_profiles_api() -> list:
             'path': str(p.path),
             'is_default': p.is_default,
             'is_active': p.name == active,
-            'gateway_running': p.gateway_running,
-            'model': p.model,
-            'provider': p.provider,
-            'has_env': p.has_env,
-            'skill_count': p.skill_count,
+            'gateway_running': getattr(p, 'gateway_running', False),
+            'model': getattr(p, 'model', None),
+            'provider': getattr(p, 'provider', None),
+            'has_env': getattr(p, 'has_env', False),
+            'skill_count': getattr(p, 'skill_count', 0),
         })
     return result
+
+
+def _scan_profiles_dir():
+    """Scan ~/.hermes/profiles/ when hermes_cli is unavailable.
+
+    Returns a list of simple objects with .name, .path, .is_default attributes.
+    Uses HERMES_BASE_HOME if set, to avoid Path.home() resolving to wrong profile subdir.
+    """
+    import os
+    from pathlib import Path
+
+    class _ProfileInfo:
+        def __init__(self, name: str, path: Path):
+            self.name = name
+            self.path = path
+            self.is_default = name == "default"
+
+    # HERMES_BASE_HOME points to ~/.hermes regardless of which profile started the server
+    base = os.environ.get("HERMES_BASE_HOME", "")
+    profiles_dir = (Path(base) / "profiles") if base else (Path.home() / ".hermes" / "profiles")
+    if not profiles_dir.is_dir():
+        # Fallback: try Path.home() directly
+        profiles_dir = Path.home() / ".hermes" / "profiles"
+    if not profiles_dir.is_dir():
+        return [_ProfileInfo("default", Path.home() / ".hermes")]
+
+    results = []
+    for entry in profiles_dir.iterdir():
+        if entry.is_dir() and not entry.name.startswith("."):
+            results.append(_ProfileInfo(entry.name, entry))
+    return results if results else [_ProfileInfo("default", profiles_dir / "default")]
 
 
 def _default_profile_dict() -> dict:

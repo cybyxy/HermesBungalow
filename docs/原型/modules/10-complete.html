@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 完整交互演示</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { 
+    background: #0a0a15; 
+    color: #eee; 
+    font-family: Consolas, 'Microsoft YaHei', monospace;
+    overflow: hidden;
+  }
+  #ui { 
+    display: block;
+    cursor: default;
+  }
+  .tooltip {
+    position: fixed;
+    background: rgba(26,26,48,0.95);
+    border: 1px solid #FFD700;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    pointer-events: none;
+    display: none;
+    z-index: 1000;
+    color: #fff;
+  }
+  .tooltip code {
+    color: #FFD700;
+    background: #333;
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<div class="tooltip" id="tooltip"></div>
+<script>
+// ===== Hermes数字工作室 - 完整交互演示 =====
+// 职责：集成所有模块的完整演示，所有元素可点击
+
+const canvas = document.getElementById('ui');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+
+// 画布尺寸
+const W = 1920;
+const H = 1000;
+canvas.width = W;
+canvas.height = H;
+
+// 缩放适应窗口
+function resizeCanvas() {
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width = (W * scale) + 'px';
+  canvas.style.height = (H * scale) + 'px';
+  canvas.style.position = 'absolute';
+  canvas.style.left = (window.innerWidth - W * scale) / 2 + 'px';
+  canvas.style.top = (window.innerHeight - H * scale) / 2 + 'px';
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// ===== 布局 =====
+const LAYOUT = {top: 44, bottom: 56, left: 260, right: 260};
+const CENTER_X = LAYOUT.left;
+const CENTER_Y = LAYOUT.top;
+const CENTER_W = W - LAYOUT.left - LAYOUT.right;
+const CENTER_H = H - LAYOUT.top - LAYOUT.bottom;
+
+// ===== 颜色 =====
+const C = {
+  bg: '#0a0a15',
+  wall: '#654321',
+  door: '#DAA520',
+  floor: '#1e1e35',
+  king: '#1a2a4a',
+  fixed: '#1a2a4a',
+  dynamic: '#1a3a2a',
+  border: '#333355',
+  text: '#aaa',
+  bright: '#fff',
+  gold: '#FFD700',
+  agent: '#4169E1',
+  face: '#FFE4B5',
+  btn: '#2a3a5a',
+  btnHover: '#3a4a6a',
+  btnActive: '#4a5a7a',
+};
+
+// ===== 可交互元素存储 =====
+let clickables = [];
+let mouseX = 0, mouseY = 0;
+let hoveredItem = null;
+let selectedAgent = null;
+let selectedTask = null;
+let inputText = '';
+let inputFocused = false;
+let draggedAgent = null;
+let dragOffsetX = 0, dragOffsetY = 0;
+
+// ===== 游戏状态 =====
+const state = {
+  day: 1,
+  time: '08:30',
+  money: 1250,
+  agents: [
+    {id: 'A', name: '阿猿', profession: '程序员', status: 'working', location: '办公室1', energy: 75, mood: 80, x: 0, y: 0},
+    {id: 'B', name: '小美', profession: '设计师', status: 'idle', location: '休息室', energy: 90, mood: 75, x: 0, y: 0},
+    {id: 'C', name: '点点', profession: '测试员', status: 'resting', location: '休息室', energy: 60, mood: 85, x: 0, y: 0},
+    {id: 'D', name: '数据帝', profession: '分析师', status: 'working', location: '资料室', energy: 55, mood: 70, x: 0, y: 0},
+  ],
+  tasks: [
+    {id: 1, name: '编写代码', progress: 65, status: 'in_progress', assignee: 'A'},
+    {id: 2, name: '设计UI', progress: 30, status: 'pending', assignee: null},
+    {id: 3, name: '修复Bug', progress: 80, status: 'in_progress', assignee: 'C'},
+  ],
+  logs: [
+    {time: '08:25', type: 'task', content: '阿猿开始编写代码'},
+    {time: '08:20', type: 'social', content: '小美和点点在休息室打招呼'},
+    {time: '08:15', type: 'task', content: '点点完成Bug修复'},
+  ],
+  rooms: ['休息室', '资料室', '会议室', '机房', '办公室1', '办公室2', '办公室3', '办公室4', '办公室5', '办公室6', '办公室7', '办公室8'],
+};
+
+// ===== 建筑尺寸 =====
+const WALL = 6;
+const DOOR = 24;
+const VISUAL_CORRIDOR_W = 32;
+const MID_CORRIDOR_H = 32;
+const BOTTOM_CORRIDOR_H = 32;
+const KING_H_RATIO = 1.2;
+const V_CORR_H = 14;
+
+const ROOM_H = Math.floor((CENTER_H - V_CORR_H - BOTTOM_CORRIDOR_H - 2 * MID_CORRIDOR_H - WALL * 5) / (3 + KING_H_RATIO));
+const ROOM_W = Math.floor((CENTER_W - WALL * 5) / 4);
+
+const BUILDING_W = ROOM_W * 4 + WALL * 5;
+const KING_W = Math.floor(ROOM_W * 1.5);
+const KING_H = Math.floor(ROOM_H * KING_H_RATIO);
+const BUILDING_H = KING_H + V_CORR_H + ROOM_H * 3 + MID_CORRIDOR_H * 2 + BOTTOM_CORRIDOR_H + WALL * 5;
+
+const AGENT_W = 23, AGENT_H = 43;
+
+// 建筑偏移量
+let buildingOffsetX = 0, buildingOffsetY = 0;
+
+// ===== 辅助函数 =====
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function stroke(x, y, w, h, color, lw = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.strokeRect(x, y, w, h);
+}
+
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+// ===== 绘制按钮（带悬停） =====
+function drawBtn(btn, label, x, y, w, h, action, tooltipText) {
+  const isHovered = hoveredItem === btn;
+  const isSelected = selectedTask === btn && label.includes('任务');
+  const isAgentSelected = selectedAgent && label.includes(state.agents.find(a => a.name === label.replace('选中', ''))?.name);
+  
+  rect(x, y, w, h, isHovered ? C.btnHover : C.btn);
+  stroke(x, y, w, h, isHovered || isSelected ? C.gold : C.border, isHovered ? 2 : 1);
+  text(label, x + w/2, y + h/2 + 3, isHovered ? C.gold : C.bright, 10, 'center');
+  
+  clickables.push({x, y, w, h, action, tooltip: tooltipText || label, id: btn});
+}
+
+// ===== 绘制建筑 =====
+function drawBuilding() {
+  const corridorCenterX = ROOM_W * 2 + WALL * 2 + WALL / 2;
+  const corridorX = corridorCenterX - VISUAL_CORRIDOR_W / 2;
+  const doorX = corridorCenterX - DOOR / 2;
+  
+  buildingOffsetX = CENTER_X + (CENTER_W - BUILDING_W) / 2;
+  buildingOffsetY = CENTER_Y + (CENTER_H - BUILDING_H);
+  
+  ctx.save();
+  ctx.translate(buildingOffsetX, buildingOffsetY);
+  
+  // 城主办公室
+  const kingX = (BUILDING_W - KING_W) / 2;
+  rect(kingX, 0, KING_W, KING_H, C.king);
+  stroke(kingX, 0, KING_W, KING_H, '#4169E1', 3);
+  text('城主办公室', kingX + KING_W/2, KING_H/2 + 4, '#fff', 12, 'center');
+  rect(doorX, KING_H, DOOR, WALL, C.door);
+  clickables.push({x: kingX, y: 0, w: KING_W, h: KING_H, action: 'kingOffice', tooltip: '城主办公室\nHermes的工作地点'});
+  
+  // 垂直走廊
+  rect(doorX, KING_H + WALL, DOOR, V_CORR_H, C.floor);
+  
+  // 绘制行
+  const row2Y = KING_H + WALL + V_CORR_H + WALL;
+  drawRow(0, row2Y, ['休息室','资料室','会议室','机房'], [true,true,true,true]);
+  rect(corridorX, row2Y, VISUAL_CORRIDOR_W, ROOM_H, C.floor);
+  rect(0, row2Y + ROOM_H, corridorX + VISUAL_CORRIDOR_W, MID_CORRIDOR_H, C.floor);
+  rect(corridorX + VISUAL_CORRIDOR_W, row2Y + ROOM_H, BUILDING_W - (corridorX + VISUAL_CORRIDOR_W), MID_CORRIDOR_H, C.floor);
+  
+  const row3Y = row2Y + ROOM_H + MID_CORRIDOR_H + WALL;
+  drawRow(0, row3Y, ['办公室1','办公室2','办公室3','办公室4'], [false,false,false,false]);
+  rect(corridorX, row3Y, VISUAL_CORRIDOR_W, ROOM_H, C.floor);
+  rect(0, row3Y + ROOM_H, corridorX + VISUAL_CORRIDOR_W, MID_CORRIDOR_H, C.floor);
+  rect(corridorX + VISUAL_CORRIDOR_W, row3Y + ROOM_H, BUILDING_W - (corridorX + VISUAL_CORRIDOR_W), MID_CORRIDOR_H, C.floor);
+  
+  const row4Y = row3Y + ROOM_H + MID_CORRIDOR_H + WALL;
+  drawRow(0, row4Y, ['办公室5','办公室6','办公室7','办公室8'], [false,false,false,false]);
+  rect(corridorX, row4Y, VISUAL_CORRIDOR_W, ROOM_H, C.floor);
+  rect(0, row4Y + ROOM_H, corridorX + VISUAL_CORRIDOR_W, BOTTOM_CORRIDOR_H, C.floor);
+  rect(corridorX + VISUAL_CORRIDOR_W, row4Y + ROOM_H, BUILDING_W - (corridorX + VISUAL_CORRIDOR_W), BOTTOM_CORRIDOR_H, C.floor);
+  
+  // 外墙
+  const buildingEndY = row4Y + ROOM_H + BOTTOM_CORRIDOR_H + WALL;
+  rect(-8, 0, 8, buildingEndY + 8, C.wall);
+  rect(BUILDING_W, 0, 8, buildingEndY + 8, C.wall);
+  
+  // 走廊可点击
+  clickables.push({x: corridorX, y: row2Y, w: VISUAL_CORRIDOR_W, h: ROOM_H, action: 'corridor', tooltip: '走廊'});
+  
+  ctx.restore();
+  
+  // 绘制Agents（在建筑外计算位置）
+  drawAgentsInBuilding(kingX, row2Y, row3Y, row4Y);
+}
+
+function drawRow(offsetX, y, labels, isFixed) {
+  for (let i = 0; i < 4; i++) {
+    const x = offsetX + i * (ROOM_W + WALL);
+    const color = isFixed[i] ? C.fixed : C.dynamic;
+    const borderColor = isFixed[i] ? '#4169E1' : '#228B22';
+    
+    rect(x, y, ROOM_W, ROOM_H, color);
+    stroke(x, y, ROOM_W, ROOM_H, borderColor, 2);
+    text(labels[i], x + ROOM_W/2, y + ROOM_H/2, '#fff', 9, 'center');
+    
+    // 门
+    const doorX = i === 0 || i === 2 ? x + ROOM_W*3/4 - DOOR/2 : x + ROOM_W/4 - DOOR/2;
+    rect(doorX, y + ROOM_H - WALL, DOOR, WALL, C.door);
+    
+    // 房间可点击
+    clickables.push({
+      x: buildingOffsetX + x, 
+      y: buildingOffsetY + y, 
+      w: ROOM_W, 
+      h: ROOM_H, 
+      action: 'room', 
+      roomName: labels[i],
+      tooltip: labels[i] + '\n点击移动选中的Agent'
+    });
+  }
+}
+
+function drawAgentsInBuilding(kingX, row2Y, row3Y, row4Y) {
+  // 根据房间分配Agent位置
+  const roomPositions = {
+    '休息室': {row: row2Y, col: 0, offsetX: 40},
+    '资料室': {row: row2Y, col: 1, offsetX: 40},
+    '会议室': {row: row2Y, col: 2, offsetX: 40},
+    '机房': {row: row2Y, col: 3, offsetX: 40},
+    '办公室1': {row: row3Y, col: 0, offsetX: 40},
+    '办公室2': {row: row3Y, col: 1, offsetX: 40},
+    '办公室3': {row: row3Y, col: 2, offsetX: 40},
+    '办公室4': {row: row3Y, col: 3, offsetX: 40},
+    '办公室5': {row: row4Y, col: 0, offsetX: 40},
+    '办公室6': {row: row4Y, col: 1, offsetX: 40},
+    '办公室7': {row: row4Y, col: 2, offsetX: 40},
+    '办公室8': {row: row4Y, col: 3, offsetX: 40},
+  };
+  
+  state.agents.forEach((agent, i) => {
+    const pos = roomPositions[agent.location];
+    if (!pos) return;
+    
+    const roomX = pos.col * (ROOM_W + WALL);
+    const ax = buildingOffsetX + roomX + pos.offsetX;
+    const ay = buildingOffsetY + pos.row + ROOM_H - 30;
+    
+    agent.renderX = ax;
+    agent.renderY = ay;
+    
+    const isSelected = selectedAgent?.id === agent.id;
+    const isHovered = hoveredItem === agent;
+    
+    // Agent身体
+    ctx.fillStyle = isSelected ? '#5a7a9a' : isHovered ? '#5179b1' : C.agent;
+    ctx.fillRect(ax - AGENT_W/2, ay - AGENT_H, AGENT_W, AGENT_H);
+    ctx.strokeStyle = isSelected ? C.gold : isHovered ? '#fff' : '#aaa';
+    ctx.lineWidth = isSelected ? 2 : 1;
+    ctx.strokeRect(ax - AGENT_W/2, ay - AGENT_H, AGENT_W, AGENT_H);
+    
+    // 脸
+    ctx.fillStyle = C.face;
+    ctx.fillRect(ax - AGENT_W/2 + 3, ay - AGENT_H + 6, AGENT_W - 6, 10);
+    
+    // 方向箭头
+    ctx.fillStyle = C.gold;
+    ctx.font = '8px Consolas';
+    ctx.textAlign = 'center';
+    ctx.fillText('↓', ax, ay - AGENT_H - 4);
+    
+    // 名字
+    ctx.fillStyle = isSelected ? C.gold : '#fff';
+    ctx.font = '8px Consolas';
+    ctx.fillText(agent.name, ax, ay + 8);
+    
+    // 状态图标
+    const statusIcon = {working: '💻', idle: '🟡', resting: '😴'}[agent.status] || '⬜';
+    ctx.font = '10px Arial';
+    ctx.fillText(statusIcon, ax + AGENT_W/2 + 8, ay - AGENT_H + 12);
+    
+    ctx.textAlign = 'left';
+    
+    clickables.push({
+      x: ax - AGENT_W/2, 
+      y: ay - AGENT_H, 
+      w: AGENT_W, 
+      h: AGENT_H + 20,
+      action: 'agent',
+      agent: agent,
+      tooltip: `${agent.name} (${agent.profession})\n状态: ${agent.status}\n能量: ${agent.energy}%\n情绪: ${agent.mood}%\n点击选中`
+    });
+  });
+}
+
+// ===== 顶栏 =====
+function drawTopBar() {
+  rect(0, 0, W, LAYOUT.top, '#151525');
+  stroke(0, 0, W, LAYOUT.top, C.border, 2);
+  
+  text('Hermes数字工作室', 15, 28, C.gold, 16);
+  text(`第 ${state.day} 天  ${state.time}`, 200, 28, C.text, 12);
+  text(`💰 ${state.money}  👥 ${state.agents.length}  📋 ${state.tasks.length}`, 400, 28, C.text, 11);
+  
+  // 右上角按钮
+  const btns = [
+    {label: '⚙️ 设置', action: 'settings'},
+    {label: '❓ 帮助', action: 'help'},
+  ];
+  btns.forEach((btn, i) => {
+    const x = 1700 + i * 70;
+    drawBtn(btn, btn.label, x, 8, 60, 28, btn.action, btn.label);
+  });
+  
+  // 中间提示
+  text('← 点击左侧Agent选中 → 点击房间移动 → 点击任务分配', CENTER_X + CENTER_W/2, 28, '#888', 10, 'center');
+}
+
+// ===== 左面板 =====
+function drawLeftPanel() {
+  rect(0, LAYOUT.top, LAYOUT.left, CENTER_H, 'rgba(26,26,48,0.95)');
+  stroke(0, LAYOUT.top, LAYOUT.left, CENTER_H, C.border, 2);
+  
+  text('◀ 角色列表', 12, LAYOUT.top + 25, C.bright, 12);
+  
+  state.agents.forEach((agent, i) => {
+    const ay = LAYOUT.top + 40 + i * 55;
+    const isSelected = selectedAgent?.id === agent.id;
+    const isHovered = hoveredItem === agent;
+    
+    // 卡片背景
+    rect(8, ay, LAYOUT.left - 16, 48, isHovered ? C.btnHover : isSelected ? '#3a4a6a' : C.btn);
+    stroke(8, ay, LAYOUT.left - 16, 48, isSelected ? C.gold : isHovered ? '#fff' : C.border, isSelected ? 2 : 1);
+    
+    // Agent头像
+    ctx.fillStyle = isSelected ? '#5a7a9a' : C.agent;
+    ctx.fillRect(LAYOUT.left - 45, ay + 4, 36, 40);
+    ctx.strokeStyle = isSelected ? C.gold : C.border;
+    ctx.lineWidth = isSelected ? 2 : 1;
+    ctx.strokeRect(LAYOUT.left - 45, ay + 4, 36, 40);
+    
+    // 头像内容
+    ctx.fillStyle = C.face;
+    ctx.fillRect(LAYOUT.left - 42, ay + 10, 30, 12);
+    ctx.fillStyle = '#fff';
+    ctx.font = '8px Consolas';
+    ctx.textAlign = 'center';
+    ctx.fillText(agent.name[0], LAYOUT.left - 27, ay + 19);
+    ctx.textAlign = 'left';
+    
+    // 名字和职业
+    ctx.fillStyle = C.bright;
+    ctx.font = 'bold 11px Consolas';
+    ctx.fillText(agent.name, 16, ay + 16);
+    
+    const profColors = {'程序员': '#4169E1', '设计师': '#9370DB', '测试员': '#228B22', '分析师': '#FF8C00'};
+    ctx.fillStyle = profColors[agent.profession] || C.text;
+    ctx.font = '9px Consolas';
+    ctx.fillText(agent.profession, 16, ay + 28);
+    
+    // 状态
+    const statusColors = {working: '#90EE90', idle: C.gold, resting: '#87CEEB'};
+    ctx.fillStyle = statusColors[agent.status] || '#888';
+    ctx.font = '9px Consolas';
+    ctx.fillText(agent.status === 'working' ? '工作中' : agent.status === 'idle' ? '空闲' : '休息中', 16, ay + 40);
+    
+    // 能量条
+    ctx.fillStyle = '#333';
+    ctx.fillRect(80, ay + 32, 80, 6);
+    ctx.fillStyle = '#228B22';
+    ctx.fillRect(80, ay + 32, 80 * agent.energy / 100, 6);
+    ctx.fillStyle = C.text;
+    ctx.font = '8px Consolas';
+    ctx.fillText(agent.energy + '%', 165, ay + 38);
+    
+    clickables.push({
+      x: 8, y: ay, w: LAYOUT.left - 16, h: 48,
+      action: 'selectAgent',
+      agent: agent,
+      tooltip: `选中 ${agent.name}\n职业: ${agent.profession}\n状态: ${agent.status}`
+    });
+  });
+  
+  // 移动目标
+  if (selectedAgent) {
+    text('▶ 移动到', 12, LAYOUT.top + 280, C.gold, 11);
+    
+    state.rooms.forEach((room, i) => {
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const x = 12 + col * 115;
+      const y = LAYOUT.top + 295 + row * 30;
+      
+      const isCurrentRoom = selectedAgent.location === room;
+      const isHovered = hoveredItem === room;
+      
+      rect(x, y, 105, 24, isHovered ? C.btnHover : isCurrentRoom ? '#2a4a4a' : C.btn);
+      stroke(x, y, 105, 24, isHovered ? C.gold : C.border, 1);
+      
+      ctx.fillStyle = isCurrentRoom ? '#888' : '#fff';
+      ctx.font = '9px Consolas';
+      ctx.fillText(isCurrentRoom ? '● ' + room : room, x + 5, y + 16);
+      
+      clickables.push({
+        x, y, w: 105, h: 24,
+        action: 'moveAgent',
+        room: room,
+        tooltip: `移动到 ${room}`
+      });
+    });
+  }
+}
+
+// ===== 右面板 =====
+function drawRightPanel() {
+  const x = W - LAYOUT.right;
+  rect(x, LAYOUT.top, LAYOUT.right, CENTER_H, 'rgba(26,26,48,0.95)');
+  stroke(x, LAYOUT.top, LAYOUT.right, CENTER_H, C.border, 2);
+  
+  text('▶ 任务列表', x + 12, LAYOUT.top + 25, C.bright, 12);
+  
+  state.tasks.forEach((task, i) => {
+    const ty = LAYOUT.top + 45 + i * 60;
+    const isSelected = selectedTask?.id === task.id;
+    const isHovered = hoveredItem === task;
+    
+    rect(x + 8, ty, LAYOUT.right - 16, 52, isHovered ? C.btnHover : isSelected ? '#3a4a6a' : C.btn);
+    stroke(x + 8, ty, LAYOUT.right - 16, 52, isSelected ? C.gold : C.border, isSelected ? 2 : 1);
+    
+    // 任务名
+    ctx.fillStyle = C.bright;
+    ctx.font = 'bold 11px Consolas';
+    ctx.fillText(task.name, x + 16, ty + 16);
+    
+    // 状态
+    const statusLabels = {
+      pending: {text: '待接取', color: C.text},
+      in_progress: {text: '进行中', color: C.gold},
+      completed: {text: '已完成', color: '#228B22'},
+      failed: {text: '失败', color: C.gold},
+    };
+    const status = statusLabels[task.status] || statusLabels.pending;
+    ctx.fillStyle = status.color;
+    ctx.font = '9px Consolas';
+    ctx.fillText(status.text, x + 16, ty + 30);
+    
+    // 进度条
+    ctx.fillStyle = '#333';
+    ctx.fillRect(x + 16, ty + 38, LAYOUT.right - 40, 6);
+    ctx.fillStyle = task.status === 'in_progress' ? C.gold : task.status === 'completed' ? '#228B22' : '#555';
+    ctx.fillRect(x + 16, ty + 38, (LAYOUT.right - 40) * task.progress / 100, 6);
+    ctx.fillStyle = C.text;
+    ctx.font = '8px Consolas';
+    ctx.fillText(task.progress + '%', x + LAYOUT.right - 35, ty + 44);
+    
+    clickables.push({
+      x: x + 8, y: ty, w: LAYOUT.right - 16, h: 52,
+      action: 'selectTask',
+      task: task,
+      tooltip: `任务: ${task.name}\n进度: ${task.progress}%\n状态: ${status.text}\n点击分配给选中的Agent`
+    });
+  });
+  
+  // 日志
+  text('▶ 事件日志', x + 12, LAYOUT.top + 240, C.bright, 12);
+  
+  const logColors = {task: C.gold, social: '#228B22', system: '#888'};
+  state.logs.slice(-8).forEach((log, i) => {
+    const ly = LAYOUT.top + 260 + i * 20;
+    ctx.fillStyle = '#666';
+    ctx.font = '8px Consolas';
+    ctx.fillText(log.time, x + 12, ly);
+    ctx.fillStyle = logColors[log.type] || '#888';
+    ctx.fillText('[' + log.type + ']', x + 60, ly);
+    ctx.fillStyle = C.text;
+    ctx.fillText(log.content.substring(0, 18), x + 100, ly);
+  });
+  
+  // 快捷操作
+  text('▶ 快捷操作', x + 12, LAYOUT.top + 430, C.bright, 12);
+  
+  const actions = [
+    {label: '🎲 触发竞争', action: 'competition'},
+    {label: '📋 新建任务', action: 'newTask'},
+    {label: '💬 社交模拟', action: 'social'},
+    {label: '⏰ 时间+1小时', action: 'time'},
+  ];
+  
+  actions.forEach((act, i) => {
+    const ay = LAYOUT.top + 450 + i * 35;
+    drawBtn(act, act.label, x + 8, ay, LAYOUT.right - 16, 28, act.action, act.label);
+  });
+}
+
+// ===== 底栏 =====
+function drawBottomBar() {
+  const y = H - LAYOUT.bottom;
+  rect(0, y, W, LAYOUT.bottom, '#151525');
+  stroke(0, y, W, LAYOUT.bottom, C.border, 2);
+  
+  // 左侧状态
+  text('📍 位置: 城主办公室', 15, y + 24, C.bright, 11);
+  
+  // 操作按钮
+  const actions = [
+    {label: '新建', action: 'new'},
+    {label: '分配', action: 'assign'},
+    {label: '查看', action: 'view'},
+    {label: '删除', action: 'delete'},
+  ];
+  actions.forEach((act, i) => {
+    drawBtn(act, act.label, 280 + i * 60, y + 10, 50, 28, act.action, act.label);
+  });
+  
+  // Agent状态概览
+  const agentStatus = state.agents.map(a => `${a.name}:${a.status === 'working' ? '💻' : a.status === 'idle' ? '🟡' : '😴'}`).join(' ');
+  text('Agent: ' + agentStatus, 550, y + 24, '#90EE90', 9);
+  
+  // 输入框
+  const inputX = 850;
+  const inputY = y + 12;
+  const inputW = 450;
+  const inputH = 34;
+  
+  rect(inputX, inputY, inputW, inputH, '#1a1a30');
+  stroke(inputX, inputY, inputW, inputH, inputFocused ? C.gold : C.border, inputFocused ? 2 : 1);
+  
+  if (inputText) {
+    ctx.fillStyle = C.bright;
+    ctx.font = '11px Consolas';
+    ctx.fillText(inputText, inputX + 10, inputY + 22);
+  } else if (!inputFocused) {
+    ctx.fillStyle = '#555';
+    ctx.font = '11px Consolas';
+    ctx.fillText('输入指令... (例如: 让阿猿去休息室)', inputX + 10, inputY + 22);
+  }
+  
+  clickables.push({
+    x: inputX, y: inputY, w: inputW, h: inputH,
+    action: 'focusInput',
+    tooltip: '输入框\n输入指令控制游戏'
+  });
+  
+  // 发送按钮
+  drawBtn({label: '发送'}, '📤 发送', inputX + inputW + 10, y + 10, 70, 34, 'send', '发送指令');
+  
+  // 选中状态提示
+  if (selectedAgent) {
+    text(`已选中: ${selectedAgent.name} (${selectedAgent.profession})`, 1350, y + 24, C.gold, 11);
+  } else {
+    text('未选中Agent', 1350, y + 24, '#666', 11);
+  }
+  
+  if (selectedTask) {
+    text(`已选中任务: ${selectedTask.name}`, 1550, y + 24, C.gold, 11);
+  }
+}
+
+// ===== 主循环 =====
+function render() {
+  // 清空点击区域
+  clickables = [];
+  
+  // 清空画布
+  rect(0, 0, W, H, C.bg);
+  
+  // 绘制各区域
+  drawTopBar();
+  drawLeftPanel();
+  drawRightPanel();
+  drawBottomBar();
+  drawBuilding();
+  
+  // 模拟时间推进
+  if (Math.random() < 0.005) {
+    const parts = state.time.split(':');
+    let h = parseInt(parts[0]);
+    let m = parseInt(parts[1]);
+    m += 5;
+    if (m >= 60) { m = 0; h++; }
+    if (h >= 24) { h = 0; state.day++; }
+    state.time = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+  }
+  
+  // 模拟任务进度
+  state.tasks.forEach(task => {
+    if (task.status === 'in_progress' && task.progress < 100) {
+      task.progress += Math.random() * 0.3;
+      if (task.progress >= 100) {
+        task.progress = 100;
+        task.status = 'completed';
+        state.logs.push({time: state.time, type: 'task', content: task.name + ' 已完成！'});
+      }
+    }
+  });
+  
+  // 更新悬停状态
+  hoveredItem = null;
+  for (const item of clickables) {
+    if (mouseX >= item.x && mouseX <= item.x + item.w &&
+        mouseY >= item.y && mouseY <= item.y + item.h) {
+      hoveredItem = item;
+      break;
+    }
+  }
+  
+  // 更新鼠标样式
+  canvas.style.cursor = hoveredItem ? 'pointer' : 'default';
+  
+  // 显示提示
+  if (hoveredItem && hoveredItem.tooltip) {
+    tooltip.style.display = 'block';
+    tooltip.style.left = (parseFloat(canvas.style.left) + mouseX * parseFloat(canvas.style.width) / W + 10) + 'px';
+    tooltip.style.top = (parseFloat(canvas.style.top) + mouseY * parseFloat(canvas.style.height) / H + 10) + 'px';
+    tooltip.innerHTML = hoveredItem.tooltip.replace(/\n/g, '<br>');
+  } else {
+    tooltip.style.display = 'none';
+  }
+  
+  requestAnimationFrame(render);
+}
+
+// ===== 鼠标事件 =====
+canvas.addEventListener('mousemove', (e) => {
+  const rect2 = canvas.getBoundingClientRect();
+  const scaleX = W / rect2.width;
+  const scaleY = H / rect2.height;
+  mouseX = (e.clientX - rect2.left) * scaleX;
+  mouseY = (e.clientY - rect2.top) * scaleY;
+});
+
+canvas.addEventListener('click', (e) => {
+  const rect2 = canvas.getBoundingClientRect();
+  const scaleX = W / rect2.width;
+  const scaleY = H / rect2.height;
+  const mx = (e.clientX - rect2.left) * scaleX;
+  const my = (e.clientY - rect2.top) * scaleY;
+  
+  // 检查点击
+  for (const item of clickables) {
+    if (mx >= item.x && mx <= item.x + item.w &&
+        my >= item.y && my <= item.y + item.h) {
+      handleClick(item);
+      break;
+    }
+  }
+});
+
+function handleClick(item) {
+  switch (item.action) {
+    case 'selectAgent':
+      selectedAgent = item.agent;
+      selectedTask = null;
+      state.logs.push({time: state.time, type: 'system', content: `选中了 ${item.agent.name}`});
+      break;
+      
+    case 'selectTask':
+      selectedTask = item.task;
+      state.logs.push({time: state.time, type: 'system', content: `选中了任务: ${item.task.name}`});
+      break;
+      
+    case 'moveAgent':
+      if (selectedAgent) {
+        selectedAgent.location = item.room;
+        state.logs.push({time: state.time, type: 'system', content: `${selectedAgent.name} 移动到 ${item.room}`});
+      } else {
+        state.logs.push({time: state.time, type: 'system', content: '请先选中一个Agent'});
+      }
+      break;
+      
+    case 'room':
+      if (selectedAgent) {
+        selectedAgent.location = item.roomName;
+        state.logs.push({time: state.time, type: 'system', content: `${selectedAgent.name} → ${item.roomName}`});
+      }
+      break;
+      
+    case 'agent':
+      selectedAgent = item.agent;
+      state.logs.push({time: state.time, type: 'system', content: `选中 ${item.agent.name}`});
+      break;
+      
+    case 'competition':
+      state.logs.push({time: state.time, type: 'task', content: '🎲 触发任务竞争！'});
+      // 模拟竞争
+      const idleAgents = state.agents.filter(a => a.status === 'idle');
+      if (idleAgents.length >= 2) {
+        const winner = idleAgents[Math.floor(Math.random() * idleAgents.length)];
+        const loser = idleAgents.find(a => a.id !== winner.id);
+        if (loser) {
+          winner.mood = Math.min(100, winner.mood + 10);
+          loser.mood = Math.max(0, loser.mood - 5);
+          state.logs.push({time: state.time, type: 'social', content: `${winner.name} 抢到任务！情绪+10`});
+          state.logs.push({time: state.time, type: 'social', content: `${loser.name} 没抢到...情绪-5`});
+        }
+      }
+      break;
+      
+    case 'social':
+      const roomAgents = {};
+      state.agents.forEach(a => {
+        if (!roomAgents[a.location]) roomAgents[a.location] = [];
+        roomAgents[a.location].push(a);
+      });
+      for (const [room, agents] of Object.entries(roomAgents)) {
+        if (agents.length >= 2) {
+          const [a, b] = agents;
+          a.mood = Math.min(100, a.mood + 3);
+          b.mood = Math.min(100, b.mood + 3);
+          a.affection = (a.affection || 50) + 2;
+          b.affection = (b.affection || 50) + 2;
+          state.logs.push({time: state.time, type: 'social', content: `${a.name}和${b.name}在${room}打招呼`});
+          return;
+        }
+      }
+      state.logs.push({time: state.time, type: 'system', content: '没有满足社交条件的Agent对'});
+      break;
+      
+    case 'time':
+      const parts = state.time.split(':');
+      let h = parseInt(parts[0]);
+      h = (h + 1) % 24;
+      state.time = String(h).padStart(2, '0') + ':00';
+      state.logs.push({time: state.time, type: 'system', content: `时间推进到 ${state.time}`});
+      break;
+      
+    case 'newTask':
+      const newId = Math.max(...state.tasks.map(t => t.id)) + 1;
+      state.tasks.push({id: newId, name: '新任务' + newId, progress: 0, status: 'pending', assignee: null});
+      state.logs.push({time: state.time, type: 'task', content: `创建了新任务`});
+      break;
+      
+    case 'focusInput':
+      inputFocused = true;
+      break;
+      
+    case 'send':
+      if (inputText.trim()) {
+        state.logs.push({time: state.time, type: 'system', content: '> ' + inputText});
+        // 简单解析
+        const cmd = inputText.toLowerCase();
+        if (cmd.includes('去') || cmd.includes('移动')) {
+          const agent = state.agents.find(a => cmd.includes(a.name));
+          const room = state.rooms.find(r => cmd.includes(r));
+          if (agent && room) {
+            agent.location = room;
+            state.logs.push({time: state.time, type: 'system', content: `${agent.name} → ${room}`});
+          }
+        }
+        inputText = '';
+      }
+      break;
+      
+    case 'settings':
+      state.logs.push({time: state.time, type: 'system', content: '打开设置面板'});
+      break;
+      
+    case 'help':
+      state.logs.push({time: state.time, type: 'system', content: '帮助: 点击Agent选中，点击房间移动'});
+      break;
+  }
+}
+
+// 键盘事件
+document.addEventListener('keydown', (e) => {
+  if (inputFocused) {
+    if (e.key === 'Enter') {
+      if (inputText.trim()) {
+        state.logs.push({time: state.time, type: 'system', content: '> ' + inputText});
+        inputText = '';
+      }
+      inputFocused = false;
+    } else if (e.key === 'Backspace') {
+      inputText = inputText.slice(0, -1);
+    } else if (e.key.length === 1) {
+      inputText += e.key;
+    }
+    e.preventDefault();
+  } else if (e.key === 'Escape') {
+    selectedAgent = null;
+    selectedTask = null;
+  }
+});
+
+// 点击画布外部取消输入焦点
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('canvas')) {
+    inputFocused = false;
+  }
+});
+
+// 启动
+render();
+</script>
+</body>
+</html>

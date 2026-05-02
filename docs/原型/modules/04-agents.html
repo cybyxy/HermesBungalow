@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 04 Agent渲染</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #0a0a15; color: #eee; font-family: Consolas, monospace; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script>
+// ===== Hermes数字工作室 - 04 Agent渲染 =====
+// 职责：绘制Agent（站立、移动）、表情气泡、头顶标签
+
+const canvas = document.getElementById('ui');
+canvas.width = 1920;
+canvas.height = 1000;
+const ctx = canvas.getContext('2d');
+
+// ===== Agent尺寸 =====
+const AGENT_W = 23;
+const AGENT_H = 43;
+
+// ===== 颜色 =====
+const C = {
+  agent: '#4169E1',
+  face: '#FFE4B5',
+  bubble: 'rgba(255,255,255,0.95)',
+  bubbleText: '#000',
+  highlight: '#FFD700',
+  working: '#90EE90',
+  idle: '#FFD700',
+  resting: '#87CEEB',
+  sad: '#DC143C',
+};
+
+// ===== 基础绘图函数 =====
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+function roundRect(x, y, w, h, r, fillColor, strokeColor) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+  if (fillColor) {
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+  }
+  if (strokeColor) {
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
+// ===== 绘制Agent =====
+function drawAgent(x, y, dir = 'down', frame = 0, name = 'Agent') {
+  const ax = x - AGENT_W / 2;
+  const ay = y - AGENT_H;
+  
+  // 身体
+  rect(ax, ay, AGENT_W, AGENT_H, C.agent);
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(ax, ay, AGENT_W, AGENT_H);
+  
+  // 脸（头部区域）
+  rect(ax + 3, ay + 6, AGENT_W - 6, 12, C.face);
+  
+  // 眼睛
+  ctx.fillStyle = '#000';
+  const eyeOffset = frame * 2; // 简单动画
+  if (dir === 'up') {
+    // 背面，看不到脸
+  } else if (dir === 'left') {
+    ctx.fillRect(ax + 4, ay + 9 + eyeOffset, 2, 2);
+    ctx.fillRect(ax + 10, ay + 9 + eyeOffset, 2, 2);
+  } else if (dir === 'right') {
+    ctx.fillRect(ax + 9, ay + 9 + eyeOffset, 2, 2);
+    ctx.fillRect(ax + 15, ay + 9 + eyeOffset, 2, 2);
+  } else {
+    ctx.fillRect(ax + 5, ay + 9 + eyeOffset, 2, 2);
+    ctx.fillRect(ax + 13, ay + 9 + eyeOffset, 2, 2);
+  }
+  
+  // 方向指示
+  ctx.fillStyle = C.highlight;
+  ctx.font = '6px Consolas';
+  ctx.textAlign = 'center';
+  const arrows = {up: '↑', down: '↓', left: '←', right: '→'};
+  ctx.fillText(arrows[dir] || '↓', x, ay - 2);
+  ctx.textAlign = 'left';
+  
+  // 名字标签
+  ctx.fillStyle = '#fff';
+  ctx.font = '8px Consolas';
+  ctx.textAlign = 'center';
+  ctx.fillText(name, x, ay + AGENT_H + 10);
+  ctx.textAlign = 'left';
+}
+
+// ===== 绘制表情气泡 =====
+function drawEmotionBubble(x, y, emotion = 'happy') {
+  const texts = {
+    happy: '😄',
+    thinking: '🤔',
+    sad: '😔',
+    excited: '🎉',
+    working: '💻',
+    coffee: '☕',
+    eating: '🍔',
+    sleeping: '💤',
+  };
+  
+  const emoji = texts[emotion] || '😊';
+  
+  // 气泡背景
+  const bx = x - 15;
+  const by = y - 45;
+  roundRect(bx, by, 30, 25, 8, C.bubble, '#ccc');
+  
+  // 小三角指向
+  ctx.beginPath();
+  ctx.moveTo(x - 4, y - 20);
+  ctx.lineTo(x + 4, y - 20);
+  ctx.lineTo(x, y - 15);
+  ctx.closePath();
+  ctx.fillStyle = C.bubble;
+  ctx.fill();
+  
+  // 表情
+  text(emoji, x, by + 18, '#000', 14, 'center');
+}
+
+// ===== 绘制对话气泡 =====
+function drawChatBubble(x, y, message, isLeft = true) {
+  const bx = isLeft ? x - 80 : x - 20;
+  const by = y - 50;
+  const bw = 100;
+  const bh = 30;
+  
+  // 气泡
+  roundRect(bx, by, bw, bh, 6, C.bubble, '#999');
+  
+  // 小三角
+  ctx.beginPath();
+  if (isLeft) {
+    ctx.moveTo(bx - 5, by + bh / 2);
+    ctx.lineTo(bx, by + bh / 2 - 5);
+    ctx.lineTo(bx, by + bh / 2 + 5);
+  } else {
+    ctx.moveTo(bx + bw + 5, by + bh / 2);
+    ctx.lineTo(bx + bw, by + bh / 2 - 5);
+    ctx.lineTo(bx + bw, by + bh / 2 + 5);
+  }
+  ctx.closePath();
+  ctx.fillStyle = C.bubble;
+  ctx.fill();
+  
+  // 文字
+  ctx.fillStyle = C.bubbleText;
+  ctx.font = '9px Consolas';
+  ctx.textAlign = 'left';
+  const lines = wrapText(message, 90);
+  lines.forEach((line, i) => {
+    ctx.fillText(line, bx + 8, by + 14 + i * 12);
+  });
+  ctx.textAlign = 'left';
+}
+
+function wrapText(text, maxWidth) {
+  // 简单换行
+  if (text.length <= 12) return [text];
+  const lines = [];
+  let current = '';
+  for (const char of text) {
+    current += char;
+    if (current.length >= 12) {
+      lines.push(current);
+      current = '';
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+// ===== 绘制状态标签 =====
+function drawStatusTag(x, y, status) {
+  const colors = {
+    working: '#228B22',
+    idle: '#FFD700',
+    resting: '#4169E1',
+    eating: '#FF6347',
+    sleeping: '#9370DB',
+  };
+  
+  const labels = {
+    working: '工作中',
+    idle: '空闲',
+    resting: '休息',
+    eating: '进食',
+    sleeping: '睡眠',
+  };
+  
+  const color = colors[status] || '#888';
+  const label = labels[status] || status;
+  
+  const bx = x - 20;
+  const by = y - 70;
+  
+  roundRect(bx, by, 40, 14, 4, color, null);
+  
+  ctx.fillStyle = '#fff';
+  ctx.font = '8px Consolas';
+  ctx.textAlign = 'center';
+  ctx.fillText(label, x, by + 10);
+  ctx.textAlign = 'left';
+}
+
+// ===== 绘制路径（移动动画用）=====
+function drawPath(points, color = '#FFD700') {
+  if (points.length < 2) return;
+  
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 5]);
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+  
+  // 路径点
+  points.forEach((p, i) => {
+    ctx.fillStyle = i === 0 ? '#0f0' : i === points.length - 1 ? '#f00' : color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+// ===== 主渲染 - 展示各种状态 =====
+function render() {
+  rect(0, 0, 1920, 1000, '#0a0a15');
+  
+  text('Agent渲染展示', 960, 30, '#FFD700', 16, 'center');
+  
+  // === 各种方向的Agent ===
+  text('方向', 100, 70, '#aaa', 10);
+  const dirs = ['up', 'down', 'left', 'right'];
+  dirs.forEach((dir, i) => {
+    const x = 150 + i * 80;
+    const y = 120;
+    drawAgent(x, y, dir, 0, `方向${dir}`);
+  });
+  
+  // === 各种表情 ===
+  text('表情', 100, 180, '#aaa', 10);
+  const emotions = ['happy', 'thinking', 'sad', 'excited', 'working', 'coffee', 'eating', 'sleeping'];
+  emotions.forEach((em, i) => {
+    const x = 150 + i * 80;
+    const y = 220;
+    drawAgent(x, y, 'down', 0, '');
+    drawEmotionBubble(x, y, em);
+  });
+  
+  // === 各种状态 ===
+  text('状态', 100, 290, '#aaa', 10);
+  const statuses = ['working', 'idle', 'resting', 'eating', 'sleeping'];
+  statuses.forEach((st, i) => {
+    const x = 150 + i * 100;
+    const y = 340;
+    drawAgent(x, y, 'down', 0, '');
+    drawStatusTag(x, y, st);
+  });
+  
+  // === 对话气泡 ===
+  text('对话', 100, 400, '#aaa', 10);
+  drawAgent(200, 450, 'right', 0, '阿猿');
+  drawChatBubble(200, 450, '我来！', false);
+  
+  drawAgent(400, 450, 'left', 0, '小美');
+  drawChatBubble(400, 450, '下次再...', true);
+  
+  // === 路径示例 ===
+  text('路径', 100, 510, '#aaa', 10);
+  const pathPoints = [
+    {x: 150, y: 560},
+    {x: 250, y: 560},
+    {x: 250, y: 620},
+    {x: 400, y: 620},
+  ];
+  drawPath(pathPoints);
+  drawAgent(150, 560, 'right', 0, '');
+  drawAgent(400, 620, 'down', 0, '');
+  
+  // === 图例 ===
+  text('Agent尺寸: ' + AGENT_W + 'x' + AGENT_H, 100, 700, '#666', 9);
+}
+
+// 导出给其他模块用
+window.AGENT = {
+  W: AGENT_W,
+  H: AGENT_H,
+  drawAgent,
+  drawEmotionBubble,
+  drawChatBubble,
+  drawStatusTag,
+  drawPath,
+};
+
+render();
+</script>
+</body>
+</html>

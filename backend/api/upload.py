@@ -66,7 +66,7 @@ def handle_upload(handler):
         if content_length > MAX_UPLOAD_BYTES:
             return j(handler, {'error': f'File too large (max {MAX_UPLOAD_BYTES//1024//1024}MB)'}, status=413)
         fields, files = parse_multipart(handler.rfile, content_type, content_length)
-        session_id = fields.get('session_id', '')
+        session_id = fields.get('session_id', '') or ''
         if 'file' not in files:
             return j(handler, {'error': 'No file field in request'}, status=400)
         filename, file_bytes = files['file']
@@ -74,9 +74,13 @@ def handle_upload(handler):
             return j(handler, {'error': 'No filename in upload'}, status=400)
         try:
             s = get_session(session_id)
+            workspace = Path(s.workspace)
         except KeyError:
-            return j(handler, {'error': 'Session not found'}, status=404)
-        workspace = Path(s.workspace)
+            # No active session — fall back to temp upload dir
+            import tempfile
+            fallback = Path(tempfile.gettempdir()) / 'hermes-uploads'
+            fallback.mkdir(exist_ok=True)
+            workspace = fallback
         safe_name = _sanitize_upload_name(filename)
         dest = safe_resolve_ws(workspace, safe_name)
         dest.write_bytes(file_bytes)

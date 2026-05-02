@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 08 任务系统</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #0a0a15; color: #eee; font-family: Consolas, monospace; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script>
+// ===== Hermes数字工作室 - 08 任务系统 =====
+// 职责：任务创建、分配、执行、完成、竞争
+
+const canvas = document.getElementById('ui');
+canvas.width = 1920;
+canvas.height = 1000;
+const ctx = canvas.getContext('2d');
+
+const LAYOUT = {top: 44, bottom: 56, left: 260, right: 260};
+
+const C = {
+  bg: '#0a0a15',
+  panel: '#1a1a30',
+  border: '#333355',
+  text: '#aaa',
+  bright: '#fff',
+  gold: '#FFD700',
+  green: '#228B22',
+  blue: '#4169E1',
+  purple: '#9370DB',
+  orange: '#FF8C00',
+  red: '#DC143C',
+  yellow: '#FFD700',
+};
+
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function stroke(x, y, w, h, color, lw = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.strokeRect(x, y, w, h);
+}
+
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+// ===== 任务类 =====
+class Task {
+  constructor(id, name, profession, complexity, reward) {
+    this.id = id;
+    this.name = name;
+    this.profession = profession;
+    this.complexity = complexity; // 1-5
+    this.reward = reward;
+    this.status = 'pending'; // pending, competing, in_progress, completed, failed
+    this.progress = 0;
+    this.assignee = null;
+    this.estimateTime = complexity * 600; // 秒
+  }
+  
+  draw(x, y, w, selected = false) {
+    const colors = {
+      pending: '#2a3a5a',
+      competing: '#3a3a5a',
+      in_progress: '#2a4a3a',
+      completed: '#1a3a1a',
+      failed: '#4a2a2a',
+    };
+    
+    rect(x, y, w, 70, colors[this.status]);
+    stroke(x, y, w, 70, selected ? C.gold : C.border, selected ? 2 : 1);
+    
+    // 任务名
+    ctx.fillStyle = C.bright;
+    ctx.font = 'bold 11px Consolas';
+    ctx.fillText(this.name, x + 10, y + 18);
+    
+    // 职业标签
+    const profColors = {
+      '设计师': C.purple,
+      '程序员': C.blue,
+      '测试员': C.green,
+      '分析师': C.orange,
+    };
+    ctx.fillStyle = profColors[this.profession] || C.text;
+    ctx.font = '9px Consolas';
+    ctx.fillText('[' + this.profession + ']', x + 10, y + 32);
+    
+    // 复杂度
+    ctx.fillStyle = C.text;
+    ctx.fillText('难度:', x + 80, y + 32);
+    for (let i = 0; i < 5; i++) {
+      ctx.fillStyle = i < this.complexity ? C.red : '#333';
+      ctx.fillRect(x + 115 + i * 12, y + 25, 10, 8);
+    }
+    
+    // 进度条
+    ctx.fillStyle = '#333';
+    ctx.fillRect(x + 10, y + 42, w - 20, 8);
+    
+    const progressColors = {
+      pending: C.text,
+      competing: C.yellow,
+      in_progress: C.green,
+      completed: C.green,
+      failed: C.red,
+    };
+    ctx.fillStyle = progressColors[this.status];
+    ctx.fillRect(x + 10, y + 42, (w - 20) * this.progress / 100, 8);
+    
+    ctx.fillStyle = C.text;
+    ctx.font = '9px Consolas';
+    ctx.fillText(this.progress + '%', x + w - 30, y + 50);
+    
+    // 状态标签
+    const statusLabels = {
+      pending: '待接取',
+      competing: '竞争中',
+      in_progress: '进行中',
+      completed: '已完成',
+      failed: '失败',
+    };
+    ctx.fillStyle = progressColors[this.status];
+    ctx.fillText(statusLabels[this.status], x + w - 60, y + 18);
+  }
+}
+
+// ===== 竞争动画类 =====
+class Competition {
+  constructor(task, agents) {
+    this.task = task;
+    this.agents = agents;
+    this.phase = 'announce'; // announce, drawing, result
+    this.winner = null;
+    this.timer = 0;
+    this.duration = 3000; // 3秒
+  }
+  
+  update(dt) {
+    this.timer += dt;
+    if (this.timer > this.duration && this.phase === 'announce') {
+      this.phase = 'drawing';
+      this.timer = 0;
+    } else if (this.timer > 1000 && this.phase === 'drawing') {
+      this.phase = 'result';
+      this.winner = this.agents[Math.floor(Math.random() * this.agents.length)];
+    }
+  }
+  
+  draw(x, y) {
+    rect(x, y, 400, 120, '#2a2a3a');
+    stroke(x, y, 400, 120, C.yellow, 2);
+    
+    text('🎲 任务竞争', x + 200, y + 20, C.gold, 12, 'center');
+    
+    if (this.phase === 'announce') {
+      text('【竞争】' + this.task.name, x + 200, y + 45, C.bright, 10, 'center');
+      this.agents.forEach((a, i) => {
+        text(a.name + ' 举手！', x + 200, y + 65 + i * 18, C.text, 10, 'center');
+      });
+      text('抽签中...', x + 200, y + 110, C.yellow, 10, 'center');
+    } else if (this.phase === 'drawing') {
+      text('🎰 随机抽签中...', x + 200, y + 60, C.yellow, 14, 'center');
+    } else {
+      text('🎉 ' + this.winner.name + ' 抢到了任务！', x + 200, y + 50, C.green, 12, 'center');
+      text('情绪 +8~15', x + 200, y + 75, C.green, 10, 'center');
+      
+      const losers = this.agents.filter(a => a.id !== this.winner.id);
+      losers.forEach((a, i) => {
+        text(a.name + ' 😔 情绪 -5~10', x + 200, y + 95 + i * 15, C.red, 9, 'center');
+      });
+    }
+  }
+  
+  isDone() {
+    return this.phase === 'result';
+  }
+}
+
+// ===== 游戏状态 =====
+const state = {
+  tasks: [
+    new Task(1, '设计登录页面', '设计师', 2, 100),
+    new Task(2, '编写API接口', '程序员', 4, 200),
+    new Task(3, '测试支付模块', '测试员', 3, 150),
+    new Task(4, '数据分析报告', '分析师', 2, 120),
+    new Task(5, '优化数据库', '程序员', 5, 250),
+  ],
+  agents: [
+    {id: 'A', name: '阿猿', profession: '程序员', status: 'idle'},
+    {id: 'B', name: '小美', profession: '设计师', status: 'idle'},
+    {id: 'C', name: '点点', profession: '测试员', status: 'idle'},
+    {id: 'D', name: '数据帝', profession: '分析师', status: 'idle'},
+  ],
+  competition: null,
+  selectedTask: null,
+  selectedAgent: null,
+};
+
+// ===== 任务分配模拟 =====
+function assignTask(taskId, agentId) {
+  const task = state.tasks.find(t => t.id === taskId);
+  const agent = state.agents.find(a => a.id === agentId);
+  
+  if (!task || !agent) return;
+  
+  // 检查同职业竞争
+  const sameProfession = state.agents.filter(a => 
+    a.profession === agent.profession && a.id !== agent.id && a.status === 'idle'
+  );
+  
+  if (sameProfession.length > 0 && task.complexity <= 2) {
+    // 触发竞争
+    state.competition = new Competition(task, [agent, ...sameProfession]);
+    task.status = 'competing';
+  } else {
+    // 直接分配
+    task.status = 'in_progress';
+    task.assignee = agent;
+    task.progress = 0;
+    agent.status = 'working';
+  }
+}
+
+// ===== 主渲染 =====
+let lastTime = Date.now();
+
+function render() {
+  const now = Date.now();
+  const dt = now - lastTime;
+  lastTime = now;
+  
+  rect(0, 0, 1920, 1000, C.bg);
+  
+  // 顶栏
+  rect(0, 0, 1920, LAYOUT.top, '#151525');
+  stroke(0, 0, 1920, LAYOUT.top, C.border, 2);
+  text('Hermes数字工作室 - 任务系统', 15, 28, C.gold, 14);
+  text('任务创建 → 分配 → 执行 → 完成', 400, 28, C.text, 11);
+  
+  // 左侧面板 - 任务列表
+  rect(0, LAYOUT.top, LAYOUT.left, 800, 'rgba(26,26,48,0.9)');
+  stroke(0, LAYOUT.top, LAYOUT.left, 800, C.border, 2);
+  text('📋 任务列表', 12, LAYOUT.top + 25, C.gold, 12);
+  
+  state.tasks.forEach((task, i) => {
+    task.draw(8, LAYOUT.top + 35 + i * 75, LAYOUT.left - 16, state.selectedTask === task.id);
+  });
+  
+  // 中央区域 - 竞争动画
+  const centerX = LAYOUT.left + 50;
+  const centerY = LAYOUT.top + 100;
+  
+  if (state.competition) {
+    state.competition.update(dt);
+    state.competition.draw(centerX, centerY);
+    
+    if (state.competition.isDone()) {
+      // 竞争结束，更新任务状态
+      const comp = state.competition;
+      comp.task.status = 'in_progress';
+      comp.task.assignee = comp.winner;
+      comp.task.progress = 0;
+      comp.winner.status = 'working';
+      
+      // 输家状态
+      const losers = comp.agents.filter(a => a.id !== comp.winner.id);
+      losers.forEach(a => {
+        // 输家状态已在UI显示
+      });
+      
+      state.competition = null;
+    }
+  } else {
+    // 任务流程说明
+    rect(centerX, centerY, 500, 150, '#1a1a30');
+    stroke(centerX, centerY, 500, 150, C.border);
+    text('📖 任务流程', centerX + 20, centerY + 25, C.gold, 12);
+    
+    const steps = [
+      '1. 创建任务（城主/主agent）',
+      '2. AI分析复杂度与所需职业',
+      '3. 分配给合适的Agent',
+      '4. Agent执行任务（可协作）',
+      '5. 任务完成 → 评价 → 结算',
+    ];
+    steps.forEach((s, i) => {
+      text(s, centerX + 20, centerY + 50 + i * 20, C.text, 10);
+    });
+  }
+  
+  // 模拟任务进度
+  state.tasks.forEach(task => {
+    if (task.status === 'in_progress' && task.progress < 100) {
+      task.progress += 0.5;
+      if (task.progress >= 100) {
+        task.progress = 100;
+        task.status = 'completed';
+        if (task.assignee) {
+          task.assignee.status = 'idle';
+        }
+      }
+    }
+  });
+  
+  // 右侧面板 - Agent列表
+  const rightX = 1920 - LAYOUT.right;
+  rect(rightX, LAYOUT.top, LAYOUT.right, 800, 'rgba(26,26,48,0.9)');
+  stroke(rightX, LAYOUT.top, LAYOUT.right, 800, C.border, 2);
+  text('🤖 Agent列表', rightX + 12, LAYOUT.top + 25, C.gold, 12);
+  
+  const profColors = {
+    '程序员': C.blue,
+    '设计师': C.purple,
+    '测试员': C.green,
+    '分析师': C.orange,
+  };
+  
+  state.agents.forEach((agent, i) => {
+    const ay = LAYOUT.top + 40 + i * 80;
+    
+    rect(rightX + 8, ay, LAYOUT.right - 16, 70, '#2a3a5a');
+    stroke(rightX + 8, ay, LAYOUT.right - 16, 70, C.border);
+    
+    // Agent名
+    ctx.fillStyle = C.bright;
+    ctx.font = 'bold 11px Consolas';
+    ctx.fillText(agent.name, rightX + 16, ay + 18);
+    
+    // 职业
+    ctx.fillStyle = profColors[agent.profession] || C.text;
+    ctx.font = '9px Consolas';
+    ctx.fillText(agent.profession, rightX + 16, ay + 35);
+    
+    // 状态
+    const statusColors = {
+      idle: C.yellow,
+      working: C.green,
+      resting: C.blue,
+    };
+    ctx.fillStyle = statusColors[agent.status] || C.text;
+    ctx.fillText(agent.status === 'idle' ? '🟡 空闲' : agent.status === 'working' ? '🟢工作中' : '🔵休息', rightX + 16, ay + 52);
+    
+    // 分配按钮
+    ctx.fillStyle = '#2a4a2a';
+    ctx.fillRect(rightX + 16, ay + 58, 60, 18);
+    stroke(rightX + 16, ay + 58, 60, 18, C.green);
+    ctx.fillStyle = '#fff';
+    ctx.font = '8px Consolas';
+    ctx.fillText('分配任务', rightX + 46, ay + 70, '#fff', 8, 'center');
+  });
+  
+  // 底部操作栏
+  const bottomY = 1000 - LAYOUT.bottom;
+  rect(0, bottomY, 1920, LAYOUT.bottom, '#151525');
+  stroke(0, bottomY, 1920, LAYOUT.bottom, C.border, 2);
+  
+  text('💡 任务竞争：同职业≥2个空闲Agent时举手竞争，纯随机抽签', 15, bottomY + 24, C.text, 10);
+  text('状态：空闲Agent数=' + state.agents.filter(a => a.status === 'idle').length, 500, bottomY + 24, C.yellow, 10);
+  
+  // 模拟按钮
+  ctx.fillStyle = '#3a3a5a';
+  ctx.fillRect(700, bottomY + 10, 100, 28);
+  stroke(700, bottomY + 10, 100, 28, C.border);
+  ctx.fillStyle = '#fff';
+  ctx.font = '10px Consolas';
+  ctx.fillText('🎲 触发竞争', 750, bottomY + 28, '#fff', 10, 'center');
+  
+  ctx.fillStyle = '#3a3a5a';
+  ctx.fillRect(820, bottomY + 10, 100, 28);
+  stroke(820, bottomY + 10, 100, 28, C.border);
+  ctx.fillStyle = '#fff';
+  ctx.fillText('✓ 完成任务', 870, bottomY + 28, '#fff', 10, 'center');
+  
+  // 点击模拟
+  canvas.onclick = (e) => {
+    const rect2 = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect2.left) * canvas.width / rect2.width;
+    const my = (e.clientY - rect2.top) * canvas.height / rect2.height;
+    
+    // 触发竞争按钮
+    if (mx >= 700 && mx <= 800 && my >= bottomY + 10 && my <= bottomY + 38) {
+      const idleAgents = state.agents.filter(a => a.status === 'idle');
+      if (idleAgents.length >= 2) {
+        const sameProf = {};
+        idleAgents.forEach(a => {
+          if (!sameProf[a.profession]) sameProf[a.profession] = [];
+          sameProf[a.profession].push(a);
+        });
+        
+        const competitors = Object.values(sameProf).find(arr => arr.length >= 2);
+        if (competitors) {
+          const task = state.tasks.find(t => t.status === 'pending');
+          if (task) {
+            state.competition = new Competition(task, competitors);
+            task.status = 'competing';
+          }
+        }
+      }
+    }
+  };
+  
+  requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>

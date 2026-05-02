@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 设计系统 V1（讨论结论落地）</title>
+<style>
+* { margin: 0; padding: 0; }
+body { background: #0a0a15; color: #eee; font-family: Consolas, monospace; overflow: hidden; }
+canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script>
+// ===== 设计系统 V1 原型 =====
+// 基于 Sprint1 设计讨论结论：
+// 1. 状态色系统（薄荷绿/琥珀金/珊瑚红/天蓝）
+// 2. 侧边栏 Agent 卡片（8×8状态色块 + 分段健康度条 + emoji徽章）
+// 3. 顶栏3秒法则 + 次要信息悬浮面板
+// 4. 动效轻量化规范（气泡150ms/状态切换200ms/匀速移动）
+
+const canvas = document.getElementById('ui');
+canvas.width = 1920;
+canvas.height = 1000;
+const ctx = canvas.getContext('2d');
+
+const W = 1920, H = 1000;
+
+// ===== 布局常量 =====
+const LAYOUT = {
+  top: 44,
+  bottom: 56,
+  left: 260,
+  right: 300
+};
+
+// ===== 状态色系统（讨论结论）=====
+const STATUS_COLOR = {
+  normal:    '#7FBB8B',  // 正常/在线 薄荷绿
+  thinking:   '#E8A850',  // 进行中/思考 琥珀金
+  warning:   '#D46A6A',  // 负面/警告 珊瑚红
+  info:      '#6AABD0',  // 信息/中立 天蓝
+};
+
+// ===== 基础绘图函数 =====
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+function stroke(x, y, w, h, color, lw = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.strokeRect(x, y, w, h);
+}
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas, monospace';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+// ===== 顶栏：3秒法则 + 悬浮面板 =====
+function drawTopBar() {
+  // 顶栏背景
+  rect(0, 0, W, LAYOUT.top, '#151525');
+  stroke(0, 0, W, LAYOUT.top, '#333355', 2);
+
+  // 左：Logo + 游戏时间（核心信息，3秒可见）
+  text('🏠 Hermes数字小屋', 15, 28, '#FFD700', 14);
+  text('第 1 天  08:30', 200, 28, '#aaa', 11);
+
+  // 中：Agent在线状态图标（3秒扫一眼就知道全员情况）
+  const agents = [
+    { icon: '👑', status: 'normal' },
+    { icon: '🤖', status: 'thinking' },
+    { icon: '🎨', status: 'normal' },
+    { icon: '💻', status: 'warning' },
+    { icon: '📊', status: 'info' },
+  ];
+  const startX = W / 2 - (agents.length * 38) / 2;
+  agents.forEach((a, i) => {
+    const ax = startX + i * 38;
+    const ay = 6;
+    // 圆形头像背景
+    ctx.beginPath();
+    ctx.arc(ax + 16, ay + 16, 16, 0, Math.PI * 2);
+    ctx.fillStyle = '#2a2a4a';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = STATUS_COLOR[a.status];
+    ctx.stroke();
+    // Emoji
+    ctx.font = '18px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(a.icon, ax + 16, ay + 16 + 6);
+    // 状态色小圆点（右下角）
+    ctx.beginPath();
+    ctx.arc(ax + 26, ay + 26, 5, 0, Math.PI * 2);
+    ctx.fillStyle = STATUS_COLOR[a.status];
+    ctx.fill();
+  });
+  ctx.textAlign = 'left';
+
+  // 右：核心数值（3秒可见）
+  text('💰 1,250', 1400, 20, '#FFD700', 11);
+  text('⚡ 85%', 1400, 36, STATUS_COLOR.normal, 11);
+  text('👥 5', 1490, 20, '#aaa', 11);
+  text('📋 3', 1490, 36, '#aaa', 11);
+
+  // 次要信息收纳按钮（hover显示悬浮面板）
+  const moreX = 1550;
+  rect(moreX, 10, 40, 24, '#2a3a5a');
+  stroke(moreX, 10, 40, 24, '#333355');
+  text('⋯', moreX + 20, 26, '#aaa', 14, 'center');
+}
+
+// ===== 左面板：Agent卡片（状态色块 + 分段健康度条 + emoji徽章）=====
+function drawAgentCard(x, y, agent) {
+  const cardW = LAYOUT.left - 20;
+  const cardH = 80;
+
+  // 卡片背景
+  rect(x, y, cardW, cardH, '#1a1a30');
+  stroke(x, y, cardW, cardH, '#333355');
+
+  // 左上角 8×8px 状态色块
+  rect(x + 8, y + 8, 8, 8, STATUS_COLOR[agent.status]);
+
+  // 名字
+  text(agent.name, x + 22, y + 16, '#eee', 11);
+
+  // 职业标签
+  ctx.font = '9px Consolas';
+  ctx.fillStyle = '#666';
+  ctx.textAlign = 'left';
+  ctx.fillText(agent.role, x + 22, y + 28);
+
+  // emoji徽章（OpenMoji风格，背景配状态色）
+  const badgeX = x + cardW - 32;
+  const badgeY = y + 8;
+  const badgeSize = 20;
+  rect(badgeX, badgeY, badgeSize, badgeSize, STATUS_COLOR[agent.status]);
+  ctx.font = '14px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(agent.emoji, badgeX + badgeSize/2, badgeY + badgeSize/2 + 5);
+
+  // 健康度条：分段色块（绿→黄→红）
+  // 简化：用一个渐进色条表示，实际分段在状态切换时渐变
+  const barX = x + 8;
+  const barY = y + 36;
+  const barW = cardW - 16;
+  const barH = 8;
+
+  // 底色
+  rect(barX, barY, barW, barH, '#2a2a3a');
+
+  // 分段色块：绿(0-60%) | 黄(60-85%) | 红(85-100%)
+  // 当前值占的色块
+  const pct = agent.health / 100;
+  let barColor = STATUS_COLOR.normal;
+  if (pct >= 0.85) barColor = STATUS_COLOR.warning;
+  else if (pct >= 0.60) barColor = STATUS_COLOR.thinking;
+
+  // 分段绘制（模拟分段效果）
+  const segmentW = barW / 10;
+  for (let s = 0; s < 10; s++) {
+    const sPct = s / 10;
+    let sColor = '#2a2a3a';
+    if (sPct < pct) {
+      if (sPct < 0.6) sColor = STATUS_COLOR.normal;
+      else if (sPct < 0.85) sColor = STATUS_COLOR.thinking;
+      else sColor = STATUS_COLOR.warning;
+    }
+    rect(barX + s * segmentW, barY, segmentW - 1, barH, sColor);
+  }
+
+  // 百分比文字
+  ctx.font = '9px Consolas';
+  ctx.fillStyle = '#aaa';
+  ctx.textAlign = 'right';
+  ctx.fillText(Math.round(agent.health) + '%', barX + barW, barY + barH + 11);
+
+  // 情绪值（小进度条）
+  const emoY = y + 56;
+  rect(barX, emoY, barW, 4, '#2a2a3a');
+  const emoColor = agent.mood >= 60 ? STATUS_COLOR.normal : agent.mood >= 30 ? STATUS_COLOR.thinking : STATUS_COLOR.warning;
+  rect(barX, emoY, barW * agent.mood / 100, 4, emoColor);
+
+  // 状态标签
+  ctx.font = '9px Consolas';
+  ctx.fillStyle = STATUS_COLOR[agent.status];
+  ctx.textAlign = 'left';
+  const statusLabel = { normal: '● 在线', thinking: '◐ 思考中', warning: '⚠ 异常', info: '○ 待机' };
+  ctx.fillText(statusLabel[agent.status], barX, y + cardH - 8);
+}
+
+// ===== 中央：基地像素风示意图 =====
+function drawCenter() {
+  const cx = LAYOUT.left;
+  const cy = LAYOUT.top;
+  const cw = W - LAYOUT.left - LAYOUT.right;
+  const ch = H - LAYOUT.top - LAYOUT.bottom;
+
+  // 背景
+  rect(cx, cy, cw, ch, '#1a1a2a');
+
+  // 地板格子（32×32像素风格）
+  const tileSize = 32;
+  for (let tx = 0; tx < cw / tileSize; tx++) {
+    for (let ty = 0; ty < ch / tileSize; ty++) {
+      const isLight = (tx + ty) % 2 === 0;
+      rect(cx + tx * tileSize, cy + ty * tileSize, tileSize, tileSize, isLight ? '#2a2a3a' : '#252535');
+    }
+  }
+
+  // 房间示意（简化）
+  const rooms = [
+    { x: cx + 40, y: cy + 40, w: 192, h: 192, label: '休息室', color: '#3a3a5a' },
+    { x: cx + 260, y: cy + 40, w: 192, h: 192, label: '资料室', color: '#3a3a5a' },
+    { x: cx + 480, y: cy + 40, w: 192, h: 192, label: '会议室', color: '#3a3a5a' },
+    { x: cx + 700, y: cy + 40, w: 192, h: 192, label: '🖥️ 机房', color: '#3a4a5a' },
+  ];
+
+  rooms.forEach(r => {
+    rect(r.x, r.y, r.w, r.h, r.color);
+    stroke(r.x, r.y, r.w, r.h, '#555577', 2);
+    ctx.font = '10px Consolas';
+    ctx.fillStyle = '#aaa';
+    ctx.textAlign = 'center';
+    ctx.fillText(r.label, r.x + r.w/2, r.y + r.h/2 + 4);
+  });
+
+  // Agent 示意图（像素风格简化）
+  const agents = [
+    { x: cx + 120, y: cy + 100, emoji: '🤖', status: 'thinking' },
+    { x: cx + 340, y: cy + 130, emoji: '🎨', status: 'normal' },
+    { x: cx + 560, y: cy + 110, emoji: '💻', status: 'warning' },
+  ];
+
+  agents.forEach(a => {
+    // Agent头顶气泡（动效：opacity 0→1，150ms ease-out）
+    // 原型中用半透明模拟渐入效果
+    ctx.font = '11px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(30,30,50,0.85)';
+    ctx.fillText('💬 思考中...', a.x, a.y - 20);
+
+    // Agent本体
+    ctx.font = '24px Arial';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(a.emoji, a.x, a.y + 8);
+
+    // 状态色底座
+    ctx.beginPath();
+    ctx.arc(a.x, a.y + 14, 8, 0, Math.PI * 2);
+    ctx.fillStyle = STATUS_COLOR[a.status];
+    ctx.fill();
+  });
+
+  ctx.textAlign = 'left';
+}
+
+// ===== 右面板：任务列表 =====
+function drawRightPanel() {
+  const x = W - LAYOUT.right;
+  const y = LAYOUT.top;
+  const w = LAYOUT.right;
+  const h = H - LAYOUT.top - LAYOUT.bottom;
+
+  rect(x, y, w, h, 'rgba(26,26,48,0.95)');
+  stroke(x, y, w, h, '#333355', 2);
+
+  text('▶ 任务面板', x + 12, y + 25, '#eee', 12);
+
+  const tasks = [
+    { n: '编写代码', p: 65, s: 'thinking' },
+    { n: '设计UI', p: 30, s: 'normal' },
+    { n: '修复Bug', p: 80, s: 'warning' },
+    { n: '开会讨论', p: 10, s: 'info' },
+  ];
+
+  tasks.forEach((t, i) => {
+    const ty = y + 45 + i * 60;
+    rect(x + 8, ty, w - 16, 52, '#2a2a3a');
+    stroke(x + 8, ty, w - 16, 52, STATUS_COLOR[t.s]);
+
+    // 任务名称
+    text(t.n, x + 16, ty + 16, '#eee', 11);
+
+    // 分段健康度条
+    const barX = x + 16;
+    const barY = ty + 24;
+    const barW = w - 32;
+    const barH = 8;
+
+    rect(barX, barY, barW, barH, '#1a1a2a');
+    const pct = t.p / 100;
+    const segW = barW / 10;
+    for (let s = 0; s < 10; s++) {
+      const sPct = s / 10;
+      let sColor = '#1a1a2a';
+      if (sPct < pct) sColor = STATUS_COLOR[t.s];
+      rect(barX + s * segW, barY, segW - 1, barH, sColor);
+    }
+
+    // 百分比
+    ctx.font = '9px Consolas';
+    ctx.fillStyle = '#888';
+    ctx.textAlign = 'right';
+    ctx.fillText(t.p + '%', barX + barW, barY + barH + 11);
+    ctx.textAlign = 'left';
+  });
+}
+
+// ===== 底栏 =====
+function drawBottomBar() {
+  const y = H - LAYOUT.bottom;
+  rect(0, y, W, LAYOUT.bottom, '#151525');
+  stroke(0, y, W, LAYOUT.bottom, '#333355', 2);
+
+  const menus = ['👥 Agent', '📋 任务', '💬 社交', '🏠 基地', '👑 城主', '🎲 事件', '❓ 帮助'];
+  let mx = 15;
+  menus.forEach((m, i) => {
+    const mw = m === '❓ 帮助' ? 70 : 75;
+    rect(mx, y + 10, mw, 34, '#2a3a5a');
+    stroke(mx, y + 10, mw, 34, '#333355');
+    ctx.font = '10px Consolas';
+    ctx.fillStyle = '#eee';
+    ctx.textAlign = 'center';
+    ctx.fillText(m, mx + mw/2, y + 31);
+    mx += mw + 5;
+  });
+
+  ctx.textAlign = 'left';
+  text('速度: ▶▶ 2x', W - 200, y + 30, '#aaa', 11);
+}
+
+// ===== 主循环 =====
+function draw() {
+  // 清空
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0a0a15';
+  ctx.fillRect(0, 0, W, H);
+
+  drawTopBar();
+  drawLeftPanel();
+  drawCenter();
+  drawRightPanel();
+  drawBottomBar();
+}
+
+// ===== 左面板 =====
+function drawLeftPanel() {
+  const x = 10;
+  const y = LAYOUT.top + 10;
+
+  text('👥 Agent', x + 10, y, '#eee', 12);
+
+  const agents = [
+    { name: '崽崽', role: '产品/UX', emoji: '👑', status: 'normal', health: 95, mood: 85 },
+    { name: '马斯特', role: '后端开发', emoji: '🤖', status: 'thinking', health: 72, mood: 60 },
+    { name: '林见溪', role: 'UI设计', emoji: '🎨', status: 'normal', health: 88, mood: 92 },
+    { name: '陆向宇', role: '前端架构', emoji: '💻', status: 'warning', health: 45, mood: 30 },
+    { name: '顾言卿', role: '需求分析', emoji: '📊', status: 'info', health: 100, mood: 75 },
+  ];
+
+  agents.forEach((a, i) => {
+    drawAgentCard(x, y + 20 + i * 90, a);
+  });
+}
+
+// 启动
+draw();
+</script>
+</body>
+</html>

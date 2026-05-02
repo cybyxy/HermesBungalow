@@ -16,6 +16,27 @@ trap 'rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true' EXIT
 
 echo "[start-dev] root: ${ROOT_DIR}"
 
+# 必须用「同一个」解释器跑 uvicorn；若默认 python3 是 3.14，而 PYTHONPATH/环境里又混进 Hermes 3.11 venv 的包，会出现
+# logging.Formatter 循环导入等错误（见 backend/.dev-backend.log）。
+resolve_backend_python() {
+  if [[ -n "${HERMES_WEBUI_PYTHON:-}" && -x "${HERMES_WEBUI_PYTHON}" ]]; then
+    echo "${HERMES_WEBUI_PYTHON}"
+    return
+  fi
+  local hermes_venv="${HOME}/.hermes/hermes-agent/venv/bin/python"
+  if [[ -x "${hermes_venv}" ]]; then
+    echo "${hermes_venv}"
+    return
+  fi
+  if [[ -x "${ROOT_DIR}/backend/.venv/bin/python" ]]; then
+    echo "${ROOT_DIR}/backend/.venv/bin/python"
+    return
+  fi
+  command -v python3
+}
+BACKEND_PYTHON="$(resolve_backend_python)"
+echo "[start-dev] backend python: ${BACKEND_PYTHON}"
+
 kill_port() {
   local port="$1"
   local pids
@@ -73,11 +94,11 @@ kill_port 3000
 
 echo "[start-dev] starting backend on 127.0.0.1:8000"
 (
-  cd "${ROOT_DIR}" && \
+  cd "${ROOT_DIR}/backend" && \
   HERMES_WEBUI_ENABLED=1 \
   HERMES_WEBUI_AUTOSTART=1 \
   HERMES_SKIP_STARTUP_SESSION=1 \
-  python3 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+  PYTHONPATH=. "${BACKEND_PYTHON}" -m uvicorn server:app --host 127.0.0.1 --port 8000
 ) >"${BACKEND_LOG}" 2>&1 &
 backend_pid=$!
 echo "${backend_pid}" > "${BACKEND_PID_FILE}"

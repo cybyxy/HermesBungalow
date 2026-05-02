@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 完整原型</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #0a0a15; color: #eee; font-family: Consolas, 'Microsoft YaHei', monospace; overflow: hidden; }
+  canvas { display: block; }
+  
+  /* 弹窗 */
+  .popup-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); display: none; justify-content: center; align-items: center;
+    z-index: 1000;
+  }
+  .popup-overlay.show { display: flex; }
+  .popup {
+    background: #1a1a30; border: 2px solid #FFD700; border-radius: 12px;
+    width: 90%; max-width: 900px; max-height: 80vh;
+    overflow: hidden; display: flex; flex-direction: column;
+    box-shadow: 0 0 60px rgba(255, 215, 0, 0.2);
+  }
+  .popup-header {
+    background: #252540; padding: 12px 16px; display: flex; justify-content: space-between;
+    align-items: center; border-bottom: 1px solid #333; flex-shrink: 0;
+  }
+  .popup-title { color: #FFD700; font-size: 14px; font-weight: bold; }
+  .popup-subtitle { color: #888; font-size: 11px; margin-top: 4px; }
+  .popup-close { color: #888; font-size: 18px; cursor: pointer; padding: 0 8px; }
+  .popup-close:hover { color: #FFD700; }
+  .popup-header-actions { display: flex; align-items: center; gap: 6px; }
+  .popup-header-btn { display: none; padding: 4px 10px; font-size: 11px; border-radius: 4px; border: 1px solid #3a7a3a; background: #2a5a2a; color: #fff; cursor: pointer; }
+  .popup-content { padding: 16px; flex: 1; overflow-y: auto; }
+  .popup-content::-webkit-scrollbar { width: 6px; }
+  .popup-content::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+  .popup-footer { padding: 12px 16px; border-top: 1px solid #333; display: flex; justify-content: flex-end; gap: 10px; }
+  
+  /* 标签页 */
+  .tabs { display: flex; border-bottom: 1px solid #333; margin-bottom: 16px; }
+  .tab { padding: 8px 16px; color: #888; cursor: pointer; border-bottom: 2px solid transparent; font-size: 12px; }
+  .tab:hover { color: #ccc; }
+  .tab.active { color: #FFD700; border-bottom-color: #FFD700; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  
+  /* 进度条 */
+  .progress-bar { height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; background: #228B22; transition: width 0.3s; }
+  .progress-fill.warning { background: #FF8C00; }
+  .progress-fill.danger { background: #DC143C; }
+  
+  /* 属性条 */
+  .stat-bar { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .stat-label { width: 60px; font-size: 10px; color: #888; }
+  .stat-bar-inner { flex: 1; height: 6px; background: #333; border-radius: 3px; }
+  .stat-bar-fill { height: 100%; border-radius: 3px; }
+  .stat-value { width: 35px; font-size: 10px; color: #aaa; text-align: right; }
+  
+  /* 标签 */
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 10px; margin-right: 4px; }
+  .tag-green { background: #1a3a1a; color: #90EE90; }
+  .tag-blue { background: #1a2a3a; color: #87CEEB; }
+  .tag-yellow { background: #3a3a1a; color: #FFD700; }
+  .tag-red { background: #3a1a1a; color: #ff6b6b; }
+  .tag-purple { background: #2a1a3a; color: #DDA0DD; }
+  
+  /* 按钮 */
+  .btn { padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 12px; border: 1px solid #444; transition: all 0.2s; }
+  .btn-primary { background: #2a5a2a; color: #fff; border-color: #3a7a3a; }
+  .btn-primary:hover { background: #3a6a3a; }
+  .btn-secondary { background: #2a3a5a; color: #ccc; }
+  .btn-secondary:hover { background: #3a4a6a; }
+  .btn-danger { background: #5a2a2a; color: #ff6b6b; border-color: #7a3a3a; }
+  .btn-danger:hover { background: #6a3a3a; }
+  .btn-icon { background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px 4px; }
+  
+  /* 表单 */
+  .form-group { margin-bottom: 12px; }
+  .form-label { display: block; color: #aaa; font-size: 11px; margin-bottom: 4px; }
+  .form-input { width: 100%; padding: 8px 12px; background: #0a0a15; border: 1px solid #333; border-radius: 4px; color: #fff; font-size: 12px; box-sizing: border-box; }
+  .form-input:focus { outline: none; border-color: #FFD700; }
+  .form-textarea { width: 100%; padding: 10px 12px; background: #0a0a15; border: 1px solid #333; border-radius: 6px; color: #fff; font-size: 12px; line-height: 1.5; box-sizing: border-box; resize: vertical; }
+  .form-textarea:focus { outline: none; border-color: #FFD700; }
+  .form-select { width: 100%; padding: 8px 12px; background: #0a0a15; border: 1px solid #333; border-radius: 4px; color: #fff; font-size: 12px; }
+  
+  /* 列表项 */
+  .list-item { padding: 10px 12px; background: #252540; border-radius: 4px; margin-bottom: 8px; cursor: pointer; transition: background 0.15s; }
+  .list-item:hover { background: #2a2a4a; }
+  .list-item.selected { background: #3a4a6a; border: 1px solid #FFD700; }
+  
+  /* 网格 */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  
+  /* 菜单 */
+  .menu-popup { position: fixed; background: rgba(20, 20, 40, 0.98); border: 2px solid #FFD700; border-radius: 8px; padding: 8px 0; min-width: 220px; max-height: 500px; overflow-y: auto; box-shadow: 0 5px 30px rgba(0,0,0,0.5); z-index: 1000; }
+  .menu-popup::-webkit-scrollbar { width: 6px; }
+  .menu-popup::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+  .menu-header { padding: 8px 16px; color: #FFD700; font-size: 11px; border-bottom: 1px solid #333; margin-bottom: 4px; }
+  .menu-item { padding: 10px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 12px; transition: background 0.15s; }
+  .menu-item:hover { background: rgba(255, 215, 0, 0.15); }
+  .menu-item.disabled { color: #555; cursor: not-allowed; }
+  .menu-item.disabled:hover { background: transparent; }
+  .menu-separator { height: 1px; background: #333; margin: 6px 0; }
+  .menu-hotkey { color: #666; font-size: 10px; margin-left: auto; }
+  
+  .tooltip { position: fixed; background: rgba(26,26,48,0.95); border: 1px solid #FFD700; padding: 8px 12px; border-radius: 4px; font-size: 11px; pointer-events: none; display: none; z-index: 1001; color: #fff; max-width: 300px; }
+  
+  /* Agent弹窗Tab按钮 */
+  .tab-btn { flex: none; padding: 10px 12px; background: transparent; border: none; color: #888; font-size: 11px; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; }
+  .tab-btn:hover { color: #ccc; }
+  .tab-btn.active { color: #FFD700; border-bottom-color: #FFD700; background: #1a1a30; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<div class="menu-popup" id="menuPopup" style="display:none;"></div>
+<div class="tooltip" id="tooltip"></div>
+
+<!-- 弹窗容器 -->
+<div class="popup-overlay" id="popupOverlay">
+  <div class="popup" id="popupContent">
+    <div class="popup-header">
+      <div>
+        <span class="popup-title" id="popupTitle">标题</span>
+        <div class="popup-subtitle" id="popupSubtitle"></div>
+      </div>
+      <div class="popup-header-actions">
+        <button type="button" class="popup-header-btn" id="popupHeaderActionBtn">添加</button>
+        <span class="popup-close" onclick="closePopup()">×</span>
+      </div>
+    </div>
+    <div class="popup-content" id="popupBody">内容</div>
+    <div class="popup-footer" id="popupFooter"></div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('ui');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+const W = 1920, H = 1000;
+canvas.width = W; canvas.height = H;
+
+function resizeCanvas() {
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width = (W * scale) + 'px';
+  canvas.style.height = (H * scale) + 'px';
+  canvas.style.position = 'absolute';
+  canvas.style.left = (window.innerWidth - W * scale) / 2 + 'px';
+  canvas.style.top = (window.innerHeight - H * scale) / 2 + 'px';
+  syncOverlayToCanvas();
+}
+
+function syncOverlayToCanvas() {
+  const overlay = document.getElementById('popupOverlay');
+  const rect = canvas.getBoundingClientRect();
+  overlay.style.left = rect.left + 'px';
+  overlay.style.top = rect.top + 'px';
+  overlay.style.width = rect.width + 'px';
+  overlay.style.height = rect.height + 'px';
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+const LAYOUT = {top: 44, bottom: 56, left: 260, right: 260};
+const CENTER_X = LAYOUT.left, CENTER_Y = LAYOUT.top;
+const CENTER_W = W - LAYOUT.left - LAYOUT.right;
+const CENTER_H = H - LAYOUT.top - LAYOUT.bottom;
+
+const C = {
+  bg: '#0a0a15', wall: '#654321', door: '#DAA520', floor: '#1e1e35', king: '#1a2a4a',
+  fixed: '#1a2a4a', dynamic: '#1a3a2a', border: '#333355', text: '#aaa', bright: '#fff',
+  gold: '#FFD700', agent: '#4169E1', face: '#FFE4B5', btn: '#2a3a5a', btnHover: '#3a4a6a',
+  green: '#228B22', red: '#DC143C', blue: '#4169E1',
+};
+
+let clickables = [], mouseX = 0, mouseY = 0, hoveredItem = null;
+let selectedAgent = null, selectedTask = null, selectedPopup = null;
+let inputText = '', inputFocused = false, menuOpen = null;
+
+const state = {
+  day: 1, time: '08:30', money: 1250, lordLevel: 1, lordXP: 0,
+  agents: [
+    {id:'A',name:'阿猿',profession:'程序员',status:'working',location:'办公室1',energy:75,mood:80,relation:85,speed:1,catchphrase:'代码即艺术',personality:'追求完美,话不多但很准'},
+    {id:'B',name:'小美',profession:'设计师',status:'idle',location:'休息室',energy:90,mood:75,relation:70,speed:1,catchphrase:'设计改变世界',personality:'活泼开朗,创意多多'},
+    {id:'C',name:'点点',profession:'测试员',status:'resting',location:'休息室',energy:60,mood:85,relation:65,speed:1,catchphrase:'bug无处藏身',personality:'细心严谨,一丝不苟'},
+    {id:'D',name:'数据帝',profession:'分析师',status:'working',location:'资料室',energy:55,mood:70,relation:60,speed:1,catchphrase:'数据不会骗人',personality:'理性冷静,注重事实'},
+  ],
+  tasks: [
+    {id:1,name:'设计登录页面',progress:65,status:'in_progress',assignee:'A',profession:'程序员',quality:85,difficulty:2,reward:100},
+    {id:2,name:'编写API接口',progress:30,status:'pending',assignee:null,profession:'设计师',quality:0,difficulty:3,reward:150},
+    {id:3,name:'测试支付模块',progress:80,status:'in_progress',assignee:'C',profession:'测试员',quality:90,difficulty:2,reward:80},
+  ],
+  logs: [],
+  rooms:['休息室','资料室','会议室','机房','办公室1','办公室2','办公室3','办公室4','办公室5','办公室6','办公室7','办公室8'],
+};
+
+const WALL=6,DOOR=24,VISUAL_CORRIDOR_W=32,MID_CORRIDOR_H=32,BOTTOM_CORRIDOR_H=32,KING_H_RATIO=1.2,V_CORR_H=14;
+const ROOM_H=Math.floor((CENTER_H-V_CORR_H-BOTTOM_CORRIDOR_H-2*MID_CORRIDOR_H-WALL*5)/(3+KING_H_RATIO));
+const ROOM_W=Math.floor((CENTER_W-WALL*5)/4);
+const BUILDING_W=ROOM_W*4+WALL*5, KING_W=Math.floor(ROOM_W*1.5), KING_H=Math.floor(ROOM_H*KING_H_RATIO);
+const BUILDING_H=KING_H+V_CORR_H+ROOM_H*3+MID_CORRIDOR_H*2+BOTTOM_CORRIDOR_H+WALL*5;
+const AGENT_W=23,AGENT_H=43;
+let buildingOffsetX=0,buildingOffsetY=0;
+
+function rect(x,y,w,h,color){ctx.fillStyle=color;ctx.fillRect(x,y,w,h);}
+function stroke(x,y,w,h,color,lw=1){ctx.strokeStyle=color;ctx.lineWidth=lw;ctx.strokeRect(x,y,w,h);}
+function text(str,x,y,color,size=12,align='left'){ctx.fillStyle=color;ctx.font=size+'px Consolas';ctx.textAlign=align;ctx.fillText(str,x,y);}
+function log(msg){state.logs.unshift({time:state.time,msg});if(state.logs.length>20)state.logs.pop();}
+
+// ===== 菜单系统 =====
+const MENUS={
+  agent:{label:'👥 Agent',items:[
+    {id:'showAddAgent',label:'➕ 添加Agent',hotkey:'Ctrl+A',tooltip:'通过配置Hermes Profile来生成Agent'},
+    {id:'showAgentList',label:'📋 Agent列表'},
+    {id:'showAgentStats',label:'📊 统计面板'},
+    {type:'separator'},
+    {id:'showWorkMode',label:'💼 工作模式',submenu:'workMode'},
+    {id:'showRestMode',label:'😴 休息模式',submenu:'restMode'},
+  ]},
+  task:{label:'📋 任务',items:[
+    {id:'showNewTask',label:'➕ 新建任务',hotkey:'Ctrl+T'},
+    {id:'showTaskList',label:'📋 任务列表',hotkey:'J'},
+    {id:'showTaskHistory',label:'📜 任务历史'},
+    {type:'separator'},
+    {id:'showCompetition',label:'🎲 任务竞争',tooltip:'同职业Agent竞争任务机会,纯随机抽签'},
+    {id:'showCollaboration',label:'🤝 协作任务',tooltip:'多Agent配合完成任务,效率+30%'},
+    {type:'separator'},
+    {id:'showPrizePool',label:'🏆 奖励池'},
+  ]},
+  social:{label:'💬 社交',items:[
+    {id:'showRelationMap',label:'🗺️ 关系图谱',tooltip:'查看所有Agent之间的关系'},
+    {id:'showChatLog',label:'💭 聊天记录'},
+    {id:'showEventLog',label:'📰 事件日志',hotkey:'E'},
+    {type:'separator'},
+    {id:'showGreeting',label:'🤝 打招呼设置',tooltip:'休息室/会议室/资料室/机房,关系≥11,10分钟冷却'},
+    {id:'showCollabChat',label:'💬 协作交流',tooltip:'头顶气泡+会话记录'},
+  ]},
+  lord:{label:'👑 城主',items:[
+    {id:'showLordInfo',label:'📊 城主信息'},
+    {id:'showLordLevel',label:'⬆️ 城主等级',tooltip:'Lv.1: 基础功能\nLv.2: 精准分配 (200 XP)\nLv.3: 灵感赐予 (500 XP)\nLv.4: 光环效应 (1000 XP)\nLv.5: 全知视角 (2000 XP)'},
+    {id:'showPoints',label:'💰 积分'},
+    {type:'separator'},
+    {id:'showInspire',label:'📣 激励演说',tooltip:'恢复指定Agent饱食度+30,情绪+15'},
+    {id:'showLordSkills',label:'⭐ 城主技能'},
+    {type:'separator'},
+    {id:'showAchievement',label:'🏆 成就系统'},
+    {id:'showCelebration',label:'🎉 庆功宴',tooltip:'全员情绪+20,关系+5'},
+  ]},
+  building:{label:'🏠 基地',items:[
+    {id:'showBuildRoom',label:'🔨 建造房间'},
+    {id:'showRoomList',label:'📋 房间列表'},
+    {id:'showRestRoomUpgrade',label:'☕ 休息室升级'},
+    {id:'showServerRoomUpgrade',label:'🖥️ 机房升级'},
+    {id:'showOfficeExpand',label:'📦 解锁新办公室',tooltip:'费用: 800积分/间'},
+    {id:'showSnackMachine',label:'🍿 零食贩卖机',tooltip:'费用: 300积分'},
+  ]},
+  event:{label:'🎲 事件',items:[
+    {id:'showChallenge',label:'⚡ 突发挑战'},
+    {id:'showPeriodicEvent',label:'📅 周期事件'},
+    {id:'showMilestone',label:'🎯 里程碑'},
+    {id:'showCrisis',label:'🚨 危机处理'},
+  ]},
+  help:{label:'❓ 帮助',items:[
+    {id:'showModulesHub',label:'📂 分模块原型',tooltip:'docs/原型/modules 独立演示页（布局/WebSocket/AI流等）'},
+    {type:'separator'},
+    {id:'showGuide',label:'📖 新手引导'},
+    {id:'showManual',label:'📚 游戏手册'},
+    {id:'showShortcut',label:'⌨️ 快捷键'},
+    {id:'showAbout',label:'ℹ️ 关于游戏'},
+    {type:'separator'},
+    {id:'showSettings',label:'⚙️ 设置',hotkey:'Esc'},
+  ]},
+};
+
+const SUB_MENUS={
+  workMode:{label:'💼 工作模式',items:[
+    {id:'setWorkNormal',label:'📋 普通工作'},
+    {id:'setWorkHard',label:'🔥 拼命工作',tooltip:'效率+30%,情绪-0.5/秒'},
+    {id:'setWorkRelax',label:'😌 轻松工作',tooltip:'效率-10%,情绪+0.2/秒'},
+  ]},
+  restMode:{label:'😴 休息模式',items:[
+    {id:'setRestShort',label:'☕ 短休'},
+    {id:'setRestLong',label:'🛋️ 长休'},
+    {id:'setRestSleep',label:'🛏️ 睡眠'},
+  ]},
+};
+
+const actions={
+  showAgentList:()=>{openPopup('agentList');closeMenu();},
+  showAgentStats:()=>{log('打开统计面板');closeMenu();},
+  showNewTask:()=>{openPopup('newTask');closeMenu();},
+  showTaskList:()=>{log('打开任务列表');closeMenu();},
+  showTaskHistory:()=>{log('打开任务历史');closeMenu();},
+  showCompetition:()=>{openPopup('taskCompetition');closeMenu();},
+  showCollaboration:()=>{selectedTask=state.tasks.find(t=>t.status==='in_progress')||state.tasks[0];openPopup('taskDetail');closeMenu();},
+  showPrizePool:()=>{log('🏆 奖励池');closeMenu();},
+  showRelationMap:()=>{openPopup('relationMap');closeMenu();},
+  showChatLog:()=>{log('💭 聊天记录');closeMenu();},
+  showEventLog:()=>{log('📰 事件日志');closeMenu();},
+  showLordInfo:()=>{log(`👑 城主 Lv.${state.lordLevel} XP:${state.lordXP}`);closeMenu();},
+  showLordLevel:()=>{openPopup('lordLevel');closeMenu();},
+  showPoints:()=>{log('💰 积分说明');closeMenu();},
+  showInspire:()=>{state.agents.forEach(a=>{a.energy=Math.min(100,a.energy+10);a.mood=Math.min(100,a.mood+5);});log('📣 激励演说: 全员能量+10,情绪+5');closeMenu();},
+  showLordSkills:()=>{openPopup('skillPanel');closeMenu();},
+  showAchievement:()=>{log('🏆 成就系统');closeMenu();},
+  showCelebration:()=>{state.agents.forEach(a=>{a.mood=Math.min(100,a.mood+20);a.relation=Math.min(100,a.relation+5);});state.lordXP+=15;log('🎉 庆功宴: 全员情绪+20,关系+5,XP+15');closeMenu();},
+  showBuildRoom:()=>{log('🔨 建造新房间');closeMenu();},
+  showRoomList:()=>{log('📋 房间列表');closeMenu();},
+  showRestRoomUpgrade:()=>{openPopup('buildingUpgrade');closeMenu();},
+  showServerRoomUpgrade:()=>{openPopup('buildingUpgrade');closeMenu();},
+  showOfficeExpand:()=>{log('📦 解锁新办公室: 800积分/间');closeMenu();},
+  showSnackMachine:()=>{log('🍿 零食贩卖机: 300积分解锁');closeMenu();},
+  showChallenge:()=>{log('⚡ 突发挑战');closeMenu();},
+  showPeriodicEvent:()=>{log('📅 周期事件');closeMenu();},
+  showMilestone:()=>{log('🎯 里程碑');closeMenu();},
+  showCrisis:()=>{log('🚨 危机处理');closeMenu();},
+  showGuide:()=>{log('📖 新手引导');closeMenu();},
+  showManual:()=>{log('📚 游戏手册');closeMenu();},
+  showShortcut:()=>{log('⌨️ 快捷键: Space=暂停, Esc=关闭菜单');closeMenu();},
+  showAbout:()=>{log('ℹ️ Hermes数字工作室 v1.0');closeMenu();},
+  showSettings:()=>{log('⚙️ 设置');closeMenu();},
+  showModulesHub:()=>{openPopup('modulesHub');closeMenu();},
+  showAddAgent:()=>{openPopup('addAgent');closeMenu();},
+  setWorkNormal:()=>{if(selectedAgent){selectedAgent.speed=1;log(`${selectedAgent.name}: 普通工作模式`);}closeMenu();},
+  setWorkHard:()=>{if(selectedAgent){selectedAgent.speed=1.3;selectedAgent.mood-=2;log(`${selectedAgent.name}: 拼命工作模式`);}closeMenu();},
+  setWorkRelax:()=>{if(selectedAgent){selectedAgent.speed=0.9;selectedAgent.mood+=2;log(`${selectedAgent.name}: 轻松工作模式`);}closeMenu();},
+  setRestShort:()=>{if(selectedAgent){selectedAgent.energy=Math.min(100,selectedAgent.energy+20);selectedAgent.status='resting';log(`${selectedAgent.name}: 短休`);}closeMenu();},
+  setRestLong:()=>{if(selectedAgent){selectedAgent.energy=Math.min(100,selectedAgent.energy+50);selectedAgent.status='resting';log(`${selectedAgent.name}: 长休`);}closeMenu();},
+  createTask:()=>{const name=document.getElementById('taskName')?.value||'新任务';const id=Math.max(...state.tasks.map(t=>t.id))+1;state.tasks.push({id,name,progress:0,status:'pending',assignee:null,profession:'程序员',quality:0,difficulty:2,reward:100});log(`创建任务: ${name}`);closePopup();},
+  addAgent:()=>{const name=document.getElementById('agentName')?.value||'新Agent';const prof=document.getElementById('agentProfession')?.value||'程序员';state.agents.push({id:String.fromCharCode(65+state.agents.length),name,profession:prof,status:'idle',location:'休息室',energy:80,mood:70,relation:50,speed:1});log(`添加Agent: ${name}`);closePopup();},
+  close:()=>closePopup(),
+};
+
+function closeMenu(){menuOpen=null;document.getElementById('menuPopup').style.display='none';}
+
+// ===== 弹窗系统 =====
+const POPUPS={
+  agentDetail:{
+    title:'👥 Agent详情',
+    width:520,
+    render:()=>{
+      const agent=selectedAgent||state.agents[0];
+      const moodLevel=agent.mood>=80?'兴奋':agent.mood>=60?'积极':agent.mood>=40?'平静':agent.mood>=20?'低落':'焦躁';
+      const moodEmoji=agent.mood>=80?'😄':agent.mood>=60?'😊':agent.mood>=40?'😐':agent.mood>=20?'😔':'😤';
+      const moodColor=agent.mood>=80?'#90EE90':agent.mood>=60?'#98FB98':agent.mood>=40?'#FFD700':agent.mood>=20?'#FFA500':'#FF6347';
+      const relationStage=agent.relation>=71?'挚友':agent.relation>=31?'朋友':agent.relation>=11?'认识':'陌生';
+      const stageColor=agent.relation>=71?'#FF69B4':agent.relation>=31?'#90EE90':agent.relation>=11?'#87CEEB':'#888';
+      const stats=[
+        {icon:'⚡',label:'能量',value:agent.energy||0,color:'#228B22'},
+        {icon:moodEmoji,label:'情绪',value:agent.mood||0,color:moodColor},
+        {icon:'💬',label:'社交',value:agent.socialNeed||50,color:'#DDA0DD'},
+        {icon:'🎯',label:'专注',value:agent.focus||80,color:'#4169E1'},
+        {icon:'😴',label:'睡意',value:agent.sleepiness||10,color:'#8B4513'},
+        {icon:'🍔',label:'饱食',value:agent.satiety||80,color:'#FF8C00'},
+      ];
+      return `<div style="display:grid;grid-template-columns:230px 1fr;gap:16px;height:340px;">
+        <div style="text-align:center;background:#252540;border-radius:8px;padding:16px;display:flex;flex-direction:column;overflow:hidden;">
+          <div style="width:72px;height:72px;background:#4169E1;border-radius:50%;margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:28px;position:relative;flex-shrink:0;">🤖<span style="position:absolute;bottom:0;right:0;font-size:14px;">👨</span></div>
+          <div style="color:#fff;font-size:15px;font-weight:bold;">${agent.name||'未选择'}</div>
+          <div style="color:#888;font-size:11px;margin:2px 0;">👤 ${agent.profession||''}</div>
+          <div style="margin-top:8px;flex:1;overflow-y:auto;text-align:left;">
+            <div style="background:#1a1a30;padding:6px;border-radius:4px;margin-bottom:6px;">
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:#fff;font-size:10px;">💼 状态</span><span style="color:#90EE90;font-size:10px;">${agent.status==='working'?'工作中':agent.status==='idle'?'空闲':'休息中'}</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="color:#fff;font-size:10px;">📍 位置</span><span style="color:#87CEEB;font-size:10px;">${agent.location||'未知'}</span></div>
+            </div>
+            <div style="background:#1a1a30;padding:6px;border-radius:4px;">
+              <div style="color:#666;font-size:9px;margin-bottom:4px;">💼 职业能力</div>
+              <div style="background:#0a0a15;padding:4px;border-radius:4px;margin-bottom:4px;"><div style="display:flex;justify-content:space-between;"><span style="color:#fff;font-size:9px;">代码</span><span style="color:#90EE90;font-size:9px;">Lv.5</span></div><div style="height:4px;background:#333;border-radius:2px;margin-top:2px;"><div style="width:75%;height:100%;background:#228B22;border-radius:2px;"></div></div></div>
+              <div style="background:#0a0a15;padding:4px;border-radius:4px;"><div style="display:flex;justify-content:space-between;"><span style="color:#fff;font-size:9px;">沟通</span><span style="color:#FFD700;font-size:9px;">Lv.4</span></div><div style="height:4px;background:#333;border-radius:2px;margin-top:2px;"><div style="width:60%;height:100%;background:#FF8C00;border-radius:2px;"></div></div></div>
+            </div>
+          </div>
+        </div>
+        <div style="background:#1a1a30;border-radius:8px;display:flex;flex-direction:column;overflow:hidden;">
+          <div style="display:flex;background:#252540;border-radius:8px 8px 0 0;border-bottom:1px solid #333;flex-shrink:0;">
+            <button type="button" class="tab-btn active" data-tab="basic" onclick="switchTab(this,'basic')">📋 基本</button>
+            <button type="button" class="tab-btn" data-tab="config" onclick="switchTab(this,'config')">⚙️ 配置</button>
+            <button type="button" class="tab-btn" data-tab="skill" onclick="switchTab(this,'skill')">⭐ 技能</button>
+            <button type="button" class="tab-btn" data-tab="task" onclick="switchTab(this,'task')">📋 任务</button>
+            <button type="button" class="tab-btn" data-tab="achieve" onclick="switchTab(this,'achieve')">🏆 成就</button>
+            <button type="button" class="tab-btn" data-tab="relation" onclick="switchTab(this,'relation')">❤️ 关系</button>
+          </div>
+          <div style="flex:1;overflow-y:auto;padding:16px;min-height:0;">
+            <div class="tab-content active" id="tab-basic">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                <div>
+                  ${stats.map(s=>`<div style="display:flex;align-items:center;margin-bottom:12px;"><span style="font-size:18px;width:28px;text-align:center;flex-shrink:0;">${s.icon}</span><div style="flex:1;height:20px;background:#1a1a30;border-radius:10px;overflow:hidden;margin:0 10px;position:relative;"><div style="width:${s.value}%;height:100%;background:${s.color};border-radius:10px;display:flex;align-items:center;padding-left:10px;"><span style="font-size:11px;color:#fff;font-weight:bold;white-space:nowrap;">${s.label}</span></div></div><span style="font-size:12px;color:${s.color};font-weight:bold;width:40px;text-align:right;">${s.value}%</span></div>`).join('')}
+                </div>
+                <div>
+                  <div style="background:#0a0a15;padding:10px;border-radius:4px;margin-bottom:8px;"><div style="color:#666;font-size:10px;margin-bottom:4px;">💬 口头禅</div><div style="color:#fff;font-size:12px;font-style:italic;">"${agent.catchphrase||'暂无口头禅'}"</div></div>
+                  <div style="background:#0a0a15;padding:10px;border-radius:4px;margin-bottom:8px;"><div style="color:#666;font-size:10px;margin-bottom:4px;">🧠 性格特点</div><div style="color:#aaa;font-size:11px;">${agent.personality||'暂无描述'}</div></div>
+                  <div style="background:#0a0a15;padding:10px;border-radius:4px;"><div style="color:#666;font-size:10px;margin-bottom:6px;">🎯 已解锁的梗</div><div style="display:flex;flex-wrap:wrap;gap:4px;">${(agent.memes||['登录验证','代码审查','递归bug']).map(m=>`<span style="background:#2a2a40;color:#aaa;padding:3px 8px;border-radius:10px;font-size:10px;">${m}</span>`).join('')}</div></div>
+                </div>
+              </div>
+            </div>
+            <div class="tab-content" id="tab-config" style="display:none;">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                <div style="background:#0a0a15;border-radius:6px;padding:12px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="color:#fff;font-size:12px;font-weight:bold;">📝 soul.md</span><button class="btn-icon" onclick="alert('编辑')" style="color:#87CEEB;">✏️</button></div>
+                  <div style="background:#1a1a30;padding:8px;border-radius:4px;max-height:120px;overflow-y:auto;color:#aaa;font-size:10px;line-height:1.5;">${agent.name}是一名${agent.profession}。性格特点：${agent.personality||'暂无'}</div>
+                </div>
+                <div style="background:#0a0a15;border-radius:6px;padding:12px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="color:#fff;font-size:12px;font-weight:bold;">🧠 memory.md</span><button class="btn-icon" onclick="alert('导出')" style="color:#FFD700;">📤</button></div>
+                  <div style="background:#1a1a30;padding:8px;border-radius:4px;max-height:120px;overflow-y:auto;color:#aaa;font-size:10px;line-height:1.5;">今天完成了登录页面开发。<br>和同事进行了愉快的交流。</div>
+                </div>
+              </div>
+            </div>
+            <div class="tab-content" id="tab-skill" style="display:none;">
+              <div style="background:#0a0a15;padding:12px;border-radius:6px;">
+                <div style="display:flex;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #333;"><span style="font-size:16px;margin-right:10px;">📦</span><div style="flex:1;"><div style="color:#fff;font-size:12px;">代码助手</div><div style="color:#666;font-size:10px;">提供代码建议和优化</div></div><span class="tag tag-green" style="font-size:9px;">已安装</span></div>
+                <div style="display:flex;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #333;"><span style="font-size:16px;margin-right:10px;">🔍</span><div style="flex:1;"><div style="color:#fff;font-size:12px;">代码审查</div><div style="color:#666;font-size:10px;">自动检查代码质量</div></div><span class="tag tag-green" style="font-size:9px;">已安装</span></div>
+                <div style="display:flex;align-items:center;"><span style="font-size:16px;margin-right:10px;">💡</span><div style="flex:1;"><div style="color:#fff;font-size:12px;">创意建议</div><div style="color:#666;font-size:10px;">提供创意灵感</div></div><span class="tag tag-green" style="font-size:9px;">已安装</span></div>
+              </div>
+            </div>
+            <div class="tab-content" id="tab-task" style="display:none;">
+              <div style="color:#888;font-size:11px;margin-bottom:12px;">📋 进行中的任务</div>
+              <div style="background:#0a0a15;padding:12px;border-radius:4px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="color:#fff;font-size:12px;">登录页面开发</span><span class="tag tag-yellow" style="font-size:9px;">进行中</span></div><div style="height:4px;background:#333;border-radius:2px;margin-bottom:4px;"><div style="width:65%;height:100%;background:#FFD700;border-radius:2px;"></div></div><div style="color:#666;font-size:10px;">进度 65% · 预计剩余 2小时</div></div>
+              <div style="background:#0a0a15;padding:12px;border-radius:4px;"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="color:#fff;font-size:12px;">API接口测试</span><span class="tag tag-blue" style="font-size:9px;">待开始</span></div><div style="color:#666;font-size:10px;">难度 ★★ · 奖励 50积分</div></div>
+            </div>
+            <div class="tab-content" id="tab-achieve" style="display:none;">
+              <div style="color:#888;font-size:11px;margin-bottom:12px;">🏆 已解锁成就 (3/12)</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <div style="background:#0a0a15;padding:10px;border-radius:4px;text-align:center;"><div style="font-size:20px;margin-bottom:4px;">🎯</div><div style="color:#fff;font-size:11px;">初次任务</div><div style="color:#666;font-size:9px;">完成第一个任务</div></div>
+                <div style="background:#0a0a15;padding:10px;border-radius:4px;text-align:center;"><div style="font-size:20px;margin-bottom:4px;">⚡</div><div style="color:#fff;font-size:11px;">效率达人</div><div style="color:#666;font-size:9px;">提前完成3个任务</div></div>
+                <div style="background:#0a0a15;padding:10px;border-radius:4px;text-align:center;opacity:0.5;"><div style="font-size:20px;margin-bottom:4px;">🏅</div><div style="color:#888;font-size:11px;">团队协作</div><div style="color:#555;font-size:9px;">完成10个协作任务</div></div>
+                <div style="background:#0a0a15;padding:10px;border-radius:4px;text-align:center;opacity:0.5;"><div style="font-size:20px;margin-bottom:4px;">⭐</div><div style="color:#888;font-size:11px;">完美主义</div><div style="color:#555;font-size:9px;">获得5次满分评价</div></div>
+              </div>
+            </div>
+            <div class="tab-content" id="tab-relation" style="display:none;">
+              <div style="color:#888;font-size:11px;margin-bottom:12px;">❤️ 关系网络</div>
+              <div style="background:#0a0a15;padding:12px;border-radius:4px;margin-bottom:10px;"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="color:#fff;font-size:12px;">❤️ 与城主(你)的关系</span><span style="color:#FF69B4;font-size:12px;font-weight:bold;">${agent.relation||100}</span></div><div style="color:#666;font-size:10px;">好感度 · 最高值</div></div>
+              <div style="background:#0a0a15;padding:12px;border-radius:4px;"><div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="color:#fff;font-size:12px;">🤝 与同伴的关系</span><span style="color:#87CEEB;font-size:12px;font-weight:bold;">${Math.round((agent.relation||40)+10)}</span></div><div style="color:#666;font-size:10px;">平均关系值 · 朋友阶段</div></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    },
+    buttons:[]
+  },
+  
+  addAgent:{
+    title:'➕ 添加Agent',
+    subtitle:'💡 通过配置Hermes Profile来生成Agent',
+    width:860,
+    render:()=>`
+      <div style="display:flex;flex-direction:column;height:100%;">
+        <div style="display:flex;background:#252540;border-radius:8px 8px 0 0;border-bottom:1px solid #333;flex-shrink:0;">
+          <button type="button" class="tab-btn active" data-tab="basic" onclick="switchTab(this,'basic')">📋 基本信息</button>
+          <button type="button" class="tab-btn" data-tab="config" onclick="switchTab(this,'config')">📄 核心文件</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:16px;">
+          <div class="tab-content active" id="tab-basic">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="form-group"><label class="form-label">Agent名称 *</label><input type="text" class="form-input" placeholder="输入Agent名称" id="agentName"></div>
+              <div class="form-group"><label class="form-label">职业类型 *</label><input type="text" class="form-input" list="professionList" placeholder="输入或选择职业" id="agentProfession"><datalist id="professionList"><option value="程序员"><option value="设计师"><option value="测试员"><option value="分析师"><option value="产品经理"></datalist></div>
+              <div class="form-group"><label class="form-label">性别</label><select class="form-input" id="agentGender"><option value="random">随机</option><option value="male">男</option><option value="female">女</option></select></div>
+              <div class="form-group"><label class="form-label">默认工作房间</label><select class="form-input" id="agentRoom"><option value="">不指定</option><option value="办公室1">办公室1</option><option value="办公室2">办公室2</option><option value="办公室3">办公室3</option><option value="办公室4">办公室4</option></select></div>
+            </div>
+            <div class="form-group" style="margin-top:12px;"><label class="form-label">口头禅</label><input type="text" class="form-input" placeholder="输入Agent口头禅" id="agentCatchphrase"></div>
+          </div>
+          <div class="tab-content" id="tab-config" style="display:none;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div><label class="form-label">soul.md</label><textarea class="form-textarea" id="addAgentSoul" rows="10">你是Hermes数字工作室的一员。性格特点：热情、乐于助人口头禅："一起加油吧！"行为准则：主动帮助同事，积极参与团队协作</textarea></div>
+              <div><label class="form-label">memory.md</label><textarea class="form-textarea" id="addAgentMemory" rows="10">## 重要经历- 2024年加入Hermes数字工作室## 技能特长- 熟练掌握多种编程语言- 良好的沟通能力</textarea></div>
+            </div>
+          </div>
+        </div>
+      </div>`,
+    buttons:[
+      {label:'取消',class:'btn-secondary',action:'close'},
+      {label:'添加',class:'btn-primary',action:'addAgent'}
+    ]
+  },
+  
+  newTask:{
+    title:'➕ 新建任务',
+    width:600,
+    render:()=>`
+      <div class="task-form">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 20px;">
+          <div style="display:flex;flex-direction:column;gap:6px;"><label style="font-size:12px;color:#888;font-weight:500;">📝 任务名称</label><input type="text" class="form-input" placeholder="输入任务名称" id="taskName" style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:10px 12px;color:#fff;font-size:13px;"></div>
+          <div style="display:flex;flex-direction:column;gap:6px;"><label style="font-size:12px;color:#888;font-weight:500;">🏷️ 任务类型</label><select class="form-input" id="taskType" style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:10px 12px;color:#fff;font-size:13px;"><option value="code">编码任务</option><option value="design">设计任务</option><option value="test">测试任务</option><option value="analyze">分析任务</option></select></div>
+          <div style="display:flex;flex-direction:column;gap:6px;"><label style="font-size:12px;color:#888;font-weight:500;">⚡ 难度</label><select class="form-input" id="taskDifficulty" style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:10px 12px;color:#fff;font-size:13px;"><option value="1">★ 简单</option><option value="2" selected>★★ 普通</option><option value="3">★★★ 困难</option><option value="4">★★★★ 史诗</option></select></div>
+          <div style="display:flex;flex-direction:column;gap:6px;"><label style="font-size:12px;color:#888;font-weight:500;">👤 执行者</label><select class="form-input" id="taskAssignee" style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:10px 12px;color:#fff;font-size:13px;"><option value="">自动分配</option>${state.agents.map(a=>`<option value="${a.id}">${a.name}</option>`).join('')}</select></div>
+        </div>
+        <div style="margin-top:16px;"><label style="font-size:12px;color:#888;font-weight:500;">📄 任务描述</label><textarea class="form-input" rows="4" placeholder="详细描述任务目标、交付物、注意事项..." id="taskDesc" style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:10px 12px;color:#fff;font-size:13px;resize:vertical;min-height:80px;"></textarea></div>
+      </div>`,
+    buttons:[
+      {label:'取消',class:'btn-secondary',action:'close'},
+      {label:'✨ 创建任务',class:'btn-primary',action:'createTask'}
+    ]
+  },
+  
+  taskCompetition:{
+    title:'🎲 任务竞争',
+    width:450,
+    render:()=>{
+      const competitors=state.agents.filter(a=>a.profession==='设计师');
+      if(competitors.length<2){
+        return`<div style="text-align:center;padding:40px;"><div style="font-size:48px;margin-bottom:16px;">🎰</div><div style="color:#888;font-size:14px;">没有足够的同职业Agent竞争此任务</div></div>`;
+      }
+      const winnerIdx=Math.floor(Math.random()*competitors.length);
+      const winner=competitors[winnerIdx];
+      const loser=competitors.find(a=>a.id!==winner.id);
+      const moodGain=8+Math.floor(Math.random()*8);
+      const moodLoss=5+Math.floor(Math.random()*6);
+      if(winner){winner.mood=Math.min(100,winner.mood+moodGain);}
+      if(loser){loser.mood=Math.max(0,loser.mood-moodLoss);}
+      return`<div style="text-align:center;padding:20px;">
+        <div style="font-size:48px;margin-bottom:16px;">🎰</div>
+        <div style="color:#FFD700;font-size:16px;font-weight:bold;margin-bottom:8px;">纯随机抽签</div>
+        <div style="color:#888;font-size:12px;margin-bottom:20px;">职业: ${winner.profession} · ${competitors.length}人竞争</div>
+        <div style="display:flex;justify-content:center;gap:40px;">
+          ${competitors.map(c=>`<div style="text-align:center;${c.id===winner.id?'opacity:1;':'opacity:0.5;'}">
+            <div style="width:60px;height:60px;background:${c.id===winner.id?'#FFD700':'#555'};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;margin:0 auto 8px;${c.id===winner.id?'box-shadow:0 0 20px #FFD700;':''}">${c.name[0]}</div>
+            <div style="color:#fff;font-size:12px;">${c.name}</div>
+            <div style="color:${c.id===winner.id?'#FFD700':'#888'};font-size:10px;">${c.id===winner.id?'✓ 赢家':'✗ 抽签落选'}</div>
+          </div>`).join('')}
+        </div>
+        <div style="margin-top:24px;padding:16px;background:#1a2a3a;border-radius:8px;">
+          <div style="color:#90EE90;font-size:14px;">🎉 ${winner.name} 抽中了任务！</div>
+          <div style="color:#aaa;font-size:12px;margin-top:8px;">情绪 +${moodGain}</div>
+          ${loser?`<div style="color:#ff6b6b;font-size:12px;margin-top:4px;">${loser.name} 未抽中... 情绪 -${moodLoss}</div>`:''}
+        </div>
+        <div style="margin-top:12px;padding:10px;background:#0a0a15;border-radius:6px;">
+          <div style="color:#666;font-size:10px;line-height:1.5;">
+            💡 若赢家任务完成差：情绪额外加倍扣除<br>
+            ⚠️ 竞争通过WebSocket广播给所有Agent
+          </div>
+        </div>
+      </div>`;
+    },
+    buttons:[{label:'确定',class:'btn-primary',action:'close'}]
+  },
+
+  taskDetail:{
+    title:'📋 任务详情',
+    width:560,
+    render:()=>{
+      const task=selectedTask||state.tasks[0];
+      const diff=task.difficulty||2;
+      const isCollab=true;
+      const agentSubtasks=[
+        {agent:'阿猿',role:'程序员',subtask:'接口联调与错误处理',progress:78,status:'进行中',color:'#4169E1',avatar:'👨'},
+        {agent:'小美',role:'设计师',subtask:'登录页视觉细化与交互态',progress:66,status:'进行中',color:'#9370DB',avatar:'👩'},
+        {agent:'点点',role:'测试员',subtask:'冒烟测试与回归用例',progress:42,status:'待接入',color:'#FF8C00',avatar:'🔍'},
+      ];
+      const avgProgress=Math.round(agentSubtasks.reduce((a,c)=>a+c.progress,0)/agentSubtasks.length);
+      const completedCount=agentSubtasks.filter(s=>s.progress>=100).length;
+      const activeCollabCount=agentSubtasks.filter(s=>s.status!=='待接入').length;
+      const etaHours=Math.max(diff*2-1,2);
+      const jl=s=>(s.status==='待接入'?'待接入':'✓ 已加入');
+      const jtc=s=>(s.status==='待接入'?'tag-blue':'tag-green');
+      const stLabel=task.status==='in_progress'?'进行中':task.status==='completed'?'已完成':'待接取';
+      const stClass=task.status==='in_progress'?'tag-yellow':task.status==='completed'?'tag-green':'tag-blue';
+      return`<div style="margin-bottom:16px;">
+          <div style="color:#fff;font-size:16px;font-weight:bold;margin-bottom:8px;">${task.name}</div>
+          <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+            <span class="tag ${stClass}">${stLabel}</span>
+            ${isCollab?'<span class="tag tag-green">协作任务</span><span class="tag tag-yellow">效率+30%</span>':''}
+            <span class="tag tag-purple">难度 ${'★'.repeat(diff)}</span>
+            <span class="tag tag-green">奖励 ${task.reward||0}积分</span>
+          </div>
+          <div class="form-label">任务总体进度</div>
+          <div class="progress-bar"><div class="progress-fill ${avgProgress<30?'danger':avgProgress<70?'warning':''}" style="width:${avgProgress}%;"></div></div>
+          <div style="display:flex;justify-content:space-between;color:#888;font-size:11px;margin-top:4px;">
+            <span>子任务完成 ${completedCount}/${agentSubtasks.length}</span><span>${avgProgress}%</span>
+          </div>
+        </div>
+        ${isCollab?`<div style="margin-bottom:16px;padding:12px;background:#1a2a3a;border-radius:8px;border:1px solid #2a3a55;">
+          <div class="form-label" style="margin-bottom:8px;">🤝 协作执行</div>
+          <div style="color:#888;font-size:10px;margin-bottom:10px;">预计 ${etaHours} 小时 · 奖励 ${task.reward||0} 积分 · 已在队 ${activeCollabCount}/${agentSubtasks.length} 人</div>
+          <div class="form-label">参与 Agent</div>
+          <div class="grid-2" style="gap:8px;margin-bottom:12px;">
+            ${agentSubtasks.map(s=>`<div class="list-item ${s.status!=='待接入'?'selected':''}" style="margin-bottom:0;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <div style="width:28px;height:28px;background:${s.color};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;opacity:${s.status==='待接入'?0.65:1};">${s.avatar}</div>
+                <div style="flex:1;min-width:0;"><div style="color:#fff;font-size:11px;font-weight:bold;">${s.agent}</div><div style="color:#888;font-size:9px;">${s.role}</div></div>
+                <span class="tag ${jtc(s)}" style="font-size:9px;flex-shrink:0;">${jl(s)}</span>
+              </div>
+              <div style="color:#666;font-size:9px;margin-top:6px;line-height:1.35;">子任务：${s.subtask}</div>
+            </div>`).join('')}
+          </div>
+          <div class="form-label">协作加成（与关系图谱规则一致）</div>
+          <div style="color:#aaa;font-size:11px;padding:10px;background:#0a0a15;border-radius:4px;">
+            <div style="margin-bottom:3px;">• 双 Agent 协作：效率 +30%（${activeCollabCount>=2?'已生效':'待满员后生效'}）</div>
+            <div style="margin-bottom:3px;">• 关系值 ≥80%：额外 +15%</div>
+            <div>• 职业互补（如程序 × 设计）：质量 +20%</div>
+          </div>
+        </div>`:''}
+        <div class="grid-2">
+          <div class="form-group"><label class="form-label">匹配职业</label><div style="color:#fff;font-size:12px;">${isCollab?'程序 · 设计 · 测试（协作）':(task.profession||'—')}</div></div>
+          <div class="form-group"><label class="form-label">预计时间</label><div style="color:#fff;font-size:12px;">${etaHours}小时${isCollab?'（含协作并行）':''}</div></div>
+          <div class="form-group"><label class="form-label">效率修正</label><div style="color:#90EE90;font-size:12px;">+10% 个人${isCollab?' · +30% 协作':''}</div></div>
+          <div class="form-group"><label class="form-label">质量修正</label><div style="color:#90EE90;font-size:12px;">+5% 基础${isCollab?' · +20% 职业互补':''}</div></div>
+        </div>
+        <div class="form-group"><label class="form-label">任务描述</label>
+          <div style="color:#aaa;font-size:12px;padding:8px;background:#0a0a15;border-radius:4px;">当前任务：${task.name}。多名 Agent 分工协作时，总体进度与各子任务进度、协作加成在此统一展示（与 modules/12-popups、modules/08-tasks 设计对齐）。</div>
+        </div>
+        <div class="form-group"><label class="form-label">各 Agent 子任务进度</label>
+          <div style="display:grid;gap:8px;">
+            ${agentSubtasks.map(s=>`<div style="padding:10px;background:#0a0a15;border-radius:6px;border-left:3px solid ${s.color};">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <div><span style="color:#fff;font-size:12px;font-weight:bold;">${s.agent}</span><span style="color:#888;font-size:10px;margin-left:6px;">(${s.role})</span></div>
+                <span class="tag ${s.progress>=70?'tag-green':s.progress>=40?'tag-yellow':'tag-blue'}" style="font-size:9px;">${s.status}</span>
+              </div>
+              <div style="color:#aaa;font-size:11px;margin-bottom:6px;">${s.subtask}</div>
+              <div style="height:6px;background:#333;border-radius:3px;overflow:hidden;"><div style="width:${s.progress}%;height:100%;background:${s.color};"></div></div>
+              <div style="text-align:right;color:#888;font-size:10px;margin-top:4px;">${s.progress}%</div>
+            </div>`).join('')}
+          </div>
+        </div>`;
+    },
+    buttons:[{label:'停止任务',class:'btn-danger',action:'close'}]
+  },
+  
+  relationMap:{
+    title:'🗺️ 关系图谱',
+    width:700,
+    render:()=>{
+      const center={x:350,y:130},radius=110;
+      const nodes=state.agents.map((a,i)=>{const angle=(-Math.PI/2)+(i*(Math.PI*2/state.agents.length));return{...a,x:center.x+Math.cos(angle)*radius,y:center.y+Math.sin(angle)*radius};});
+      const getRelStyle=(rel)=>{if(rel>=71)return{color:'#22c55e',width:3,stage:'挚友'};if(rel>=31)return{color:'#eab308',width:2.3,stage:'朋友'};if(rel>=11)return{color:'#f97316',width:1.6,stage:'认识'};return{color:'#666',width:1,stage:'陌生'};};
+      let svgInner='';
+      nodes.forEach((a,i)=>{nodes.forEach((b,j)=>{if(j<=i)return;const rel=Math.round((a.relation+b.relation)/2);const style=getRelStyle(rel);svgInner+=`<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${style.color}" stroke-width="${style.width}" opacity="0.55"/>`;});});
+      nodes.forEach(n=>{const style=getRelStyle(n.relation);svgInner+=`<line x1="${center.x}" y1="${center.y}" x2="${n.x.toFixed(1)}" y2="${n.y.toFixed(1)}" stroke="${style.color}" stroke-width="1" opacity="0.22"/>`;});
+      svgInner+=`<circle cx="${center.x}" cy="${center.y}" r="22" fill="#4169E1" stroke="#FFD700" stroke-width="3"/><text x="${center.x}" y="${center.y+5}" text-anchor="middle" fill="#FFD700" font-size="18" font-family="Consolas">👑</text><text x="${center.x}" y="${center.y+40}" text-anchor="middle" fill="#FFD700" font-size="10" font-weight="bold" font-family="Consolas">城主</text>`;
+      nodes.forEach(n=>{const style=getRelStyle(n.relation);const nx=n.x.toFixed(1),ny=n.y.toFixed(1);svgInner+=`<circle cx="${nx}" cy="${ny}" r="18" fill="#2b2b3e" stroke="${style.color}" stroke-width="2"/><text x="${nx}" y="${Number(ny)+4}" text-anchor="middle" fill="#fff" font-size="12" font-family="Consolas">${n.name[0]}</text><text x="${nx}" y="${Number(ny)+52}" text-anchor="middle" fill="#fff" font-size="10" font-family="Consolas">${n.name}</text><text x="${nx}" y="${Number(ny)+66}" text-anchor="middle" fill="${style.color}" font-size="9" font-family="Consolas">${style.stage}(${n.relation})</text>`;});
+      return`<div style="position:relative;height:280px;background:#0a0a15;border-radius:8px;margin-bottom:12px;border:1px solid #2a2a45;"><svg width="100%" height="100%" viewBox="0 0 700 280" preserveAspectRatio="xMidYMid meet" style="display:block;">${svgInner}</svg></div>
+      <div style="display:flex;justify-content:center;gap:16px;padding:6px;background:#1a2a3a;border-radius:4px;font-size:10px;flex-wrap:wrap;">
+        <span style="color:#22c55e;">● 挚友 71-100</span><span style="color:#eab308;">● 朋友 31-70</span><span style="color:#f97316;">● 认识 11-30</span><span style="color:#666;">● 陌生 0-10</span>
+      </div>
+      <div style="margin-top:12px;padding:10px;background:#0a0a15;border-radius:6px;color:#666;font-size:10px;line-height:1.5;">💡 协作分工、参与人与加成已并入「📋 任务详情」（点右侧任务或 任务→协作任务）。此处仅展示关系网络（对齐 modules/12-popups）。</div>`;
+    },
+    buttons:[{label:'关闭',class:'btn-secondary',action:'close'}]
+  },
+  
+  skillPanel:{
+    title:'⭐ 城主技能',
+    width:500,
+    render:()=>`
+      <div style="margin-bottom:16px;padding:12px;background:#1a2a3a;border-radius:8px;">
+        <span style="color:#FFD700;font-size:24px;">👑</span><span style="color:#fff;font-size:18px;font-weight:bold;margin-left:12px;">城主 Lv.${state.lordLevel}</span><span style="color:#888;font-size:12px;margin-left:12px;">XP: ${state.lordXP} / ${state.lordLevel*200}</span>
+      </div>
+      <div class="list-item" style="border-left:3px solid #FFD700;">
+        <div style="display:flex;justify-content:space-between;"><div><span style="color:#FFD700;font-weight:bold;">📣 激励演说</span><span class="tag tag-green" style="margin-left:8px;">Lv.1</span></div><span style="color:#888;font-size:10px;">冷却: 3秒</span></div>
+        <div style="color:#aaa;font-size:11px;margin-top:4px;">恢复指定Agent饱食度+30,情绪+15</div>
+        <div style="margin-top:8px;"><button type="button" class="btn btn-primary" style="padding:4px 12px;font-size:10px;" onclick="useSkill('inspire')">使用</button></div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #87CEEB;">
+        <div style="display:flex;justify-content:space-between;"><div><span style="color:#87CEEB;font-weight:bold;">🎯 精准分配</span><span class="tag tag-blue" style="margin-left:8px;">Lv.2</span></div><span style="color:#888;font-size:10px;">无冷却</span></div>
+        <div style="color:#aaa;font-size:11px;margin-top:4px;">任务匹配度判断准确率+20%</div>
+        <div style="color:#666;font-size:10px;margin-top:4px;">被动技能,自动生效</div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #DDA0DD;">
+        <div style="display:flex;justify-content:space-between;"><div><span style="color:#DDA0DD;font-weight:bold;">🔮 灵感赐予</span><span class="tag tag-purple" style="margin-left:8px;">Lv.3</span></div><span style="color:#888;font-size:10px;">冷却: 7秒</span></div>
+        <div style="color:#aaa;font-size:11px;margin-top:4px;">给协作中Agent提供创意提示,质量+15%,消耗30积分</div>
+        <div style="margin-top:8px;"><button type="button" class="btn btn-secondary" style="padding:4px 12px;font-size:10px;" onclick="useSkill('insight')">使用</button></div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #FFD700;opacity:${state.lordLevel>=4?1:0.5};">
+        <div style="display:flex;justify-content:space-between;"><div><span style="color:#FFD700;">🌟 光环效应</span><span class="tag tag-yellow" style="margin-left:8px;">Lv.4</span></div><span style="color:${state.lordLevel>=4?'#888':'#555'};font-size:10px;">${state.lordLevel>=4?'冷却: 10秒':'需要 Lv.4'}</span></div>
+        <div style="color:${state.lordLevel>=4?'#aaa':'#666'};font-size:11px;margin-top:4px;">周围Agent情绪+10,持续3秒,消耗80积分</div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #FFD700;opacity:${state.lordLevel>=5?1:0.5};">
+        <div style="display:flex;justify-content:space-between;"><div><span style="color:#FFD700;">👁️ 全知视角</span><span class="tag tag-yellow" style="margin-left:8px;">Lv.5</span></div><span style="color:${state.lordLevel>=5?'#888':'#555'};font-size:10px;">${state.lordLevel>=5?'无冷却':'需要 Lv.5'}</span></div>
+        <div style="color:${state.lordLevel>=5?'#aaa':'#666'};font-size:11px;margin-top:4px;">查看任意Agent详细状态</div>
+      </div>`,
+    buttons:[{label:'关闭',class:'btn-secondary',action:'close'}]
+  },
+  
+  buildingUpgrade:{
+    title:'🏠 基地升级',
+    width:500,
+    render:()=>`
+      <div class="tabs">
+        <div class="tab active" onclick="switchBuildingTab(this,'rest')">☕ 休息室</div>
+        <div class="tab" onclick="switchBuildingTab(this,'server')">🖥️ 机房</div>
+        <div class="tab" onclick="switchBuildingTab(this,'office')">📦 办公室</div>
+      </div>
+      <div id="upgradeContent">
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:12px;"><span style="color:#fff;font-weight:bold;">休息室 Lv.1</span><span style="color:#FFD700;">当前</span></div>
+          <div style="color:#aaa;font-size:12px;margin-bottom:12px;">基准恢复效果</div>
+        </div>
+        <div class="list-item" style="border-left:3px solid #228B22;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#90EE90;font-weight:bold;">休息室 Lv.2</span><span style="color:#FFD700;font-size:12px;">500积分</span></div>
+          <div style="color:#aaa;font-size:11px;margin-top:4px;">需求恢复速度 +25%</div>
+          <div style="margin-top:8px;"><button class="btn btn-secondary" style="padding:4px 12px;font-size:10px;">升级</button></div>
+        </div>
+        <div class="list-item" style="border-left:3px solid #FFD700;opacity:0.7;">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#FFD700;font-weight:bold;">休息室 Lv.3</span><span style="color:#888;font-size:12px;">1500积分</span></div>
+          <div style="color:#666;font-size:11px;margin-top:4px;">需求恢复速度 +50%</div>
+        </div>
+      </div>`,
+    buttons:[{label:'关闭',class:'btn-secondary',action:'close'}]
+  },
+  
+  agentList:{
+    title:'📋 Agent列表',
+    width:600,
+    render:()=>`
+      <div style="margin-bottom:16px;">${state.agents.map(a=>`
+        <div class="list-item" style="margin-bottom:8px;cursor:pointer;" onclick="selectAgentFromList('${a.id}')">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:40px;height:40px;background:#4169E1;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;">${a.name[0]}</div>
+            <div style="flex:1;">
+              <div style="color:#fff;font-size:13px;font-weight:bold;">${a.name}</div>
+              <div style="color:#888;font-size:11px;">👤 ${a.profession} · ${a.status==='working'?'💻工作中':a.status==='idle'?'🟡空闲':'😴休息中'}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="color:#90EE90;font-size:11px;">⚡${a.energy}%</div>
+              <div style="color:#FF8C00;font-size:11px;">😊${a.mood}%</div>
+            </div>
+          </div>
+        </div>
+      `).join('')}</div>`,
+    buttons:[{label:'关闭',class:'btn-secondary',action:'close'}]
+  },
+  
+  lordLevel:{
+    title:'⬆️ 城主等级',
+    width:450,
+    render:()=>`
+      <div style="text-align:center;padding:20px;">
+        <div style="font-size:64px;margin-bottom:16px;">👑</div>
+        <div style="color:#FFD700;font-size:24px;font-weight:bold;">Lv.${state.lordLevel}</div>
+        <div style="color:#888;font-size:12px;margin-top:8px;">XP: ${state.lordXP} / ${state.lordLevel*200}</div>
+        <div style="margin-top:16px;height:12px;background:#333;border-radius:6px;overflow:hidden;"><div style="width:${(state.lordXP/(state.lordLevel*200))*100}%;height:100%;background:#FFD700;"></div></div>
+      </div>
+      <div style="margin-top:20px;">
+        <div class="list-item" style="border-left:3px solid #90EE90;${state.lordLevel<2?'opacity:0.5':''}">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#90EE90;font-weight:bold;">Lv.2 精准分配</span><span style="color:#888;font-size:10px;">${state.lordLevel>=2?'✓ 已解锁':'需要 200 XP'}</span></div>
+          <div style="color:#666;font-size:11px;margin-top:4px;">任务匹配度判断准确率+20%</div>
+        </div>
+        <div class="list-item" style="border-left:3px solid #87CEEB;${state.lordLevel<3?'opacity:0.5':''}">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#87CEEB;font-weight:bold;">Lv.3 灵感赐予</span><span style="color:#888;font-size:10px;">${state.lordLevel>=3?'✓ 已解锁':'需要 500 XP'}</span></div>
+          <div style="color:#666;font-size:11px;margin-top:4px;">协作质量+15%,消耗30积分</div>
+        </div>
+        <div class="list-item" style="border-left:3px solid #FFD700;${state.lordLevel<4?'opacity:0.5':''}">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#FFD700;font-weight:bold;">Lv.4 光环效应</span><span style="color:#888;font-size:10px;">${state.lordLevel>=4?'✓ 已解锁':'需要 1000 XP'}</span></div>
+          <div style="color:#666;font-size:11px;margin-top:4px;">周围Agent情绪+10,持续3秒</div>
+        </div>
+        <div class="list-item" style="border-left:3px solid #FF69B4;${state.lordLevel<5?'opacity:0.5':''}">
+          <div style="display:flex;justify-content:space-between;"><span style="color:#FF69B4;font-weight:bold;">Lv.5 全知视角</span><span style="color:#888;font-size:10px;">${state.lordLevel>=5?'✓ 已解锁':'需要 2000 XP'}</span></div>
+          <div style="color:#666;font-size:11px;margin-top:4px;">查看任意Agent详细状态</div>
+        </div>
+      </div>`,
+    buttons:[{label:'关闭',class:'btn-secondary',action:'close'}]
+  },
+
+  modulesHub:{
+    title:'📂 分模块原型',
+    subtitle:'docs/原型/modules — 单点能力演示，新标签页打开',
+    width:720,
+    render:()=>{
+      const rows=[
+        ['01-layout.html','01 基础布局','顶栏、双栏、底栏与底部菜单'],
+        ['02-building.html','02 建筑/房间','房间与走廊绘制'],
+        ['03-items.html','03 物品','场景物品与交互占位'],
+        ['04-agents.html','04 Agent','角色展示与状态'],
+        ['05-interactions.html','05 交互','点击、拖拽等'],
+        ['06-websocket.html','06 WebSocket','连接与消息模拟'],
+        ['07-ai-flow.html','07 AI 推理流程','输入→推理→状态更新'],
+        ['08-tasks.html','08 任务系统','任务生命周期'],
+        ['09-social.html','09 社交','关系与打招呼等'],
+        ['10-complete.html','10 完整演示','早期整合画布'],
+        ['11-bottom-menu.html','11 底部菜单','菜单弹出与城主合并项'],
+        ['12-popups.html','12 弹窗总览','全部弹窗样式与文案'],
+        ['test-simple.html','test 简单测试','最小画布'],
+      ];
+      return`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        ${rows.map(([file,title,desc])=>`<div class="list-item" style="margin-bottom:0;cursor:pointer;" onclick="window.open('modules/${file}','_blank','noopener')">
+          <div style="color:#FFD700;font-weight:bold;font-size:12px;">${title}</div>
+          <div style="color:#888;font-size:10px;margin-top:6px;line-height:1.45;">${desc}</div>
+        </div>`).join('')}
+      </div>
+      <p style="color:#555;font-size:10px;margin-top:14px;line-height:1.5;">主流程以本页「完整原型」为准；模块页用于对照 PRD/单模块验收。</p>`;
+    },
+    buttons:[{label:'关闭',class:'btn-secondary',action:'close'}]
+  },
+};
+
+function openPopup(key){
+  const popup=POPUPS[key];
+  if(!popup)return;
+  selectedPopup=key;
+  document.getElementById('popupTitle').textContent=popup.title;
+  document.getElementById('popupSubtitle').textContent=popup.subtitle||'';
+  document.getElementById('popupBody').innerHTML=popup.render();
+  const footer=document.getElementById('popupFooter');
+  footer.innerHTML='';
+  (popup.buttons||[]).forEach(btn=>{
+    const el=document.createElement('button');
+    el.className='btn '+btn.class;
+    el.textContent=btn.label;
+    el.onclick=()=>{if(actions[btn.action])actions[btn.action]();};
+    footer.appendChild(el);
+  });
+  document.getElementById('popupOverlay').classList.add('show');
+  syncOverlayToCanvas();
+}
+
+function closePopup(){
+  document.getElementById('popupOverlay').classList.remove('show');
+  selectedPopup=null;
+}
+
+window.switchTab=function(btn,tabId){
+  btn.parentElement.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  btn.closest('.popup').querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
+  const content=btn.closest('.popup').querySelector('#tab-'+tabId);
+  if(content)content.classList.add('active');
+};
+
+window.switchBuildingTab=function(btn,type){
+  btn.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  btn.classList.add('active');
+};
+
+window.selectAgentFromList=function(id){
+  selectedAgent=state.agents.find(a=>a.id===id);
+  closePopup();
+  log(`选中了 ${selectedAgent?.name}`);
+};
+
+window.useSkill=function(skill){
+  if(skill==='inspire'){
+    if(selectedAgent){selectedAgent.energy=Math.min(100,selectedAgent.energy+30);selectedAgent.mood=Math.min(100,selectedAgent.mood+15);}
+    else{state.agents.forEach(a=>{a.energy=Math.min(100,a.energy+10);a.mood=Math.min(100,a.mood+5);});}
+    log('📣 使用激励演说');
+  }else if(skill==='insight'){
+    log('🔮 使用灵感赐予');
+  }
+};
+
+// ===== 建筑 =====
+function drawBuilding(){
+  const corridorCenterX=ROOM_W*2+WALL*2+WALL/2;
+  const corridorX=corridorCenterX-VISUAL_CORRIDOR_W/2;
+  const doorX=corridorCenterX-DOOR/2;
+  buildingOffsetX=CENTER_X+(CENTER_W-BUILDING_W)/2;
+  buildingOffsetY=CENTER_Y+(CENTER_H-BUILDING_H);
+  ctx.save();
+  ctx.translate(buildingOffsetX,buildingOffsetY);
+  const kingX=(BUILDING_W-KING_W)/2;
+  rect(kingX,0,KING_W,KING_H,C.king);
+  stroke(kingX,0,KING_W,KING_H,'#4169E1',3);
+  text('城主办公室',kingX+KING_W/2,KING_H/2+4,'#fff',12,'center');
+  rect(doorX,KING_H,DOOR,WALL,C.door);
+  clickables.push({x:buildingOffsetX+kingX,y:buildingOffsetY,w:KING_W,h:KING_H,action:'kingOffice',tooltip:'城主办公室'});
+  rect(doorX,KING_H+WALL,DOOR,V_CORR_H,C.floor);
+  const row2Y=KING_H+WALL+V_CORR_H+WALL;
+  drawRow(0,row2Y,['休息室','资料室','会议室','机房'],[true,true,true,true]);
+  rect(corridorX,row2Y,VISUAL_CORRIDOR_W,ROOM_H,C.floor);
+  rect(0,row2Y+ROOM_H,corridorX+VISUAL_CORRIDOR_W,MID_CORRIDOR_H,C.floor);
+  rect(corridorX+VISUAL_CORRIDOR_W,row2Y+ROOM_H,BUILDING_W-(corridorX+VISUAL_CORRIDOR_W),MID_CORRIDOR_H,C.floor);
+  const row3Y=row2Y+ROOM_H+MID_CORRIDOR_H+WALL;
+  drawRow(0,row3Y,['办公室1','办公室2','办公室3','办公室4'],[false,false,false,false]);
+  rect(corridorX,row3Y,VISUAL_CORRIDOR_W,ROOM_H,C.floor);
+  rect(0,row3Y+ROOM_H,corridorX+VISUAL_CORRIDOR_W,MID_CORRIDOR_H,C.floor);
+  rect(corridorX+VISUAL_CORRIDOR_W,row3Y+ROOM_H,BUILDING_W-(corridorX+VISUAL_CORRIDOR_W),MID_CORRIDOR_H,C.floor);
+  const row4Y=row3Y+ROOM_H+MID_CORRIDOR_H+WALL;
+  drawRow(0,row4Y,['办公室5','办公室6','办公室7','办公室8'],[false,false,false,false]);
+  rect(corridorX,row4Y,VISUAL_CORRIDOR_W,ROOM_H,C.floor);
+  rect(0,row4Y+ROOM_H,corridorX+VISUAL_CORRIDOR_W,BOTTOM_CORRIDOR_H,C.floor);
+  rect(corridorX+VISUAL_CORRIDOR_W,row4Y+ROOM_H,BUILDING_W-(corridorX+VISUAL_CORRIDOR_W),BOTTOM_CORRIDOR_H,C.floor);
+  const buildingEndY=row4Y+ROOM_H+BOTTOM_CORRIDOR_H+WALL;
+  rect(-8,0,8,buildingEndY+8,C.wall);
+  rect(BUILDING_W,0,8,buildingEndY+8,C.wall);
+  clickables.push({x:buildingOffsetX+corridorX,y:buildingOffsetY+row2Y,w:VISUAL_CORRIDOR_W,h:ROOM_H,action:'corridor',tooltip:'走廊'});
+  ctx.restore();
+  drawAgentsInBuilding(row2Y,row3Y,row4Y);
+}
+
+function drawRow(offsetX,y,labels,isFixed){
+  for(let i=0;i<4;i++){
+    const x=offsetX+i*(ROOM_W+WALL);
+    const color=isFixed[i]?C.fixed:C.dynamic;
+    const borderColor=isFixed[i]?'#4169E1':'#228B22';
+    rect(x,y,ROOM_W,ROOM_H,color);
+    stroke(x,y,ROOM_W,ROOM_H,borderColor,2);
+    text(labels[i],x+ROOM_W/2,y+ROOM_H/2,'#fff',9,'center');
+    const doorX=i===0||i===2?x+ROOM_W*3/4-DOOR/2:x+ROOM_W/4-DOOR/2;
+    rect(doorX,y+ROOM_H-WALL,DOOR,WALL,C.door);
+    clickables.push({x:buildingOffsetX+x,y:buildingOffsetY+y,w:ROOM_W,h:ROOM_H,action:'room',roomName:labels[i],tooltip:labels[i]+'\n点击移动选中的Agent'});
+  }
+}
+
+function drawAgentsInBuilding(row2Y,row3Y,row4Y){
+  const roomPositions={'休息室':{row:row2Y,col:0,offsetX:40},'资料室':{row:row2Y,col:1,offsetX:40},'会议室':{row:row2Y,col:2,offsetX:40},'机房':{row:row2Y,col:3,offsetX:40},'办公室1':{row:row3Y,col:0,offsetX:40},'办公室2':{row:row3Y,col:1,offsetX:40},'办公室3':{row:row3Y,col:2,offsetX:40},'办公室4':{row:row3Y,col:3,offsetX:40},'办公室5':{row:row4Y,col:0,offsetX:40},'办公室6':{row:row4Y,col:1,offsetX:40},'办公室7':{row:row4Y,col:2,offsetX:40},'办公室8':{row:row4Y,col:3,offsetX:40}};
+  state.agents.forEach(agent=>{
+    const pos=roomPositions[agent.location];
+    if(!pos)return;
+    const roomX=pos.col*(ROOM_W+WALL);
+    const ax=buildingOffsetX+roomX+pos.offsetX;
+    const ay=buildingOffsetY+pos.row+ROOM_H-30;
+    agent.renderX=ax;agent.renderY=ay;
+    const isSelected=selectedAgent?.id===agent.id;
+    const isHovered=hoveredItem===agent;
+    ctx.fillStyle=isSelected?'#5a7a9a':isHovered?'#5179b1':C.agent;
+    ctx.fillRect(ax-AGENT_W/2,ay-AGENT_H,AGENT_W,AGENT_H);
+    ctx.strokeStyle=isSelected?C.gold:isHovered?'#fff':'#aaa';
+    ctx.lineWidth=isSelected?2:1;
+    ctx.strokeRect(ax-AGENT_W/2,ay-AGENT_H,AGENT_W,AGENT_H);
+    ctx.fillStyle=C.face;
+    ctx.fillRect(ax-AGENT_W/2+3,ay-AGENT_H+6,AGENT_W-6,10);
+    ctx.fillStyle=C.gold;
+    ctx.font='8px Consolas';
+    ctx.textAlign='center';
+    ctx.fillText('↓',ax,ay-AGENT_H-4);
+    ctx.fillStyle=isSelected?C.gold:'#fff';
+    ctx.fillText(agent.name,ax,ay+8);
+    const statusIcon={working:'💻',idle:'🟡',resting:'😴'}[agent.status]||'⬜';
+    ctx.font='10px Arial';
+    ctx.fillText(statusIcon,ax+AGENT_W/2+8,ay-AGENT_H+12);
+    ctx.textAlign='left';
+    clickables.push({x:ax-AGENT_W/2,y:ay-AGENT_H,w:AGENT_W,h:AGENT_H+20,action:'agent',agent:agent,tooltip:`${agent.name} (${agent.profession})\n状态: ${agent.status}\n能量: ${agent.energy}%\n情绪: ${agent.mood}%\n点击查看详情`});
+  });
+}
+
+// ===== 顶栏 =====
+function drawTopBar(){
+  rect(0,0,W,LAYOUT.top,'#151525');
+  stroke(0,0,W,LAYOUT.top,C.border,2);
+  text('Hermes数字工作室',15,28,C.gold,16);
+  text(`第 ${state.day} 天  ${state.time}`,200,28,C.text,12);
+  text(`💰 ${state.money}  👥 ${state.agents.length}  📋 ${state.tasks.length}`,400,28,C.text,11);
+  text(`👑 Lv.${state.lordLevel}`,W-350,20,C.gold,11);
+  text(`XP: ${state.lordXP}`,W-350,36,C.text,10);
+  text('← 点击Agent选中 → 点击房间移动',CENTER_X+CENTER_W/2,28,'#666',10,'center');
+}
+
+// ===== 左面板 =====
+function drawLeftPanel(){
+  rect(0,LAYOUT.top,LAYOUT.left,CENTER_H,'rgba(26,26,48,0.95)');
+  stroke(0,LAYOUT.top,LAYOUT.left,CENTER_H,C.border,2);
+  text('◀ Agent列表',12,LAYOUT.top+25,C.bright,12);
+  state.agents.forEach((agent,i)=>{
+    const ay=LAYOUT.top+40+i*70;
+    const isSelected=selectedAgent?.id===agent.id;
+    const isHovered=hoveredItem===agent;
+    rect(8,ay,LAYOUT.left-16,62,isHovered?C.btnHover:isSelected?'#3a4a6a':C.btn);
+    stroke(8,ay,LAYOUT.left-16,62,isSelected?C.gold:isHovered?'#fff':C.border,isSelected?2:1);
+    ctx.fillStyle=isSelected?'#5a7a9a':C.agent;
+    ctx.fillRect(LAYOUT.left-50,ay+4,40,40);
+    ctx.strokeStyle=isSelected?C.gold:C.border;
+    ctx.lineWidth=isSelected?2:1;
+    ctx.strokeRect(LAYOUT.left-50,ay+4,40,40);
+    ctx.fillStyle=C.face;
+    ctx.fillRect(LAYOUT.left-47,ay+10,34,12);
+    ctx.fillStyle='#fff';
+    ctx.font='10px Consolas';
+    ctx.textAlign='center';
+    ctx.fillText(agent.name[0],LAYOUT.left-30,ay+19);
+    ctx.textAlign='left';
+    ctx.fillStyle=C.bright;
+    ctx.font='bold 11px Consolas';
+    ctx.fillText(agent.name,16,ay+16);
+    const profColors={'程序员':'#4169E1','设计师':'#9370DB','测试员':'#228B22','分析师':'#FF8C00'};
+    ctx.fillStyle=profColors[agent.profession]||C.text;
+    ctx.font='9px Consolas';
+    ctx.fillText(agent.profession,16,ay+28);
+    const statusColors={working:'#90EE90',idle:C.gold,resting:'#87CEEB'};
+    ctx.fillStyle=statusColors[agent.status]||'#888';
+    ctx.fillText(agent.status==='working'?'工作中':agent.status==='idle'?'空闲':'休息中',16,ay+40);
+    ctx.fillStyle='#333';
+    ctx.fillRect(80,ay+32,80,6);
+    ctx.fillStyle='#228B22';
+    ctx.fillRect(80,ay+32,80*agent.energy/100,6);
+    ctx.fillStyle='#333';
+    ctx.fillRect(80,ay+42,80,6);
+    ctx.fillStyle='#FF8C00';
+    ctx.fillRect(80,ay+42,80*agent.mood/100,6);
+    clickables.push({x:8,y:ay,w:LAYOUT.left-16,h:62,action:'selectAgent',agent:agent,tooltip:`选中 ${agent.name}\n职业: ${agent.profession}\n点击查看详情`});
+  });
+  if(selectedAgent){
+    text('▶ 移动到',12,LAYOUT.top+340,C.gold,11);
+    state.rooms.forEach((room,i)=>{
+      const col=i%2;
+      const row=Math.floor(i/2);
+      const x=12+col*115;
+      const y=LAYOUT.top+355+row*30;
+      const isCurrentRoom=selectedAgent.location===room;
+      const isHovered=hoveredItem===room;
+      rect(x,y,105,24,isHovered?C.btnHover:isCurrentRoom?'#2a4a4a':C.btn);
+      stroke(x,y,105,24,isHovered?C.gold:C.border,1);
+      ctx.fillStyle=isCurrentRoom?'#888':'#fff';
+      ctx.font='9px Consolas';
+      ctx.fillText(isCurrentRoom?'● '+room:room,x+5,y+16);
+      clickables.push({x,y,w:105,h:24,action:'moveAgent',room:room,tooltip:`移动到 ${room}`});
+    });
+  }
+}
+
+// ===== 右面板 =====
+function drawRightPanel(){
+  const x=W-LAYOUT.right;
+  rect(x,LAYOUT.top,LAYOUT.right,CENTER_H,'rgba(26,26,48,0.95)');
+  stroke(x,LAYOUT.top,LAYOUT.right,CENTER_H,C.border,2);
+  text('▶ 任务列表',x+12,LAYOUT.top+25,C.bright,12);
+  state.tasks.forEach((task,i)=>{
+    const ty=LAYOUT.top+45+i*65;
+    const isSelected=selectedTask?.id===task.id;
+    const isHovered=hoveredItem===task;
+    rect(x+8,ty,LAYOUT.right-16,58,isHovered?C.btnHover:isSelected?'#3a4a6a':C.btn);
+    stroke(x+8,ty,LAYOUT.right-16,58,isSelected?C.gold:C.border,isSelected?2:1);
+    ctx.fillStyle=C.bright;
+    ctx.font='bold 11px Consolas';
+    ctx.fillText(task.name,x+16,ty+16);
+    const statusLabels={pending:{text:'待接取',color:C.text},in_progress:{text:'进行中',color:C.gold},completed:{text:'已完成',color:'#228B22'},failed:{text:'失败',color:C.gold}};
+    const status=statusLabels[task.status]||statusLabels.pending;
+    ctx.fillStyle=status.color;
+    ctx.font='9px Consolas';
+    ctx.fillText(status.text,x+16,ty+30);
+    ctx.fillStyle='#333';
+    ctx.fillRect(x+16,ty+38,LAYOUT.right-40,6);
+    ctx.fillStyle=task.status==='in_progress'?C.gold:task.status==='completed'?'#228B22':'#555';
+    ctx.fillRect(x+16,ty+38,(LAYOUT.right-40)*task.progress/100,6);
+    ctx.fillStyle=C.text;
+    ctx.font='8px Consolas';
+    ctx.fillText(task.progress+'%',x+LAYOUT.right-35,ty+44);
+    const assignee=state.agents.find(a=>a.id===task.assignee);
+    if(assignee){ctx.fillStyle='#888';ctx.fillText('→ '+assignee.name,x+16,ty+54);}
+    clickables.push({x:x+8,y:ty,w:LAYOUT.right-16,h:58,action:'selectTask',task:task,tooltip:`任务: ${task.name}\n进度: ${task.progress}%\n点击查看详情`});
+  });
+  text('▶ 事件日志',x+12,LAYOUT.top+260,C.bright,12);
+  state.logs.slice(0,10).forEach((log,i)=>{
+    ctx.fillStyle='#666';
+    ctx.font='8px Consolas';
+    ctx.fillText(log.time,x+12,LAYOUT.top+280+i*16);
+    ctx.fillStyle=C.text;
+    ctx.fillText(log.msg.substring(0,15),x+60,LAYOUT.top+280+i*16);
+  });
+}
+
+// ===== 底栏 =====
+function drawBottomBar(){
+  const y=H-LAYOUT.bottom;
+  rect(0,y,W,LAYOUT.bottom,'#151525');
+  stroke(0,y,W,LAYOUT.bottom,C.border,2);
+  const menuKeys=['agent','task','social','lord','building','event','help'];
+  let menuX=15;
+  menuKeys.forEach(key=>{
+    const menu=MENUS[key];
+    if(!menu)return;
+    const btnW=70;
+    const isOpen=menuOpen===key;
+    const isHovered=hoveredItem&&hoveredItem.action===`menu_${key}`;
+    rect(menuX,y+10,btnW,34,isOpen?'#3a4a6a':isHovered?C.btnHover:C.btn);
+    stroke(menuX,y+10,btnW,34,isOpen?C.gold:isHovered?'#fff':C.border,isOpen?2:1);
+    ctx.fillStyle=isOpen?C.gold:C.bright;
+    ctx.font='10px Consolas';
+    ctx.textAlign='center';
+    ctx.fillText(menu.label,menuX+btnW/2,y+31);
+    ctx.textAlign='left';
+    clickables.push({x:menuX,y:y+10,w:btnW,h:34,action:`menu_${key}`,menuKey:key,tooltip:menu.label});
+    menuX+=btnW+5;
+  });
+  const statusY=y+24;
+  text(`第 ${state.day} 天`,W/2-80,statusY,C.text,11,'center');
+  text(state.time,W/2-10,statusY,C.gold,12,'center');
+  text(`💰 ${state.money}`,W/2+60,statusY,'#FFD700',11,'center');
+  if(selectedAgent){text(`已选中: ${selectedAgent.name}`,W/2+150,statusY,C.gold,11);}
+  const inputX=950;
+  rect(inputX,y+12,400,34,'#1a1a30');
+  stroke(inputX,y+12,400,34,inputFocused?C.gold:C.border,inputFocused?2:1);
+  if(inputText){ctx.fillStyle=C.bright;ctx.font='11px Consolas';ctx.fillText(inputText,inputX+10,y+34);}
+  else if(!inputFocused){ctx.fillStyle='#555';ctx.font='11px Consolas';ctx.fillText('输入指令... (例如: 让阿猿去休息室)',inputX+10,y+34);}
+  clickables.push({x:inputX,y:y+12,w:400,h:34,action:'focusInput',tooltip:'输入指令控制游戏'});
+  const btnX=1360;
+  ['新建','分配','技能'].forEach((label,i)=>{
+    rect(btnX+i*60,y+12,50,34,C.btn);
+    stroke(btnX+i*60,y+12,50,34,C.border,1);
+    ctx.fillStyle=C.bright;
+    ctx.font='10px Consolas';
+    ctx.textAlign='center';
+    ctx.fillText(label,btnX+i*60+25,y+34);
+    ctx.textAlign='left';
+    clickables.push({x:btnX+i*60,y:y+12,w:50,h:34,action:['new','assign','skill'][i],tooltip:label});
+  });
+}
+
+// ===== 菜单 =====
+function canvasRectToViewport(item){
+  const r=canvas.getBoundingClientRect();
+  const sx=r.width/W,sy=r.height/H;
+  return{x:r.left+item.x*sx,y:r.top+item.y*sy,w:item.w*sx,h:item.h*sy};
+}
+
+function showMenu(key,btnRect){
+  if(menuOpen===key){closeMenu();return;}
+  menuOpen=key;
+  const menu=MENUS[key];
+  if(!menu)return;
+  let html=`<div class="menu-header">${menu.label}</div>`;
+  menu.items.forEach(item=>{
+    if(item.type==='separator'){html+='<div class="menu-separator"></div>';}
+    else{
+      const disabled=item.enabled===false;
+      const tooltipText=item.tooltip||item.reason||item.label;
+      html+=`<div class="menu-item ${disabled?'disabled':''}" onclick="${disabled?'':`handleMenuClick('${item.id}')`}" onmouseenter="showTT(event,'${tooltipText.replace(/'/g,"\\'")}')" onmouseleave="hideTT()"><span>${item.label}</span>${item.hotkey?`<span class="menu-hotkey">${item.hotkey}</span>`:''}${item.submenu?'<span style="margin-left:auto;">▶</span>':''}</div>`;
+    }
+  });
+  document.getElementById('menuPopup').innerHTML=html;
+  document.getElementById('menuPopup').style.display='block';
+  document.getElementById('menuPopup').style.visibility='hidden';
+  const measured=document.getElementById('menuPopup').getBoundingClientRect();
+  let left=btnRect.x+btnRect.w/2-measured.width/2;
+  left=Math.max(8,Math.min(left,window.innerWidth-measured.width-8));
+  let top=btnRect.y-measured.height-8;
+  if(top<8)top=btnRect.y+btnRect.h+8;
+  document.getElementById('menuPopup').style.left=left+'px';
+  document.getElementById('menuPopup').style.top=top+'px';
+  document.getElementById('menuPopup').style.visibility='visible';
+}
+
+window.handleMenuClick=function(id){
+  if(actions[id]){actions[id]();}
+  else{log(`未实现: ${id}`);closeMenu();}
+};
+window.showTT=function(e,text){tooltip.innerHTML=text.replace(/\n/g,'<br>');tooltip.style.display='block';tooltip.style.left=(e.clientX+15)+'px';tooltip.style.top=(e.clientY+15)+'px';};
+window.hideTT=function(){tooltip.style.display='none';};
+
+// ===== 主循环 =====
+function render(){
+  clickables=[];
+  rect(0,0,W,H,C.bg);
+  drawTopBar();
+  drawLeftPanel();
+  drawRightPanel();
+  drawBottomBar();
+  drawBuilding();
+  if(Math.random()<0.003){
+    const parts=state.time.split(':');
+    let h=parseInt(parts[0]),m=parseInt(parts[1]);
+    m+=5;if(m>=60){m=0;h++;}if(h>=24){h=0;state.day++;}
+    state.time=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+  }
+  state.tasks.forEach(task=>{
+    if(task.status==='in_progress'&&task.progress<100){
+      const agent=state.agents.find(a=>a.id===task.assignee);
+      const speed=agent?.speed||1;
+      task.progress+=Math.random()*0.2*speed;
+      if(task.progress>=100){task.progress=100;task.status='completed';log(`${task.name} 已完成！`);if(agent){agent.status='idle';state.money+=10+Math.floor(Math.random()*20);state.lordXP+=5;}}
+    }
+  });
+  hoveredItem=null;
+  for(const item of clickables){if(mouseX>=item.x&&mouseX<=item.x+item.w&&mouseY>=item.y&&mouseY<=item.y+item.h){hoveredItem=item;break;}}
+  canvas.style.cursor=hoveredItem?'pointer':'default';
+  if(hoveredItem&&hoveredItem.tooltip){tooltip.style.display='block';tooltip.style.left=(parseFloat(canvas.style.left)+mouseX*parseFloat(canvas.style.width)/W+10)+'px';tooltip.style.top=(parseFloat(canvas.style.top)+mouseY*parseFloat(canvas.style.height)/H+10)+'px';tooltip.innerHTML=hoveredItem.tooltip.replace(/\n/g,'<br>');}else{tooltip.style.display='none';}
+  requestAnimationFrame(render);
+}
+
+// ===== 事件 =====
+canvas.addEventListener('mousemove',(e)=>{const rect2=canvas.getBoundingClientRect();mouseX=(e.clientX-rect2.left)*W/rect2.width;mouseY=(e.clientY-rect2.top)*H/rect2.height;});
+
+canvas.addEventListener('click',(e)=>{
+  const rect2=canvas.getBoundingClientRect();
+  const mx=(e.clientX-rect2.left)*W/rect2.width;
+  const my=(e.clientY-rect2.top)*H/rect2.height;
+  for(const item of clickables){if(mx>=item.x&&mx<=item.x+item.w&&my>=item.y&&my<=item.y+item.h){handleClick(item);break;}}
+});
+
+function handleClick(item){
+  switch(item.action){
+    case 'selectAgent':selectedAgent=item.agent;selectedTask=null;log(`选中了 ${item.agent.name}`);break;
+    case 'agent':selectedAgent=item.agent;openPopup('agentDetail');break;
+    case 'selectTask':selectedTask=item.task;log(`选中了任务: ${item.task.name}`);openPopup('taskDetail');break;
+    case 'moveAgent':if(selectedAgent){selectedAgent.location=item.room;log(`${selectedAgent.name} → ${item.room}`);}break;
+    case 'room':if(selectedAgent){selectedAgent.location=item.roomName;log(`${selectedAgent.name} → ${item.roomName}`);}break;
+    case 'focusInput':inputFocused=true;break;
+    case 'new':openPopup('newTask');break;
+    case 'assign':if(selectedTask&&selectedAgent){selectedTask.assignee=selectedAgent.id;selectedTask.status='in_progress';selectedAgent.status='working';log(`分配 ${selectedTask.name} 给 ${selectedAgent.name}`);}break;
+    case 'skill':openPopup('skillPanel');break;
+    default:if(item.action.startsWith('menu_')){showMenu(item.menuKey,canvasRectToViewport(item));}
+  }
+}
+
+document.addEventListener('keydown',(e)=>{
+  if(inputFocused){
+    if(e.key==='Enter'){if(inputText.trim()){log('> '+inputText);const cmd=inputText.toLowerCase();if(cmd.includes('去')||cmd.includes('移动')){const agent=state.agents.find(a=>cmd.includes(a.name));const room=state.rooms.find(r=>cmd.includes(r));if(agent&&room){agent.location=room;log(`${agent.name} → ${room}`);}}inputText='';}inputFocused=false;}
+    else if(e.key==='Backspace'){inputText=inputText.slice(0,-1);}
+    else if(e.key.length===1){inputText+=e.key;}e.preventDefault();
+  }else if(e.key==='Escape'){selectedAgent=null;selectedTask=null;closeMenu();}
+  else if(e.key===' '){e.preventDefault();log(state.pause?'▶ 游戏继续':'⏸️ 游戏暂停');state.pause=!state.pause;}
+});
+
+document.addEventListener('click',(e)=>{
+  if(!e.target.closest('canvas')&&!e.target.closest('.menu-popup')&&!e.target.closest('.popup-overlay')){inputFocused=false;closeMenu();}
+});
+
+document.querySelectorAll('.popup-overlay').forEach(overlay=>{overlay.addEventListener('click',(e)=>{if(e.target===overlay)closePopup();});});
+
+log('欢迎来到Hermes数字工作室');
+log('点击Agent查看详情,点击房间移动');
+render();
+</script>
+</body>
+</html>

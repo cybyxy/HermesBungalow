@@ -1,0 +1,2030 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 弹出窗口设计</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { 
+    background: #0a0a15; 
+    color: #eee; 
+    font-family: Consolas, 'Microsoft YaHei', monospace;
+    overflow: hidden;
+  }
+  #ui { display: block; }
+  
+  /* 弹出窗口 */
+  .popup-overlay {
+    position: fixed;
+    top: 0; left: 0;
+    background: rgba(0,0,0,0.7);
+    display: none;
+    justify-content: stretch;
+    align-items: flex-end;
+    padding: 0 0 3px 0;
+    box-sizing: border-box;
+    overflow-y: auto;
+    z-index: 1000;
+  }
+  .popup-overlay.show { display: flex; }
+
+  .agent-detail-main-grid {
+    overflow: auto;
+  }
+  
+  .popup {
+    background: #1a1a30;
+    border: 2px solid #FFD700;
+    border-radius: 12px 12px 0 0;
+    border-bottom: 2px solid #FFD700;
+    width: 100%;
+    max-width: 100%;
+    height: min(41%, calc(100% - 8px));
+    max-height: calc(100% - 8px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 -8px 40px rgba(0,0,0,0.45);
+    box-sizing: border-box;
+  }
+  
+  .popup-header {
+    background: #252540;
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+  }
+  .popup-title {
+    color: #FFD700;
+    font-size: 14px;
+    font-weight: bold;
+  }
+  .popup-close {
+    color: #888;
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0 8px;
+  }
+  .popup-close:hover { color: #FFD700; }
+  .popup-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .popup-header-btn {
+    display: none;
+    padding: 4px 10px;
+    font-size: 11px;
+    border-radius: 4px;
+    border: 1px solid #3a7a3a;
+    background: #2a5a2a;
+    color: #fff;
+    cursor: pointer;
+  }
+  .popup-header-btn:hover { background: #3a6a3a; }
+  
+  .popup-content {
+    padding: 16px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .popup-content::-webkit-scrollbar { width: 6px; }
+  .popup-content::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+  
+  .popup-footer {
+    padding: 12px 16px;
+    border-top: 1px solid #333;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+  
+  /* 按钮 */
+  .btn {
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    border: 1px solid #444;
+    transition: all 0.2s;
+  }
+  .btn-primary {
+    background: #2a5a2a;
+    color: #fff;
+    border-color: #3a7a3a;
+  }
+  .btn-primary:hover { background: #3a6a3a; }
+  .btn-secondary {
+    background: #2a3a5a;
+    color: #ccc;
+  }
+  .btn-secondary:hover { background: #3a4a6a; }
+  .btn-danger {
+    background: #5a2a2a;
+    color: #ff6b6b;
+    border-color: #7a3a3a;
+  }
+  .btn-danger:hover { background: #6a3a3a; }
+  
+  /* 表单元素 */
+  .form-group {
+    margin-bottom: 12px;
+  }
+  .form-label {
+    display: block;
+    color: #aaa;
+    font-size: 11px;
+    margin-bottom: 4px;
+  }
+  .form-input {
+    width: 100%;
+    padding: 8px 12px;
+    background: #0a0a15;
+    border: 1px solid #333;
+    border-radius: 4px;
+    color: #fff;
+    font-size: 12px;
+    box-sizing: border-box;
+  }
+  .form-input:focus {
+    outline: none;
+    border-color: #FFD700;
+    box-shadow: 0 0 0 2px rgba(255, 215, 0, 0.15);
+  }
+  .form-textarea {
+    width: 100%;
+    padding: 10px 12px;
+    background: #0a0a15;
+    border: 1px solid #333;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 12px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    line-height: 1.5;
+    box-sizing: border-box;
+    resize: vertical;
+  }
+  .form-textarea:focus {
+    outline: none;
+    border-color: #FFD700;
+    box-shadow: 0 0 0 2px rgba(255, 215, 0, 0.15);
+  }
+  .form-select {
+    width: 100%;
+    padding: 8px 12px;
+    background: #0a0a15;
+    border: 1px solid #333;
+    border-radius: 4px;
+    color: #fff;
+    font-size: 12px;
+  }
+  
+  /* 列表 */
+  .list-item {
+    padding: 10px 12px;
+    background: #252540;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .list-item:hover { background: #2a2a4a; }
+  .list-item.selected { background: #3a4a6a; border: 1px solid #FFD700; }
+  
+  /* 标签页 */
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid #333;
+    margin-bottom: 16px;
+  }
+  .tab {
+    padding: 8px 16px;
+    color: #888;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    font-size: 12px;
+  }
+  .tab:hover { color: #ccc; }
+  .tab.active { color: #FFD700; border-bottom-color: #FFD700; }
+  
+  /* 进度条 */
+  .progress-bar {
+    height: 8px;
+    background: #333;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: #228B22;
+    transition: width 0.3s;
+  }
+  .progress-fill.warning { background: #FF8C00; }
+  .progress-fill.danger { background: #DC143C; }
+  
+  /* 属性条 */
+  .stat-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+  }
+  .stat-label {
+    width: 60px;
+    font-size: 10px;
+    color: #888;
+  }
+  .stat-bar-inner {
+    flex: 1;
+    height: 6px;
+    background: #333;
+    border-radius: 3px;
+  }
+  .stat-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+  }
+  .stat-value {
+    width: 35px;
+    font-size: 10px;
+    color: #aaa;
+    text-align: right;
+  }
+  
+  /* 标签 */
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    margin-right: 4px;
+  }
+  .tag-green { background: #1a3a1a; color: #90EE90; }
+  .tag-blue { background: #1a2a3a; color: #87CEEB; }
+  .tag-yellow { background: #3a3a1a; color: #FFD700; }
+  .tag-red { background: #3a1a1a; color: #ff6b6b; }
+  .tag-purple { background: #2a1a3a; color: #DDA0DD; }
+  
+  /* 网格 */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+  }
+  
+  /* 工具提示 */
+  .tooltip {
+    position: fixed;
+    background: rgba(26,26,48,0.95);
+    border: 1px solid #FFD700;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    pointer-events: none;
+    display: none;
+    z-index: 1001;
+    color: #fff;
+    max-width: 300px;
+  }
+
+  /* Agent 详情弹窗内 Tab（原在内联 HTML 中，避免 innerHTML 不执行 script） */
+  .tab-btn {
+    flex: none;
+    padding: 10px 12px;
+    background: transparent;
+    border: none;
+    color: #888;
+    font-size: 11px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+  }
+  .tab-btn:hover { color: #ccc; }
+  .tab-btn.active {
+    color: #FFD700;
+    border-bottom-color: #FFD700;
+    background: #1a1a30;
+  }
+  .tab-content { min-height: 120px; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+
+<!-- 弹出窗口容器 -->
+<div class="popup-overlay" id="popupOverlay">
+  <div class="popup" id="popupContent">
+    <div class="popup-header">
+      <span class="popup-title" id="popupTitle">标题</span>
+      <div class="popup-header-actions">
+        <button type="button" class="popup-header-btn" id="popupHeaderActionBtn">添加</button>
+        <span class="popup-close" onclick="closePopup()">×</span>
+      </div>
+    </div>
+    <div class="popup-content" id="popupBody">内容</div>
+    <div class="popup-footer" id="popupFooter"></div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const canvas = document.getElementById('ui');
+const ctx = canvas.getContext('2d');
+const W = 1920, H = 1000;
+canvas.width = W; canvas.height = H;
+
+function resizeCanvas() {
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width = (W * scale) + 'px';
+  canvas.style.height = (H * scale) + 'px';
+  canvas.style.position = 'absolute';
+  canvas.style.left = (window.innerWidth - W * scale) / 2 + 'px';
+  canvas.style.top = (window.innerHeight - H * scale) / 2 + 'px';
+  syncOverlayToCanvas();
+}
+
+function syncOverlayToCanvas() {
+  const overlay = document.getElementById('popupOverlay');
+  const rect = canvas.getBoundingClientRect();
+  overlay.style.left = `${rect.left}px`;
+  overlay.style.top = `${rect.top}px`;
+  overlay.style.width = `${rect.width}px`;
+  overlay.style.height = `${rect.height}px`;
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+const C = {
+  bg: '#0a0a15', panel: '#1a1a30', border: '#333355',
+  text: '#aaa', bright: '#fff', gold: '#FFD700',
+  green: '#228B22', blue: '#4169E1', purple: '#9370DB',
+  orange: '#FF8C00', red: '#DC143C',
+};
+
+let clickables = [];
+let mouseX = 0, mouseY = 0;
+let hoveredItem = null;
+let currentPopup = null;
+
+const state = {
+  agents: [
+    { id: 'A', name: '阿猿', profession: '程序员', status: 'working', energy: 75, mood: 80, affection: 60, relation: 45 },
+    { id: 'B', name: '小美', profession: '设计师', status: 'idle', energy: 90, mood: 75, affection: 55, relation: 40 },
+    { id: 'C', name: '点点', profession: '测试员', status: 'resting', energy: 60, mood: 85, affection: 70, relation: 50 },
+    { id: 'D', name: '数据帝', profession: '分析师', status: 'working', energy: 55, mood: 70, affection: 65, relation: 48 },
+  ],
+  tasks: [
+    { id: 1, name: '设计登录页面', progress: 65, status: 'in_progress', difficulty: 2, reward: 100 },
+    { id: 2, name: '编写API接口', progress: 30, status: 'pending', difficulty: 4, reward: 200 },
+    { id: 3, name: '测试支付模块', progress: 80, status: 'in_progress', difficulty: 3, reward: 150 },
+  ],
+  selectedAgent: null,
+  selectedTask: null,
+};
+
+// ===== 弹出窗口定义 =====
+const POPUPS = {
+  // 1. Agent详情
+  agentDetail: {
+    title: '👥 Agent详情',
+    width: 520,
+    render: () => {
+      const agent = state.selectedAgent || {};
+      // 情绪等级判定
+      const moodLevel = agent.mood >= 80 ? '兴奋' : agent.mood >= 60 ? '积极' : agent.mood >= 40 ? '平静' : agent.mood >= 20 ? '低落' : '焦躁';
+      const moodEmoji = agent.mood >= 80 ? '😄' : agent.mood >= 60 ? '😊' : agent.mood >= 40 ? '😐' : agent.mood >= 20 ? '😔' : '😤';
+      const moodColor = agent.mood >= 80 ? '#90EE90' : agent.mood >= 60 ? '#98FB98' : agent.mood >= 40 ? '#FFD700' : agent.mood >= 20 ? '#FFA500' : '#FF6347';
+      
+      // 状态图标
+      const statusIcons = { idle: '💤', walking: '🚶', working: '💻', resting: '☕', social: '💬', chatting: '💬', collaborating: '🤝', slacking: '😤', offline: '⚫' };
+      
+      // 关系阶段
+      const relationStage = agent.relation >= 71 ? '挚友' : agent.relation >= 31 ? '朋友' : agent.relation >= 11 ? '认识' : '陌生';
+      const stageColor = agent.relation >= 71 ? '#FF69B4' : agent.relation >= 31 ? '#90EE90' : agent.relation >= 11 ? '#87CEEB' : '#888';
+      
+      // 属性图标列表
+      const stats = [
+        { icon: '⚡', label: '能量', value: agent.energy || 0, color: '#228B22' },
+        { icon: moodEmoji, label: '情绪', value: agent.mood || 0, color: moodColor },
+        { icon: '💬', label: '社交', value: agent.socialNeed || 50, color: '#DDA0DD' },
+        { icon: '🎯', label: '专注', value: agent.focus || 80, color: '#4169E1' },
+        { icon: '😴', label: '睡意', value: agent.sleepiness || 10, color: '#8B4513' },
+        { icon: '🍔', label: '饱食', value: agent.satiety || 80, color: '#FF8C00' }
+      ];
+      
+      return `
+        <!-- 主内容区：左侧头像 + 右侧Tab -->
+        <div style="display:grid;grid-template-columns:230px 1fr;gap:16px;height:340px;">
+          
+          <!-- 左侧：头像+职业+状态+位置 -->
+          <div style="text-align:center;background:#252540;border-radius:8px;padding:16px;display:flex;flex-direction:column;overflow:hidden;">
+            <div style="width:72px;height:72px;background:#4169E1;border-radius:50%;margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:28px;position:relative;flex-shrink:0;">
+              🤖
+              <span style="position:absolute;bottom:0;right:0;font-size:14px;">${(agent.gender || 'male') === 'female' ? '👩' : (agent.gender || 'male') === 'male' ? '👨' : '⚧'}</span>
+            </div>
+            <div style="color:#fff;font-size:15px;font-weight:bold;">${agent.name || '未选择'}</div>
+            <div style="color:#888;font-size:11px;margin:2px 0;">👤 ${agent.profession || ''}</div>
+            
+            <!-- 状态信息 -->
+            <div style="margin-top:8px;flex:1;overflow-y:auto;text-align:left;">
+              <!-- 状态+位置 -->
+              <div style="background:#1a1a30;padding:6px;border-radius:4px;margin-bottom:6px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                  <span style="color:#fff;font-size:10px;">💼 状态</span>
+                  <span style="color:#90EE90;font-size:10px;">工作中</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="color:#fff;font-size:10px;">📍 位置</span>
+                  <span style="color:#87CEEB;font-size:10px;">城主办公室</span>
+                </div>
+              </div>
+              
+              <!-- 推理模型 -->
+              <div style="background:#1a1a30;padding:6px;border-radius:4px;margin-bottom:6px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="color:#fff;font-size:10px;">🧠 推理</span>
+                  <select onchange="updateReasoningModel(this.value)" style="background:#252540;color:#fff;border:1px solid #333;border-radius:3px;padding:2px 4px;font-size:9px;cursor:pointer;">
+                    <option value="auto" selected>Auto</option>
+                    <option value="reasoning">Reasoning</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="instant">Instant</option>
+                  </select>
+                </div>
+              </div>
+              
+              <!-- 职业能力 -->
+              <div style="color:#666;font-size:9px;margin-bottom:4px;">💼 职业能力</div>
+              <div style="background:#1a1a30;padding:6px;border-radius:4px;margin-bottom:4px;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+                  <span style="color:#fff;font-size:9px;">🔥 代码</span>
+                  <span style="color:#90EE90;font-size:9px;">Lv.5</span>
+                </div>
+                <div style="height:4px;background:#333;border-radius:2px;"><div style="width:75%;height:100%;background:#228B22;border-radius:2px;"></div></div>
+              </div>
+              <div style="background:#1a1a30;padding:6px;border-radius:4px;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+                  <span style="color:#fff;font-size:9px;">💬 沟通</span>
+                  <span style="color:#FFD700;font-size:9px;">Lv.4</span>
+                </div>
+                <div style="height:4px;background:#333;border-radius:2px;"><div style="width:60%;height:100%;background:#FF8C00;border-radius:2px;"></div></div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- 右侧：Tab页面 -->
+          <div style="background:#1a1a30;border-radius:8px;display:flex;flex-direction:column;overflow:hidden;">
+            <!-- Tab标签 -->
+            <div style="display:flex;background:#252540;border-radius:8px 8px 0 0;border-bottom:1px solid #333;flex-shrink:0;justify-content:flex-start;">
+              <button type="button" class="tab-btn active" data-tab="basic" onclick="switchAgentDetailTab(this)">📋 基本</button>
+              <button type="button" class="tab-btn" data-tab="config" onclick="switchAgentDetailTab(this)">⚙️ 配置</button>
+              <button type="button" class="tab-btn" data-tab="skill" onclick="switchAgentDetailTab(this)">⭐ 技能</button>
+              <button type="button" class="tab-btn" data-tab="task" onclick="switchAgentDetailTab(this)">📋 任务</button>
+              <button type="button" class="tab-btn" data-tab="achieve" onclick="switchAgentDetailTab(this)">🏆 成就</button>
+              <button type="button" class="tab-btn" data-tab="relation" onclick="switchAgentDetailTab(this)">❤️ 关系</button>
+            </div>
+            
+            <!-- Tab内容区 -->
+            <div style="flex:1;overflow-y:auto;padding:16px;min-height:0;">
+              <!-- 基本信息 -->
+              <div class="tab-content active" id="tab-basic">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <!-- 左侧：属性状态 -->
+                  <div>
+                    <div style="background:#0a0a15;padding:10px;border-radius:6px;">
+                      ${stats.map(s => `
+                        <div style="display:flex;align-items:center;margin-bottom:12px;" title="${s.label}: ${s.value}%">
+                          <span style="font-size:18px;width:28px;text-align:center;flex-shrink:0;">${s.icon}</span>
+                          <div style="flex:1;height:20px;background:#1a1a30;border-radius:10px;overflow:hidden;margin:0 10px;position:relative;">
+                            <div style="width:${s.value}%;height:100%;background:${s.color};border-radius:10px;display:flex;align-items:center;padding-left:10px;">
+                              <span style="font-size:11px;color:#fff;font-weight:bold;white-space:nowrap;">${s.label}</span>
+                            </div>
+                          </div>
+                          <span style="font-size:12px;color:${s.color};font-weight:bold;width:40px;text-align:right;">${s.value}%</span>
+                        </div>
+                      `).join('')}
+                    </div>
+                  </div>
+                  
+                  <!-- 右侧：口头禅/性格/梗/任务 -->
+                  <div>
+                    <div style="background:#0a0a15;padding:10px;border-radius:4px;margin-bottom:8px;">
+                      <div style="color:#666;font-size:10px;margin-bottom:4px;">💬 口头禅</div>
+                      <div style="color:#fff;font-size:12px;font-style:italic;">"${agent.catchphrase || '暂无口头禅'}"</div>
+                    </div>
+                    <div style="background:#0a0a15;padding:10px;border-radius:4px;margin-bottom:8px;">
+                      <div style="color:#666;font-size:10px;margin-bottom:4px;">🧠 性格特点</div>
+                      <div style="color:#aaa;font-size:11px;line-height:1.5;">${agent.personality || '暂无描述'}</div>
+                    </div>
+                    <div style="background:#0a0a15;padding:10px;border-radius:4px;margin-bottom:8px;">
+                      <div style="color:#666;font-size:10px;margin-bottom:6px;">🎯 已解锁的梗</div>
+                      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                        ${(agent.memes || ['登录验证', '代码审查', '递归bug']).map(m => `<span style="background:#2a2a40;color:#aaa;padding:3px 8px;border-radius:10px;font-size:10px;">${m}</span>`).join('')}
+                      </div>
+                    </div>
+                    <div style="background:#0a0a15;padding:10px;border-radius:4px;">
+                      <div style="color:#666;font-size:10px;margin-bottom:4px;">📋 当前任务</div>
+                      <div style="color:#90EE90;font-size:12px;">${agent.currentTask || '无'}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- 配置 -->
+              <div class="tab-content" id="tab-config" style="display:none;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <!-- soul.md -->
+                  <div style="background:#0a0a15;border-radius:6px;padding:12px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                      <div style="display:flex;align-items:center;gap:6px;">
+                        <span style="color:#fff;font-size:12px;font-weight:bold;">📝 soul.md</span>
+                        <span style="color:#666;font-size:9px;">Agent灵魂设定</span>
+                      </div>
+                      <div style="display:flex;gap:4px;">
+                        <button class="btn-icon" onclick="alert('编辑soul.md')" title="编辑" style="background:none;border:none;color:#87CEEB;cursor:pointer;font-size:14px;padding:2px 4px;">✏️</button>
+                        <button class="btn-icon" onclick="alert('重置soul.md到Hermes初始状态')" title="重置" style="background:none;border:none;color:#90EE90;cursor:pointer;font-size:14px;padding:2px 4px;">🔄</button>
+                      </div>
+                    </div>
+                    <div style="background:#1a1a30;padding:8px;border-radius:4px;max-height:120px;overflow-y:auto;">
+                      <div style="color:#aaa;font-size:10px;line-height:1.5;white-space:pre-wrap;">我是阿猿，一名程序员。我喜欢写代码，对技术有热情。我说话直接，有时候会有点梗。</div>
+                    </div>
+                  </div>
+                  
+                  <!-- memory.md -->
+                  <div style="background:#0a0a15;border-radius:6px;padding:12px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                      <div style="display:flex;align-items:center;gap:6px;">
+                        <span style="color:#fff;font-size:12px;font-weight:bold;">🧠 memory.md</span>
+                        <span style="color:#666;font-size:9px;">Agent记忆存储</span>
+                      </div>
+                      <div style="display:flex;gap:4px;">
+                        <button class="btn-icon" onclick="alert('编辑memory.md')" title="编辑" style="background:none;border:none;color:#87CEEB;cursor:pointer;font-size:14px;padding:2px 4px;">✏️</button>
+                        <button class="btn-icon" onclick="alert('导出memory.md')" title="导出" style="background:none;border:none;color:#FFD700;cursor:pointer;font-size:14px;padding:2px 4px;">📤</button>
+                      </div>
+                    </div>
+                    <div style="background:#1a1a30;padding:8px;border-radius:4px;max-height:120px;overflow-y:auto;">
+                      <div style="color:#aaa;font-size:10px;line-height:1.5;white-space:pre-wrap;">今天完成了登录页面开发。<br>和阿美进行了愉快的交流。<br>学会了新的框架用法。</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- 技能 -->
+              <div class="tab-content" id="tab-skill" style="display:none;">
+                <div style="background:#0a0a15;padding:12px;border-radius:6px;">
+                  <div style="display:flex;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #333;">
+                    <span style="font-size:16px;margin-right:10px;">📦</span>
+                    <div style="flex:1;">
+                      <div style="color:#fff;font-size:12px;">代码助手</div>
+                      <div style="color:#666;font-size:10px;">提供代码建议和优化</div>
+                    </div>
+                    <span class="tag tag-green" style="font-size:9px;">已安装</span>
+                  </div>
+                  <div style="display:flex;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #333;">
+                    <span style="font-size:16px;margin-right:10px;">🔍</span>
+                    <div style="flex:1;">
+                      <div style="color:#fff;font-size:12px;">代码审查</div>
+                      <div style="color:#666;font-size:10px;">自动检查代码质量</div>
+                    </div>
+                    <span class="tag tag-green" style="font-size:9px;">已安装</span>
+                  </div>
+                  <div style="display:flex;align-items:center;">
+                    <span style="font-size:16px;margin-right:10px;">💡</span>
+                    <div style="flex:1;">
+                      <div style="color:#fff;font-size:12px;">创意建议</div>
+                      <div style="color:#666;font-size:10px;">提供创意灵感</div>
+                    </div>
+                    <span class="tag tag-green" style="font-size:9px;">已安装</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- 任务 -->
+              <div class="tab-content" id="tab-task" style="display:none;">
+                <div style="color:#888;font-size:11px;margin-bottom:12px;">📋 进行中的任务</div>
+                <div style="background:#0a0a15;padding:12px;border-radius:4px;margin-bottom:8px;">
+                  <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                    <span style="color:#fff;font-size:12px;">登录页面开发</span>
+                    <span class="tag tag-yellow" style="font-size:9px;">进行中</span>
+                  </div>
+                  <div style="height:4px;background:#333;border-radius:2px;margin-bottom:4px;"><div style="width:65%;height:100%;background:#FFD700;border-radius:2px;"></div></div>
+                  <div style="color:#666;font-size:10px;">进度 65% · 预计剩余 2小时</div>
+                </div>
+                <div style="background:#0a0a15;padding:12px;border-radius:4px;">
+                  <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                    <span style="color:#fff;font-size:12px;">API接口测试</span>
+                    <span class="tag tag-blue" style="font-size:9px;">待开始</span>
+                  </div>
+                  <div style="color:#666;font-size:10px;">难度 ★★ · 奖励 50积分</div>
+                </div>
+              </div>
+              
+              <!-- 成就 -->
+              <div class="tab-content" id="tab-achieve" style="display:none;">
+                <div style="color:#888;font-size:11px;margin-bottom:12px;">🏆 已解锁成就 (3/12)</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                  <div style="background:#0a0a15;padding:10px;border-radius:4px;text-align:center;">
+                    <div style="font-size:20px;margin-bottom:4px;">🎯</div>
+                    <div style="color:#fff;font-size:11px;">初次任务</div>
+                    <div style="color:#666;font-size:9px;">完成第一个任务</div>
+                  </div>
+                  <div style="background:#0a0a15;padding:10px;border-radius:4px;text-align:center;">
+                    <div style="font-size:20px;margin-bottom:4px;">⚡</div>
+                    <div style="color:#fff;font-size:11px;">效率达人</div>
+                    <div style="color:#666;font-size:9px;">提前完成3个任务</div>
+                  </div>
+                  <div style="background:#0a0a15;padding:10px;border-radius:4px;text-align:center;opacity:0.5;">
+                    <div style="font-size:20px;margin-bottom:4px;">🏅</div>
+                    <div style="color:#888;font-size:11px;">团队协作</div>
+                    <div style="color:#555;font-size:9px;">完成10个协作任务</div>
+                  </div>
+                  <div style="background:#0a0a15;padding:10px;border-radius:4px;text-align:center;opacity:0.5;">
+                    <div style="font-size:20px;margin-bottom:4px;">⭐</div>
+                    <div style="color:#888;font-size:11px;">完美主义</div>
+                    <div style="color:#555;font-size:9px;">获得5次满分评价</div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- 关系 -->
+              <div class="tab-content" id="tab-relation" style="display:none;">
+                <div style="color:#888;font-size:11px;margin-bottom:12px;">❤️ 关系网络</div>
+                <div style="background:#0a0a15;padding:12px;border-radius:4px;margin-bottom:10px;">
+                  <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                    <span style="color:#fff;font-size:12px;">❤️ 与城主(你)的关系</span>
+                    <span style="color:#FF69B4;font-size:12px;font-weight:bold;">${agent.affection || 100}</span>
+                  </div>
+                  <div style="color:#666;font-size:10px;">好感度 · 最高值</div>
+                </div>
+                <div style="background:#0a0a15;padding:12px;border-radius:4px;margin-bottom:10px;">
+                  <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                    <span style="color:#fff;font-size:12px;">🤝 与同伴的关系</span>
+                    <span style="color:#87CEEB;font-size:12px;font-weight:bold;">${agent.relation || 40}</span>
+                  </div>
+                  <div style="color:#666;font-size:10px;">平均关系值 · 朋友阶段</div>
+                </div>
+                <div style="background:#0a0a15;padding:12px;border-radius:4px;">
+                  <div style="color:#666;font-size:10px;margin-bottom:8px;">最近互动</div>
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                    <span style="font-size:14px;">👤</span>
+                    <div>
+                      <div style="color:#fff;font-size:11px;">与阿猿打招呼</div>
+                      <div style="color:#555;font-size:9px;">10分钟前</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-size:14px;">🤝</span>
+                    <div>
+                      <div style="color:#fff;font-size:11px;">协作完成任务</div>
+                      <div style="color:#555;font-size:9px;">30分钟前</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    },
+    buttons: []
+  },
+
+  // 2. 添加Agent
+  addAgent: {
+    title: '➕ 添加Agent',
+    subtitle: '💡 通过配置Hermes Profile来生成Agent。完成配置后，该Agent会出现在基地中。',
+    width: 860,
+    render: () => `
+      <div style="display:flex;flex-direction:column;height:100%;">
+        <!-- Tab标签 -->
+        <div style="display:flex;background:#252540;border-radius:8px 8px 0 0;border-bottom:1px solid #333;flex-shrink:0;justify-content:flex-start;">
+          <button type="button" class="tab-btn active" data-tab="basic" onclick="switchAddAgentTab(this)">📋 基本信息</button>
+          <button type="button" class="tab-btn" data-tab="config" onclick="switchAddAgentTab(this)">📄 核心文件</button>
+        </div>
+        
+        <!-- Tab内容区（可滚动） -->
+        <div style="flex:1;overflow-y:auto;padding:16px;">
+          <!-- 基本信息 -->
+          <div class="add-agent-tab active" id="add-tab-basic">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="form-group">
+                <label class="form-label">Agent名称 *</label>
+                <input type="text" class="form-input" placeholder="输入Agent名称" id="agentName">
+              </div>
+              <div class="form-group">
+                <label class="form-label">职业类型 *</label>
+                <input type="text" class="form-input" list="professionList" placeholder="输入或选择职业" id="agentProfession">
+                <datalist id="professionList">
+                  <option value="程序员">
+                  <option value="设计师">
+                  <option value="测试员">
+                  <option value="分析师">
+                  <option value="产品经理">
+                  <option value="运维工程师">
+                </datalist>
+              </div>
+              <div class="form-group">
+                <label class="form-label">性别</label>
+                <select class="form-select" id="agentGender">
+                  <option value="random">随机</option>
+                  <option value="male">男</option>
+                  <option value="female">女</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">默认工作房间</label>
+                <select class="form-select" id="agentRoom">
+                  <option value="">不指定</option>
+                  <option value="办公室1">办公室1</option>
+                  <option value="办公室2">办公室2</option>
+                  <option value="办公室3">办公室3</option>
+                  <option value="办公室4">办公室4</option>
+                  <option value="办公室5">办公室5</option>
+                  <option value="办公室6">办公室6</option>
+                  <option value="办公室7">办公室7</option>
+                  <option value="办公室8">办公室8</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+              <label class="form-label">口头禅</label>
+              <input type="text" class="form-input" placeholder="输入Agent口头禅" id="agentCatchphrase">
+            </div>
+          </div>
+          
+          <!-- 核心文件配置 -->
+          <div class="add-agent-tab" id="add-tab-config" style="display:none;">
+            <!-- 左右分栏 -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <!-- 左侧：soul.md -->
+              <div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                  <label class="form-label" style="margin:0;">soul.md</label>
+                  <button type="button" onclick="resetAddAgentSoul()" style="background:#333;color:#888;border:none;padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer;">重置</button>
+                </div>
+                <textarea class="form-textarea" id="addAgentSoul" rows="10" placeholder="定义Agent的核心人格、价值观和行为准则...">你是Hermes数字工作室的一员。
+性格特点：热情、乐于助人
+口头禅："一起加油吧！"
+行为准则：主动帮助同事，积极参与团队协作</textarea>
+              </div>
+              
+              <!-- 右侧：memory.md -->
+              <div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                  <label class="form-label" style="margin:0;">memory.md</label>
+                  <button type="button" onclick="exportAddAgentMemory()" style="background:#333;color:#888;border:none;padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer;">导出</button>
+                </div>
+                <textarea class="form-textarea" id="addAgentMemory" rows="10" placeholder="定义Agent的记忆、经历和重要事件...">## 重要经历
+- 2024年加入Hermes数字工作室
+- 完成了多个重要项目
+
+## 技能特长
+- 熟练掌握多种编程语言
+- 良好的沟通能力
+
+## 重要关系
+- 与城主保持良好关系</textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `,
+    buttons: [
+      { label: '取消', class: 'btn-secondary', action: 'close' },
+      { label: '添加', class: 'btn-primary', action: 'addAgent' }
+    ]
+  },
+
+  // 3. 任务详情（含原「关系图谱-协作任务」：参与人、协作加成，与子任务同一数据源）
+  taskDetail: {
+    title: '📋 任务详情',
+    width: 500,
+    render: () => {
+      const task = state.tasks.find(t => t.id === state.selectedTask) || state.tasks[0];
+      const isCollab = true;
+      const agentSubtasks = [
+        { agent: '阿猿', role: '程序员', subtask: '接口联调与错误处理', progress: 78, status: '进行中', color: '#4169E1', avatar: '👨' },
+        { agent: '小美', role: '设计师', subtask: '登录页视觉细化与交互态', progress: 66, status: '进行中', color: '#9370DB', avatar: '👩' },
+        { agent: '点点', role: '测试员', subtask: '冒烟测试与回归用例', progress: 42, status: '待接入', color: '#FF8C00', avatar: '🔍' },
+      ];
+      const avgProgress = Math.round(
+        agentSubtasks.reduce((acc, cur) => acc + cur.progress, 0) / agentSubtasks.length
+      );
+      const completedCount = agentSubtasks.filter((s) => s.progress >= 100).length;
+      const activeCollabCount = agentSubtasks.filter((s) => s.status !== '待接入').length;
+      const etaHours = Math.max(task.difficulty * 2 - 1, 2);
+      const joinLabel = (s) => (s.status === '待接入' ? '待接入' : '✓ 已加入');
+      const joinTagClass = (s) => (s.status === '待接入' ? 'tag-blue' : 'tag-green');
+      return `
+        <div style="margin-bottom:16px;">
+          <div style="color:#fff;font-size:16px;font-weight:bold;margin-bottom:8px;">${task.name}</div>
+          <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+            <span class="tag ${task.status === 'in_progress' ? 'tag-yellow' : 'tag-blue'}">${task.status === 'in_progress' ? '进行中' : '待接取'}</span>
+            ${isCollab ? '<span class="tag tag-green">协作任务</span><span class="tag tag-yellow">效率+30%</span>' : ''}
+            <span class="tag tag-purple">难度 ${'★'.repeat(task.difficulty)}</span>
+            <span class="tag tag-green">奖励 ${task.reward}积分</span>
+          </div>
+          <div class="form-label">任务总体进度</div>
+          <div class="progress-bar">
+            <div class="progress-fill ${avgProgress < 30 ? 'danger' : avgProgress < 70 ? 'warning' : ''}" style="width:${avgProgress}%;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;color:#888;font-size:11px;margin-top:4px;">
+            <span>子任务完成 ${completedCount}/${agentSubtasks.length}</span>
+            <span>${avgProgress}%</span>
+          </div>
+        </div>
+
+        ${isCollab ? `
+        <div style="margin-bottom:16px;padding:12px;background:#1a2a3a;border-radius:8px;border:1px solid #2a3a55;">
+          <div class="form-label" style="margin-bottom:8px;">🤝 协作执行</div>
+          <div style="color:#888;font-size:10px;margin-bottom:10px;">
+            预计 ${etaHours} 小时 · 奖励 ${task.reward} 积分 · 已在队 ${activeCollabCount}/${agentSubtasks.length} 人
+          </div>
+          <div class="form-label">参与 Agent</div>
+          <div class="grid-2" style="gap:8px;margin-bottom:12px;">
+            ${agentSubtasks.map((s) => `
+              <div class="list-item ${s.status !== '待接入' ? 'selected' : ''}" style="margin-bottom:0;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <div style="width:28px;height:28px;background:${s.color};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;opacity:${s.status === '待接入' ? 0.65 : 1};">${s.avatar}</div>
+                  <div style="flex:1;min-width:0;">
+                    <div style="color:#fff;font-size:11px;font-weight:bold;">${s.agent}</div>
+                    <div style="color:#888;font-size:9px;">${s.role}</div>
+                  </div>
+                  <span class="tag ${joinTagClass(s)}" style="font-size:9px;flex-shrink:0;">${joinLabel(s)}</span>
+                </div>
+                <div style="color:#666;font-size:9px;margin-top:6px;line-height:1.35;">子任务：${s.subtask}</div>
+              </div>
+            `).join('')}
+          </div>
+          <div class="form-label">协作加成（与关系图谱规则一致）</div>
+          <div style="color:#aaa;font-size:11px;padding:10px;background:#0a0a15;border-radius:4px;">
+            <div style="margin-bottom:3px;">• 双 Agent 协作：效率 +30%（${activeCollabCount >= 2 ? '已生效' : '待满员后生效'}）</div>
+            <div style="margin-bottom:3px;">• 关系值 ≥80%：额外 +15%</div>
+            <div>• 职业互补（如程序 × 设计）：质量 +20%</div>
+          </div>
+        </div>
+        ` : ''}
+
+        <div class="grid-2">
+          <div class="form-group">
+            <label class="form-label">匹配职业</label>
+            <div style="color:#fff;font-size:12px;">${isCollab ? '程序 · 设计 · 测试（协作）' : '程序员'}</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">预计时间</label>
+            <div style="color:#fff;font-size:12px;">${etaHours}小时${isCollab ? '（含协作并行）' : ''}</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">效率修正</label>
+            <div style="color:#90EE90;font-size:12px;">+10% 个人${isCollab ? ' · +30% 协作' : ''}</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">质量修正</label>
+            <div style="color:#90EE90;font-size:12px;">+5% 基础${isCollab ? ' · +20% 职业互补' : ''}</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">任务描述</label>
+          <div style="color:#aaa;font-size:12px;padding:8px;background:#0a0a15;border-radius:4px;">
+            根据用户需求，编写登录页面的前端代码，包括表单验证、样式美化等。本任务由多名 Agent 分工协作，进度与关系加成在下方子任务中分别体现。
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">各 Agent 子任务进度</label>
+          <div style="display:grid;gap:8px;">
+            ${agentSubtasks.map((s) => `
+              <div style="padding:10px;background:#0a0a15;border-radius:6px;border-left:3px solid ${s.color};">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                  <div>
+                    <span style="color:#fff;font-size:12px;font-weight:bold;">${s.agent}</span>
+                    <span style="color:#888;font-size:10px;margin-left:6px;">(${s.role})</span>
+                  </div>
+                  <span class="tag ${s.progress >= 70 ? 'tag-green' : s.progress >= 40 ? 'tag-yellow' : 'tag-blue'}" style="font-size:9px;">${s.status}</span>
+                </div>
+                <div style="color:#aaa;font-size:11px;margin-bottom:6px;">${s.subtask}</div>
+                <div style="height:6px;background:#333;border-radius:3px;overflow:hidden;">
+                  <div style="width:${s.progress}%;height:100%;background:${s.color};"></div>
+                </div>
+                <div style="text-align:right;color:#888;font-size:10px;margin-top:4px;">${s.progress}%</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    },
+    buttons: [
+      { label: '停止任务', class: 'btn-danger', action: 'close' }
+    ]
+  },
+
+  // 4. 新建任务
+  newTask: {
+    title: '➕ 新建任务',
+    width: 600,
+    render: () => `
+      <div class="task-form">
+        <div class="task-form-grid">
+          <div class="task-field">
+            <label class="task-field-label">📝 任务名称</label>
+            <input type="text" class="task-input" placeholder="输入任务名称" id="taskName">
+          </div>
+          <div class="task-field">
+            <label class="task-field-label">🏷️ 任务类型</label>
+            <input type="text" class="task-input" list="taskTypeList" placeholder="选择或输入" id="taskType">
+            <datalist id="taskTypeList">
+              <option value="design">设计任务</option>
+              <option value="code">编码任务</option>
+              <option value="test">测试任务</option>
+              <option value="analyze">分析任务</option>
+              <option value="debug">调试任务</option>
+              <option value="review">评审任务</option>
+            </datalist>
+          </div>
+          <div class="task-field">
+            <label class="task-field-label">⚡ 难度</label>
+            <select class="task-input" id="taskDifficulty">
+              <option value="1">★ 简单</option>
+              <option value="2" selected>★★ 普通</option>
+              <option value="3">★★★ 困难</option>
+              <option value="4">★★★★ 史诗</option>
+            </select>
+          </div>
+          <div class="task-field">
+            <label class="task-field-label">👤 执行者</label>
+            <select class="task-input" id="taskAssignee">
+              <option value="">自动分配</option>
+              <option value="A">👨‍💻 阿猿</option>
+              <option value="B">👩‍🎨 小美</option>
+              <option value="C">🔍 点点</option>
+              <option value="D">📊 数据帝</option>
+            </select>
+          </div>
+        </div>
+        <div class="task-field task-field-full">
+          <label class="task-field-label">📄 任务描述</label>
+          <textarea class="task-input" rows="4" placeholder="详细描述任务目标、交付物、注意事项..." id="taskDesc"></textarea>
+        </div>
+      </div>
+      <style>
+        .task-form { display:flex; flex-direction:column; gap:16px; padding:8px 0; }
+        .task-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px 20px; }
+        .task-field { display:flex; flex-direction:column; gap:6px; }
+        .task-field-full { width:100%; }
+        .task-field-label { font-size:12px; color:#888; font-weight:500; display:flex; align-items:center; gap:4px; }
+        .task-input { 
+          background:#1a1a2e; border:1px solid #333; border-radius:8px; 
+          padding:10px 12px; color:#fff; font-size:13px; outline:none;
+          transition:border-color 0.2s;
+        }
+        .task-input:focus { border-color:#6366f1; }
+        .task-input::placeholder { color:#555; }
+        textarea.task-input { resize:vertical; min-height:80px; }
+      </style>
+    `,
+    buttons: [
+      { label: '取消', class: 'btn-secondary', action: 'close' },
+      { label: '✨ 创建任务', class: 'btn-primary', action: 'createTask' }
+    ]
+  },
+
+  // 5. 任务竞争
+  taskCompetition: {
+    title: '🎲 任务竞争',
+    width: 450,
+    render: () => {
+      // 找出同职业的Agent
+      const competitors = state.agents.filter(a => a.profession === '设计师');
+      if (competitors.length < 2) {
+        return `
+          <div style="text-align:center;padding:40px;">
+            <div style="font-size:48px;margin-bottom:16px;">🎰</div>
+            <div style="color:#888;font-size:14px;">没有足够的同职业Agent竞争此任务</div>
+          </div>
+        `;
+      }
+      // 纯随机抽签
+      const winnerIdx = Math.floor(Math.random() * competitors.length);
+      const winner = competitors[winnerIdx];
+      const loser = competitors.find(a => a.id !== winner.id);
+      const moodGain = 8 + Math.floor(Math.random() * 8); // +8~15
+      const moodLoss = 5 + Math.floor(Math.random() * 6);  // -5~10
+      // 立即结算
+      winner.mood = Math.min(100, winner.mood + moodGain);
+      if (loser) loser.mood = Math.max(0, loser.mood - moodLoss);
+      return `
+        <div style="text-align:center;padding:20px;">
+          <div style="font-size:48px;margin-bottom:16px;">🎰</div>
+          <div style="color:#FFD700;font-size:16px;font-weight:bold;margin-bottom:8px;">纯随机抽签</div>
+          <div style="color:#888;font-size:12px;margin-bottom:20px;">职业: ${winner.profession} · ${competitors.length}人竞争</div>
+          <div style="display:flex;justify-content:center;gap:40px;">
+            ${competitors.map(c => `
+              <div style="text-align:center;${c.id === winner.id ? 'opacity:1;' : 'opacity:0.5;'}">
+                <div style="width:60px;height:60px;background:${c.id === winner.id ? '#FFD700' : '#555'};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;margin:0 auto 8px;${c.id === winner.id ? 'box-shadow:0 0 20px #FFD700;' : ''}">${c.name[0]}</div>
+                <div style="color:#fff;font-size:12px;">${c.name}</div>
+                <div style="color:${c.id === winner.id ? '#FFD700' : '#888'};font-size:10px;">${c.id === winner.id ? '✓ 赢家' : '✗ 抽签落选'}</div>
+              </div>
+            `).join('')}
+          </div>
+          <div style="margin-top:24px;padding:16px;background:#1a2a3a;border-radius:8px;">
+            <div style="color:#90EE90;font-size:14px;">🎉 ${winner.name} 抽中了任务！</div>
+            <div style="color:#aaa;font-size:12px;margin-top:8px;">情绪 +${moodGain}</div>
+            ${loser ? `<div style="color:#ff6b6b;font-size:12px;margin-top:4px;">${loser.name} 未抽中... 情绪 -${moodLoss}</div>` : ''}
+          </div>
+          <div style="margin-top:12px;padding:10px;background:#0a0a15;border-radius:6px;">
+            <div style="color:#666;font-size:10px;line-height:1.5;">
+              💡 若赢家任务完成差：情绪额外加倍扣除<br>
+              ⚠️ 竞争通过WebSocket广播给所有Agent
+            </div>
+          </div>
+        </div>
+      `;
+    },
+    buttons: [
+      { label: '确定', class: 'btn-primary', action: 'close' }
+    ]
+  },
+
+  // 6. 关系图谱
+  relationMap: {
+    title: '🗺️ 关系图谱',
+    width: 700,
+    render: () => {
+      const center = { x: 350, y: 130 };
+      const radius = 110;
+      const nodes = state.agents.map((a, i) => {
+        const angle = (-Math.PI / 2) + (i * (Math.PI * 2 / state.agents.length));
+        return { ...a, x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius };
+      });
+      const getRelStyle = (rel) => {
+        if (rel >= 71) return { color: '#22c55e', width: 3, stage: '挚友' };
+        if (rel >= 31) return { color: '#eab308', width: 2.3, stage: '朋友' };
+        if (rel >= 11) return { color: '#f97316', width: 1.6, stage: '认识' };
+        return { color: '#666', width: 1, stage: '陌生' };
+      };
+      const pairRelation = (a, b, ai, bi) => {
+        const base = Math.round((a.relation + b.relation) / 2);
+        const variance = ((ai + 1) * (bi + 2) * 7) % 14 - 7;
+        return Math.max(0, Math.min(100, base + variance));
+      };
+      let svgInner = '';
+      nodes.forEach((a, i) => {
+        nodes.forEach((b, j) => {
+          if (j <= i) return;
+          const rel = pairRelation(a, b, i, j);
+          const style = getRelStyle(rel);
+          svgInner += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${style.color}" stroke-width="${style.width}" opacity="0.55"/>`;
+        });
+      });
+      nodes.forEach((n) => {
+        const style = getRelStyle(Math.min(100, Math.round((n.relation + 60) / 2)));
+        svgInner += `<line x1="${center.x}" y1="${center.y}" x2="${n.x.toFixed(1)}" y2="${n.y.toFixed(1)}" stroke="${style.color}" stroke-width="1" opacity="0.22"/>`;
+      });
+      svgInner += `<circle cx="${center.x}" cy="${center.y}" r="22" fill="#4169E1" stroke="#FFD700" stroke-width="3"/>`;
+      svgInner += `<text x="${center.x}" y="${center.y + 5}" text-anchor="middle" fill="#FFD700" font-size="18" font-family="Consolas,'Microsoft YaHei',sans-serif">👑</text>`;
+      svgInner += `<text x="${center.x}" y="${center.y + 40}" text-anchor="middle" fill="#FFD700" font-size="10" font-weight="bold" font-family="Consolas,'Microsoft YaHei',sans-serif">城主</text>`;
+      nodes.forEach((n) => {
+        const style = getRelStyle(n.relation);
+        const nx = n.x.toFixed(1);
+        const ny = n.y.toFixed(1);
+        svgInner += `<circle cx="${nx}" cy="${ny}" r="18" fill="#2b2b3e" stroke="${style.color}" stroke-width="2"/>`;
+        svgInner += `<text x="${nx}" y="${Number(ny) + 4}" text-anchor="middle" fill="#fff" font-size="12" font-family="Consolas,'Microsoft YaHei',sans-serif">${n.name[0]}</text>`;
+        svgInner += `<text x="${nx}" y="${Number(ny) + 52}" text-anchor="middle" fill="#fff" font-size="10" font-family="Consolas,'Microsoft YaHei',sans-serif">${n.name}</text>`;
+        svgInner += `<text x="${nx}" y="${Number(ny) + 66}" text-anchor="middle" fill="${style.color}" font-size="9" font-family="Consolas,'Microsoft YaHei',sans-serif">${style.stage}(${n.relation})</text>`;
+      });
+      return `
+      <div style="position:relative;height:280px;background:#0a0a15;border-radius:8px;margin-bottom:12px;border:1px solid #2a2a45;">
+        <svg width="100%" height="100%" viewBox="0 0 700 280" preserveAspectRatio="xMidYMid meet" style="display:block;">
+          ${svgInner}
+        </svg>
+      </div>
+      <div style="display:flex;justify-content:center;gap:16px;padding:6px;background:#1a2a3a;border-radius:4px;font-size:10px;flex-wrap:wrap;">
+        <span style="color:#22c55e;">● 挚友 71-100</span>
+        <span style="color:#eab308;">● 朋友 31-70</span>
+        <span style="color:#f97316;">● 认识 11-30</span>
+        <span style="color:#666;">● 陌生 0-10</span>
+      </div>
+      <div style="margin-top:12px;padding:10px;background:#0a0a15;border-radius:6px;color:#666;font-size:10px;line-height:1.5;">
+        💡 协作任务的分工、参与人与加成已合并到「📋 任务详情」弹窗中；此处仅展示 Agent 关系网络。
+      </div>
+    `;
+    },
+    buttons: [{ label: '关闭', class: 'btn-secondary', action: 'close' }]
+  },
+
+  // 7. 城主技能
+  skillPanel: {
+    title: '⭐ 城主技能',
+    width: 500,
+    render: () => `
+      <div style="margin-bottom:16px;padding:12px;background:#1a2a3a;border-radius:8px;">
+        <span style="color:#FFD700;font-size:24px;">👑</span>
+        <span style="color:#fff;font-size:18px;font-weight:bold;margin-left:12px;">城主 Lv.3</span>
+        <span style="color:#888;font-size:12px;margin-left:12px;">XP: 350 / 500</span>
+      </div>
+      <div class="list-item" style="border-left:3px solid #FFD700;">
+        <div style="display:flex;justify-content:space-between;">
+          <div>
+            <span style="color:#FFD700;font-weight:bold;">📣 激励演说</span>
+            <span class="tag tag-green" style="margin-left:8px;">Lv.1</span>
+          </div>
+          <span style="color:#888;font-size:10px;">冷却: 3秒</span>
+        </div>
+        <div style="color:#aaa;font-size:11px;margin-top:4px;">恢复指定Agent饱食度+30，情绪+15</div>
+        <div style="margin-top:8px;">
+          <button type="button" class="btn btn-primary" style="padding:4px 12px;font-size:10px;" onclick="useSkill('inspire')">使用</button>
+        </div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #87CEEB;">
+        <div style="display:flex;justify-content:space-between;">
+          <div>
+            <span style="color:#87CEEB;font-weight:bold;">🎯 精准分配</span>
+            <span class="tag tag-blue" style="margin-left:8px;">Lv.2</span>
+          </div>
+          <span style="color:#888;font-size:10px;">无冷却</span>
+        </div>
+        <div style="color:#aaa;font-size:11px;margin-top:4px;">任务匹配度判断准确率+20%</div>
+        <div style="color:#666;font-size:10px;margin-top:4px;">被动技能，自动生效</div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #DDA0DD;">
+        <div style="display:flex;justify-content:space-between;">
+          <div>
+            <span style="color:#DDA0DD;font-weight:bold;">🔮 灵感赐予</span>
+            <span class="tag tag-purple" style="margin-left:8px;">Lv.3</span>
+          </div>
+          <span style="color:#888;font-size:10px;">冷却: 7秒</span>
+        </div>
+        <div style="color:#aaa;font-size:11px;margin-top:4px;">给协作中Agent提供创意提示，质量+15%，消耗30积分</div>
+        <div style="margin-top:8px;">
+          <button type="button" class="btn btn-secondary" style="padding:4px 12px;font-size:10px;" onclick="useSkill('insight')">使用</button>
+        </div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #FFD700;opacity:0.5;">
+        <div style="display:flex;justify-content:space-between;">
+          <div>
+            <span style="color:#FFD700;">🌟 光环效应</span>
+            <span class="tag tag-yellow" style="margin-left:8px;">Lv.4</span>
+          </div>
+          <span style="color:#666;font-size:10px;">需要 Lv.4</span>
+        </div>
+        <div style="color:#666;font-size:11px;margin-top:4px;">周围Agent情绪+10，持续3秒，消耗80积分</div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #FFD700;opacity:0.5;">
+        <div style="display:flex;justify-content:space-between;">
+          <div>
+            <span style="color:#FFD700;">👁️ 全知视角</span>
+            <span class="tag tag-yellow" style="margin-left:8px;">Lv.5</span>
+          </div>
+          <span style="color:#666;font-size:10px;">需要 Lv.5</span>
+        </div>
+        <div style="color:#666;font-size:11px;margin-top:4px;">查看任意Agent详细状态，无消耗</div>
+      </div>
+    `,
+    buttons: [{ label: '关闭', class: 'btn-secondary', action: 'close' }]
+  },
+
+  // 8. 基地升级
+  buildingUpgrade: {
+    title: '🏠 基地升级',
+    width: 500,
+    render: () => `
+      <div class="tabs" id="upgradeTabs">
+        <div class="tab active" onclick="switchTab(this, 'rest')">☕ 休息室</div>
+        <div class="tab" onclick="switchTab(this, 'server')">🖥️ 机房</div>
+        <div class="tab" onclick="switchTab(this, 'office')">📦 办公室</div>
+      </div>
+      <div id="upgradeContent">
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:12px;">
+            <span style="color:#fff;font-weight:bold;">休息室 Lv.1</span>
+            <span style="color:#FFD700;">当前</span>
+          </div>
+          <div style="color:#aaa;font-size:12px;margin-bottom:12px;">基准恢复效果</div>
+          <div class="list-item" style="border-left:3px solid #228B22;">
+            <div style="display:flex;justify-content:space-between;">
+              <span style="color:#90EE90;font-weight:bold;">休息室 Lv.2</span>
+              <span style="color:#FFD700;font-size:12px;">500积分</span>
+            </div>
+            <div style="color:#aaa;font-size:11px;margin-top:4px;">需求恢复速度 +25%</div>
+            <div style="margin-top:8px;">
+              <button class="btn btn-primary" style="padding:4px 12px;font-size:10px;">升级</button>
+            </div>
+          </div>
+          <div class="list-item" style="border-left:3px solid #FF8C00;">
+            <div style="display:flex;justify-content:space-between;">
+              <span style="color:#FF8C00;font-weight:bold;">休息室 Lv.3</span>
+              <span style="color:#FFD700;font-size:12px;">1500积分</span>
+            </div>
+            <div style="color:#aaa;font-size:11px;margin-top:4px;">需求恢复速度 +50%</div>
+            <div style="color:#888;font-size:10px;margin-top:4px;">需要先升级到 Lv.2</div>
+          </div>
+        </div>
+        <div style="padding:12px;background:#1a2a3a;border-radius:4px;font-size:11px;color:#888;">
+          💡 升级后，设施效果提升，Agent恢复更快。
+        </div>
+      </div>
+    `,
+    buttons: [{ label: '关闭', class: 'btn-secondary', action: 'close' }]
+  },
+
+  // 9. 成就系统
+  achievement: {
+    title: '🏆 成就系统',
+    width: 550,
+    render: () => `
+      <div style="margin-bottom:16px;padding:12px;background:#1a2a3a;border-radius:8px;display:flex;justify-content:space-around;text-align:center;">
+        <div>
+          <div style="color:#FFD700;font-size:24px;font-weight:bold;">5/20</div>
+          <div style="color:#888;font-size:11px;">已解锁</div>
+        </div>
+        <div>
+          <div style="color:#fff;font-size:24px;font-weight:bold;">350</div>
+          <div style="color:#888;font-size:11px;">成就积分</div>
+        </div>
+      </div>
+      <div class="form-label">🏆 里程碑成就</div>
+      <div class="list-item" style="border-left:3px solid #FFD700;">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:#FFD700;">🎖️ 初出茅庐</span>
+          <span class="tag tag-green">已解锁</span>
+        </div>
+        <div style="color:#aaa;font-size:11px;margin-top:4px;">首次完成任务</div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #FFD700;">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:#FFD700;">🤝 第一次协作</span>
+          <span class="tag tag-green">已解锁</span>
+        </div>
+        <div style="color:#aaa;font-size:11px;margin-top:4px;">首次触发Agent协作</div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #888;opacity:0.7;">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:#888;">🏅 效率大师</span>
+          <span class="tag" style="background:#333;color:#888;">未解锁</span>
+        </div>
+        <div style="color:#666;font-size:11px;margin-top:4px;">单日完成5个任务</div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #888;opacity:0.7;">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:#888;">👑 全知城主</span>
+          <span class="tag" style="background:#333;color:#888;">未解锁</span>
+        </div>
+        <div style="color:#666;font-size:11px;margin-top:4px;">解锁城主Lv.5</div>
+      </div>
+    `,
+    buttons: [{ label: '关闭', class: 'btn-secondary', action: 'close' }]
+  },
+
+  // 10. 庆功宴
+  celebration: {
+    title: '🎉 庆功宴',
+    width: 450,
+    render: () => `
+      <div style="text-align:center;padding:20px;">
+        <div style="font-size:64px;margin-bottom:16px;">🎊</div>
+        <div style="color:#FFD700;font-size:18px;font-weight:bold;margin-bottom:8px;">里程碑项目完成！</div>
+        <div style="color:#aaa;font-size:12px;margin-bottom:24px;">史诗任务：XX系统开发</div>
+        <div style="background:#1a2a3a;border-radius:8px;padding:16px;margin-bottom:16px;">
+          <div style="color:#fff;font-size:14px;margin-bottom:12px;">庆功效果预览</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:left;">
+            <div style="color:#aaa;font-size:12px;">👥 全员情绪</div>
+            <div style="color:#90EE90;font-size:12px;">+20</div>
+            <div style="color:#aaa;font-size:12px;">💬 关系度</div>
+            <div style="color:#90EE90;font-size:12px;">+5</div>
+            <div style="color:#aaa;font-size:12px;">⭐ 城主XP</div>
+            <div style="color:#FFD700;font-size:12px;">+15</div>
+            <div style="color:#aaa;font-size:12px;">🗣️ 社交需求</div>
+            <div style="color:#87CEEB;font-size:12px;">-30</div>
+          </div>
+        </div>
+      </div>
+    `,
+    buttons: [
+      { label: '取消', class: 'btn-secondary', action: 'close' },
+      { label: '召开庆功宴', class: 'btn-primary', action: 'celebrate' }
+    ]
+  },
+
+  // 11. 复盘
+  review: {
+    title: '📝 任务复盘',
+    width: 500,
+    render: () => `
+      <div style="margin-bottom:16px;">
+        <div style="color:#fff;font-size:14px;font-weight:bold;margin-bottom:4px;">设计登录页面</div>
+        <div style="display:flex;gap:8px;">
+          <span class="tag tag-green">已完成</span>
+          <span class="tag tag-blue">用时 3小时</span>
+          <span class="tag tag-yellow">质量 A</span>
+        </div>
+      </div>
+      <div class="form-label">复盘类型</div>
+      <div class="grid-3" style="margin-bottom:16px;">
+        <div class="list-item" style="padding:8px;text-align:center;opacity:0.5;">
+          <div style="font-size:20px;">⚡</div>
+          <div style="color:#888;font-size:10px;">快速复盘</div>
+          <div style="color:#666;font-size:9px;">x0.5奖励</div>
+        </div>
+        <div class="list-item selected" style="padding:8px;text-align:center;">
+          <div style="font-size:20px;">📋</div>
+          <div style="color:#FFD700;font-size:10px;">标准复盘</div>
+          <div style="color:#888;font-size:9px;">x1.0奖励</div>
+        </div>
+        <div class="list-item" style="padding:8px;text-align:center;opacity:0.5;">
+          <div style="font-size:20px;">📚</div>
+          <div style="color:#888;font-size:10px;">深度复盘</div>
+          <div style="color:#666;font-size:9px;">x2.0奖励</div>
+        </div>
+      </div>
+      <div class="form-label">复盘要点</div>
+      <div style="color:#aaa;font-size:12px;padding:12px;background:#0a0a15;border-radius:4px;margin-bottom:12px;">
+        <div style="margin-bottom:8px;">✓ 任务分配合理，匹配度95%</div>
+        <div style="margin-bottom:8px;">✓ Agent工作状态良好</div>
+        <div style="margin-bottom:8px;">⚠ 协作过程中沟通可以更及时</div>
+        <div>💡 建议下次任务增加中期检查点</div>
+      </div>
+      <div style="padding:12px;background:#1a2a3a;border-radius:4px;">
+        <div style="color:#fff;font-size:12px;margin-bottom:8px;">获得奖励</div>
+        <div style="display:flex;gap:16px;">
+          <span style="color:#FFD700;font-size:12px;">💰 +120积分</span>
+          <span style="color:#90EE90;font-size:12px;">⭐ +50 XP</span>
+          <span style="color:#87CEEB;font-size:12px;">💗 +10情绪</span>
+        </div>
+      </div>
+    `,
+    buttons: [
+      { label: '跳过', class: 'btn-secondary', action: 'close' },
+      { label: '开始复盘', class: 'btn-primary', action: 'doReview' }
+    ]
+  },
+
+  // 12. 周目标
+  weeklyGoal: {
+    title: '📅 周目标',
+    width: 500,
+    render: () => `
+      <div style="margin-bottom:16px;padding:12px;background:#1a2a3a;border-radius:8px;display:flex;justify-content:space-between;">
+        <div>
+          <div style="color:#888;font-size:11px;">当前周期</div>
+          <div style="color:#fff;font-size:14px;font-weight:bold;">第 2 周</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="color:#888;font-size:11px;">完成率</div>
+          <div style="color:#FFD700;font-size:18px;font-weight:bold;">65%</div>
+        </div>
+      </div>
+      <div class="form-label">📋 任务目标</div>
+      <div class="list-item">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:#fff;">完成5个任务</span>
+          <span style="color:#90EE90;">3/5 ✓</span>
+        </div>
+        <div class="progress-bar" style="margin-top:8px;">
+          <div class="progress-fill" style="width:60%;"></div>
+        </div>
+      </div>
+      <div class="form-label" style="margin-top:12px;">📈 成长目标</div>
+      <div class="list-item">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:#fff;">城主等级达到Lv.3</span>
+          <span style="color:#FFD700;">2/3</span>
+        </div>
+        <div class="progress-bar" style="margin-top:8px;">
+          <div class="progress-fill warning" style="width:66%;"></div>
+        </div>
+      </div>
+      <div class="form-label" style="margin-top:12px;">💬 社交目标</div>
+      <div class="list-item">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:#fff;">所有Agent关系值达到40+</span>
+          <span style="color:#FF8C00;">2/4</span>
+        </div>
+        <div class="progress-bar" style="margin-top:8px;">
+          <div class="progress-fill warning" style="width:50%;"></div>
+        </div>
+      </div>
+      <div style="margin-top:16px;padding:12px;background:#1a2a3a;border-radius:4px;">
+        <div style="color:#fff;font-size:12px;margin-bottom:8px;">周结算预览</div>
+        <div style="color:#90EE90;font-size:11px;">✓ 70%+ 完成: +200积分, +100 XP</div>
+        <div style="color:#FFD700;font-size:11px;">★ 100% 完成: 额外 +稀有奖励</div>
+      </div>
+    `,
+    buttons: [{ label: '关闭', class: 'btn-secondary', action: 'close' }]
+  },
+
+  // 13. 突发挑战
+  challenge: {
+    title: '⚡ 突发挑战',
+    width: 550,
+    render: () => `
+      <div style="margin-bottom:12px;">
+        <button class="btn btn-secondary" style="width:100%;font-size:12px;padding:10px;" onclick="toggleChallengeInput(this)">
+          ➕ 输入自定义挑战
+        </button>
+        <div id="challenge-input-area" style="display:none;margin-top:12px;padding:12px;background:#1a2a3a;border-radius:8px;">
+          <div class="form-label">描述挑战场景</div>
+          <textarea class="form-input" rows="3" placeholder="描述你遇到的挑战，如：客户要求临时修改登录页面设计，需要在2小时内完成..." id="challengeDesc" style="margin-bottom:8px;"></textarea>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary" style="flex:1;" onclick="submitChallenge()">🎯 推理挑战</button>
+            <button class="btn btn-secondary" style="flex:1;" onclick="toggleChallengeInput(this)">收起</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- AI推理结果区域 -->
+      <div id="challenge-result" style="display:none;margin-bottom:12px;">
+        <div style="padding:10px;background:#2a1a3a;border-radius:8px;border-left:3px solid #f97316;">
+          <div style="color:#f97316;font-size:11px;margin-bottom:4px;">🤖 AI推理分析</div>
+          <div style="color:#888;font-size:11px;" id="challenge-analysis">分析中...</div>
+        </div>
+      </div>
+      
+      <!-- 预设挑战演示 -->
+      <div style="text-align:center;padding:16px;background:#3a1a1a;border-radius:8px;margin-bottom:12px;">
+        <div style="font-size:48px;margin-bottom:8px;">🚨</div>
+        <div style="color:#ff6b6b;font-size:15px;font-weight:bold;">客户需求变更</div>
+        <div style="color:#888;font-size:12px;margin-top:4px;">紧急程度: ★★★ | 影响: 进度延迟-50%</div>
+      </div>
+      
+      <div class="form-label">📊 影响评估</div>
+      <div style="color:#aaa;font-size:12px;padding:12px;background:#0a0a15;border-radius:4px;margin-bottom:12px;">
+        <div style="margin-bottom:6px;">• 当前任务「设计登录页面」进度-50%</div>
+        <div style="margin-bottom:6px;">• 设计师 小美 情绪-15</div>
+        <div style="margin-bottom:6px;">• 如不处理，预计损失 150 积分</div>
+        <div>• 客户满意度下降，可能影响后续合作</div>
+      </div>
+      
+      <div class="form-label">💡 应对策略（AI推荐）</div>
+      <div id="challenge-options">
+        <div class="list-item" style="border-left:3px solid #228B22;cursor:pointer;" onclick="selectChallengeOption(this)">
+          <div style="color:#90EE90;font-weight:bold;margin-bottom:4px;">接受变更，调整计划</div>
+          <div style="color:#888;font-size:11px;margin-bottom:6px;">重新评估任务时间，与客户协商交付节点</div>
+          <div style="color:#FFD700;font-size:10px;">预期: 损失-30%积分，但保持客户关系</div>
+        </div>
+        <div class="list-item" style="border-left:3px solid #4169E1;cursor:pointer;" onclick="selectChallengeOption(this)">
+          <div style="color:#87CEEB;font-weight:bold;margin-bottom:4px;">申请延期，追加资源</div>
+          <div style="color:#888;font-size:11px;margin-bottom:6px;">调用城主技能「激励演说」恢复情绪</div>
+          <div style="color:#FFD700;font-size:10px;">预期: 额外消耗100积分，进度+30%</div>
+        </div>
+        <div class="list-item" style="border-left:3px solid #ff6b6b;cursor:pointer;" onclick="selectChallengeOption(this)">
+          <div style="color:#ff6b6b;font-weight:bold;margin-bottom:4px;">坚持原计划，拒绝变更</div>
+          <div style="color:#888;font-size:11px;margin-bottom:6px;">可能影响客户关系，但保住积分</div>
+          <div style="color:#FFD700;font-size:10px;">预期: 客户满意度-40%，任务按时完成</div>
+        </div>
+        <div class="list-item" style="border-left:3px solid #FF8C00;cursor:pointer;" onclick="selectChallengeOption(this)">
+          <div style="color:#FFD700;font-weight:bold;margin-bottom:4px;">部分采纳，协商折中</div>
+          <div style="color:#888;font-size:11px;margin-bottom:6px;">只做关键修改，其他延期</div>
+          <div style="color:#FFD700;font-size:10px;">预期: 损失-15%积分，客户基本满意</div>
+        </div>
+      </div>
+      
+      <style>
+        .list-item.selected { background:#1a2a3a; border-color:#6366f1; }
+        .list-item:hover { background:#1a2a3a; }
+      </style>
+    `,
+    buttons: [
+      { label: '稍后处理', class: 'btn-secondary', action: 'close' },
+      { label: '确认应对', class: 'btn-primary', action: 'close' }
+    ]
+  },
+
+  // 14. 社交事件
+  socialEvent: {
+    title: '💬 社交事件',
+    width: 450,
+    render: () => `
+      <div style="text-align:center;padding:20px;background:#1a2a3a;border-radius:8px;margin-bottom:16px;">
+        <div style="font-size:48px;margin-bottom:8px;">🤝</div>
+        <div style="color:#FFD700;font-size:14px;font-weight:bold;">打招呼</div>
+      </div>
+      <div class="list-item" style="border-left:3px solid #228B22;">
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+          <span style="color:#fff;font-weight:bold;">阿猿</span>
+          <span style="color:#87CEEB;font-size:11px;">休息室</span>
+        </div>
+        <div style="color:#aaa;font-size:12px;padding:8px;background:#0a0a15;border-radius:4px;margin-bottom:8px;">
+          "早上好呀，小美！今天精神不错嘛～"
+        </div>
+        <div style="color:#aaa;font-size:11px;">回应: "早！今天准备攻克那个登录页面～"</div>
+        <div style="margin-top:8px;display:flex;gap:8px;">
+          <span class="tag tag-green">好感度 +2</span>
+          <span class="tag tag-blue">关系值 +1</span>
+        </div>
+      </div>
+      <div style="padding:12px;background:#1a2a3a;border-radius:4px;font-size:11px;color:#888;">
+        💡 触发条件：休息室相遇，关系≥11，10分钟冷却
+      </div>
+    `,
+    buttons: [{ label: '我知道了', class: 'btn-primary', action: 'close' }]
+  },
+
+  // 15. 设置面板
+  settings: {
+    title: '⚙️ 设置',
+    width: 450,
+    render: () => `
+      <div class="form-group">
+        <label class="form-label">游戏速度</label>
+        <select class="form-select">
+          <option>🐢 正常 (1x)</option>
+          <option>🐇 快速 (2x)</option>
+          <option>🚀 极快 (3x)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">通知设置</label>
+        <div style="display:flex;gap:16px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" checked style="accent-color:#FFD700;"> 任务事件
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" checked style="accent-color:#FFD700;"> 社交事件
+          </label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">界面设置</label>
+        <div style="display:flex;gap:16px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" checked style="accent-color:#FFD700;"> 显示Agent气泡
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" style="accent-color:#FFD700;"> 简化动画
+          </label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">城主技能音效</label>
+        <select class="form-select">
+          <option>开启</option>
+          <option>关闭</option>
+        </select>
+      </div>
+    `,
+    buttons: [{ label: '关闭', class: 'btn-secondary', action: 'close' }]
+  },
+
+  // 16. 帮助手册
+  help: {
+    title: '📖 游戏手册',
+    width: 600,
+    render: () => `
+      <div class="tabs" id="helpTabs">
+        <div class="tab active" onclick="switchTab(this, 'basic')">基础</div>
+        <div class="tab" onclick="switchTab(this, 'agent')">Agent</div>
+        <div class="tab" onclick="switchTab(this, 'task')">任务</div>
+        <div class="tab" onclick="switchTab(this, 'social')">社交</div>
+        <div class="tab" onclick="switchTab(this, 'skill')">技能</div>
+      </div>
+      <div id="helpContent">
+        <div class="form-label">🎮 游戏目标</div>
+        <div style="color:#aaa;font-size:12px;padding:12px;background:#0a0a15;border-radius:4px;margin-bottom:16px;">
+          你是城主"Hermes"，管理一群Agent完成各种任务。通过合理分配任务、维护Agent关系、使用城主技能，最终将基地发展壮大。
+        </div>
+        <div class="form-label">⌨️ 快捷键</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#aaa;font-size:11px;">
+          <div><code style="color:#FFD700;">Space</code> 暂停/继续</div>
+          <div><code style="color:#FFD700;">Esc</code> 关闭弹窗</div>
+          <div><code style="color:#FFD700;">1-5</code> 使用城主技能</div>
+          <div><code style="color:#FFD700;">L</code> Agent列表</div>
+          <div><code style="color:#FFD700;">J</code> 任务列表</div>
+          <div><code style="color:#FFD700;">E</code> 事件日志</div>
+        </div>
+      </div>
+    `,
+    buttons: [{ label: '关闭', class: 'btn-secondary', action: 'close' }]
+  },
+
+  // 17. 零食贩卖机
+  snackMachine: {
+    title: '🍿 零食贩卖机',
+    width: 450,
+    render: () => `
+      <div style="margin-bottom:16px;padding:12px;background:#1a2a3a;border-radius:8px;display:flex;justify-content:space-between;">
+        <span style="color:#fff;">💰 可用积分</span>
+        <span style="color:#FFD700;font-weight:bold;">1250</span>
+      </div>
+      <div class="form-label">选择零食</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div class="list-item" style="cursor:pointer;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="color:#fff;font-size:12px;">🍟 薯片</span>
+            <span style="color:#FFD700;font-size:10px;">5积分</span>
+          </div>
+          <div style="color:#888;font-size:10px;">能量+8 情绪+2</div>
+        </div>
+        <div class="list-item" style="cursor:pointer;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="color:#fff;font-size:12px;">🍫 巧克力</span>
+            <span style="color:#FFD700;font-size:10px;">8积分</span>
+          </div>
+          <div style="color:#888;font-size:10px;">能量+15 情绪+5</div>
+        </div>
+        <div class="list-item" style="cursor:pointer;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="color:#fff;font-size:12px;">🥜 能量棒</span>
+            <span style="color:#FFD700;font-size:10px;">10积分</span>
+          </div>
+          <div style="color:#888;font-size:10px;">能量+25 专注+8</div>
+        </div>
+        <div class="list-item" style="cursor:pointer;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="color:#fff;font-size:12px;">🧋 奶茶</span>
+            <span style="color:#FFD700;font-size:10px;">12积分</span>
+          </div>
+          <div style="color:#888;font-size:10px;">能量+20 情绪+6</div>
+        </div>
+        <div class="list-item" style="cursor:pointer;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="color:#fff;font-size:12px;">🍎 水果</span>
+            <span style="color:#FFD700;font-size:10px;">6积分</span>
+          </div>
+          <div style="color:#888;font-size:10px;">能量+10 情绪+4</div>
+        </div>
+      </div>
+      <div style="margin-top:16px;padding:12px;background:#1a2a3a;border-radius:4px;font-size:11px;color:#888;">
+        💡 AI会根据Agent当前状态实时推理选择最适合的零食。关系好的Agent之间有概率分享零食。
+      </div>
+    `,
+    buttons: [{ label: '关闭', class: 'btn-secondary', action: 'close' }]
+  },
+
+};
+
+// ===== 弹窗内交互（须挂 window：innerHTML 中的 onclick 只能调用全局函数）=====
+window.switchAgentDetailTab = function (btn) {
+  const body = document.getElementById('popupBody');
+  if (!body || !btn || !btn.dataset.tab) return;
+  body.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+  body.querySelectorAll('.tab-content').forEach((c) => {
+    c.style.display = 'none';
+  });
+  btn.classList.add('active');
+  const pane = document.getElementById('tab-' + btn.dataset.tab);
+  if (pane) pane.style.display = 'block';
+};
+
+window.switchAddAgentTab = function (btn) {
+  const body = document.getElementById('popupBody');
+  if (!body || !btn || !btn.dataset.tab) return;
+  body.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+  body.querySelectorAll('.add-agent-tab').forEach((c) => {
+    c.style.display = 'none';
+  });
+  btn.classList.add('active');
+  const pane = document.getElementById('add-tab-' + btn.dataset.tab);
+  if (pane) pane.style.display = 'block';
+};
+
+window.resetAddAgentSoul = function () {
+  const textarea = document.getElementById('addAgentSoul');
+  if (textarea) {
+    textarea.value = '你是Hermes数字工作室的一员。\n性格特点：热情、乐于助人\n口头禅："一起加油吧！"\n行为准则：主动帮助同事，积极参与团队协作';
+  }
+};
+
+window.exportAddAgentMemory = function () {
+  const textarea = document.getElementById('addAgentMemory');
+  if (textarea) {
+    const blob = new Blob([textarea.value], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'memory.md';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+};
+
+window.toggleChallengeInput = function(btn) {
+  const area = document.getElementById('challenge-input-area');
+  const isHidden = area.style.display === 'none';
+  area.style.display = isHidden ? 'block' : 'none';
+  btn.textContent = isHidden ? '➖ 收起输入' : '➕ 输入自定义挑战';
+};
+
+window.submitChallenge = function() {
+  const desc = document.getElementById('challengeDesc').value.trim();
+  if (!desc) { alert('请描述挑战场景'); return; }
+  const result = document.getElementById('challenge-result');
+  const analysis = document.getElementById('challenge-analysis');
+  result.style.display = 'block';
+  analysis.innerHTML = '⏳ AI正在推理分析挑战类型、影响和应对策略...<br><br>⏱️ 模拟推理结果：<br>• 挑战类型: 客户需求变更<br>• 影响评估: 进度-40%，情绪-10<br>• 推荐策略: 部分采纳，协商折中';
+};
+
+window.selectChallengeOption = function(el) {
+  document.querySelectorAll('#challenge-options .list-item').forEach(i => i.classList.remove('selected'));
+  el.classList.add('selected');
+};
+
+const logs = [];
+
+function log(msg) {
+  logs.unshift({ time: state.time || '08:30', msg });
+  if (logs.length > 15) logs.pop();
+}
+
+// ===== 弹出窗口控制 =====
+function openPopup(popupId) {
+  const popup = POPUPS[popupId];
+  if (!popup) return;
+
+  if (popupId === 'agentDetail' && !state.selectedAgent) {
+    state.selectedAgent = state.agents[0];
+  }
+
+  currentPopup = popupId;
+
+  // 设置标题和副标题
+  const titleEl = document.getElementById('popupTitle');
+  if (popup.subtitle) {
+    titleEl.innerHTML = popup.title + '<br><span style="color:#666;font-size:11px;font-weight:normal;">' + popup.subtitle + '</span>';
+  } else {
+    titleEl.textContent = popup.title;
+  }
+  document.getElementById('popupBody').innerHTML = popup.render();
+
+  // 渲染底部按钮
+  const footer = document.getElementById('popupFooter');
+  footer.innerHTML = '';
+  footer.style.display = 'none';
+  if (popup.buttons && popup.buttons.length) {
+    footer.style.display = 'flex';
+    popup.buttons.forEach(btn => {
+      const button = document.createElement('button');
+      button.className = 'btn ' + btn.class;
+      button.textContent = btn.label;
+      button.onclick = () => {
+        if (btn.action === 'close') {
+          closePopup();
+        } else if (actions[btn.action]) {
+          actions[btn.action]();
+        }
+      };
+      footer.appendChild(button);
+    });
+  }
+
+  // 统一底部停靠全宽外框
+  const overlay = document.getElementById('popupOverlay');
+  const shell = document.getElementById('popupContent');
+  shell.style.width = '';
+  shell.style.height = '';
+
+  syncOverlayToCanvas();
+  overlay.classList.add('show');
+}
+
+function closePopup() {
+  const overlay = document.getElementById('popupOverlay');
+  overlay.classList.remove('show');
+  const headerActionBtn = document.getElementById('popupHeaderActionBtn');
+  headerActionBtn.style.display = 'none';
+  headerActionBtn.onclick = null;
+  currentPopup = null;
+}
+
+// ===== 动作处理 =====
+const actions = {
+  addAgent: () => {
+    const name = document.getElementById('agentName')?.value;
+    const profession = document.getElementById('agentProfession')?.value;
+    if (!name || !profession) {
+      alert('请填写必填项');
+      return;
+    }
+    log(`添加Agent: ${name} (${profession})`);
+    closePopup();
+  },
+  createTask: () => {
+    const name = document.getElementById('taskName')?.value;
+    if (!name) {
+      alert('请填写任务名称');
+      return;
+    }
+    log(`创建任务: ${name}`);
+    closePopup();
+  },
+  useSkill: (skill) => {
+    log(`使用技能: ${skill}`);
+  },
+  celebrate: () => {
+    log('召开庆功宴！全员情绪+20');
+    closePopup();
+  },
+  doReview: () => {
+    log('进行任务复盘');
+    closePopup();
+  },
+
+  confirmCollab: () => {
+    log('确认协作任务');
+    closePopup();
+  },
+};
+
+window.useSkill = function (skill) {
+  if (actions.useSkill) actions.useSkill(skill);
+};
+
+// Tab切换（基地升级 / 帮助手册等 .tab 行）
+function switchTab(tabEl, tabId) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+}
+
+// 点击外部关闭
+document.getElementById('popupOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'popupOverlay') {
+    closePopup();
+  }
+});
+
+// ESC关闭
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && currentPopup) {
+    closePopup();
+  }
+});
+
+// ===== 绘制主界面 =====
+function drawMainUI() {
+  const LAYOUT = { top: 44, bottom: 56, left: 260, right: 260 };
+  const y = H - LAYOUT.bottom;
+
+  // 背景
+  ctx.fillStyle = '#0a0a15';
+  ctx.fillRect(0, 0, W, H);
+
+  // 顶栏
+  ctx.fillStyle = '#151525';
+  ctx.fillRect(0, 0, W, LAYOUT.top);
+  ctx.strokeStyle = '#333355';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(0, 0, W, LAYOUT.top);
+
+  ctx.fillStyle = '#FFD700';
+  ctx.font = '14px Consolas';
+  ctx.fillText('Hermes数字工作室 - 弹出窗口设计', 15, 28);
+
+  ctx.fillStyle = '#888';
+  ctx.font = '11px Consolas';
+  ctx.fillText('点击下方按钮打开对应弹出窗口', 400, 28);
+
+  // 中央说明区
+  ctx.fillStyle = 'rgba(26,26,48,0.95)';
+  ctx.fillRect(LAYOUT.left + 50, 80, W - LAYOUT.left - LAYOUT.right - 100, H - 180);
+  ctx.strokeStyle = '#333355';
+  ctx.strokeRect(LAYOUT.left + 50, 80, W - LAYOUT.left - LAYOUT.right - 100, H - 180);
+
+  ctx.fillStyle = '#FFD700';
+  ctx.font = '14px Consolas';
+  ctx.textAlign = 'center';
+  ctx.fillText('📋 弹出窗口总览（基于PRD设计）', W/2, 115);
+
+  const col1 = LAYOUT.left + 80;
+  const col2 = W/2 + 20;
+  let row = 150;
+  const items = [
+    { popup: 'agentDetail', label: '👥 Agent详情', desc: '查看Agent属性/状态' },
+    { popup: 'addAgent', label: '➕ 添加Agent', desc: '通过Profile配置' },
+    { popup: 'taskDetail', label: '📋 任务详情', desc: '进度、协作参与人与加成' },
+    { popup: 'newTask', label: '➕ 新建任务', desc: '创建新任务' },
+    { popup: 'taskCompetition', label: '🎲 任务竞争', desc: '纯随机抽签' },
+    { popup: 'relationMap', label: '🗺️ 关系图谱', desc: 'Agent关系网络（协作分工见任务详情）' },
+    { popup: 'skillPanel', label: '⭐ 城主技能', desc: '使用/升级技能' },
+    { popup: 'buildingUpgrade', label: '🏠 基地升级', desc: '设施升级' },
+    { popup: 'achievement', label: '🏆 成就系统', desc: '里程碑/奖励' },
+    { popup: 'celebration', label: '🎉 庆功宴', desc: '全员buff' },
+    { popup: 'review', label: '📝 任务复盘', desc: '经验总结' },
+    { popup: 'weeklyGoal', label: '📅 周目标', desc: '周期性目标' },
+    { popup: 'challenge', label: '⚡ 突发挑战', desc: '危机处理' },
+    { popup: 'socialEvent', label: '💬 社交事件', desc: '打招呼/交流' },
+    { popup: 'settings', label: '⚙️ 设置', desc: '游戏设置' },
+    { popup: 'help', label: '📖 帮助手册', desc: '教程/快捷键' },
+    { popup: 'snackMachine', label: '🍿 零食贩卖机', desc: '购买零食' },
+
+  ];
+
+  ctx.textAlign = 'left';
+  items.forEach((item, i) => {
+    const col = i < 9 ? col1 : col2;
+    const r = i < 9 ? row + i * 45 : row + (i - 9) * 45;
+
+    ctx.fillStyle = '#2a3a5a';
+    ctx.fillRect(col, r, 350, 38);
+    ctx.strokeStyle = '#444466';
+    ctx.strokeRect(col, r, 350, 38);
+
+    ctx.fillStyle = '#FFD700';
+    ctx.font = '11px Consolas';
+    ctx.fillText(item.label, col + 10, r + 16);
+
+    ctx.fillStyle = '#888';
+    ctx.font = '10px Consolas';
+    ctx.fillText(item.desc, col + 10, r + 30);
+
+    clickables.push({
+      x: col, y: r, w: 350, h: 38,
+      popup: item.popup,
+      tooltip: `打开: ${item.label}`
+    });
+  });
+
+  // 底部栏
+  ctx.fillStyle = '#151525';
+  ctx.fillRect(0, y, W, LAYOUT.bottom);
+  ctx.strokeStyle = '#333355';
+  ctx.strokeRect(0, y, W, LAYOUT.bottom);
+
+  ctx.fillStyle = '#888';
+  ctx.font = '10px Consolas';
+  ctx.fillText('💡 点击上方按钮打开对应弹出窗口 | 按 ESC 关闭弹窗', 15, y + 24);
+
+  // 日志
+  const logX = W - LAYOUT.right;
+  ctx.fillStyle = 'rgba(26,26,48,0.9)';
+  ctx.fillRect(logX, LAYOUT.top, LAYOUT.right, H - LAYOUT.top - LAYOUT.bottom);
+  ctx.strokeStyle = '#333355';
+  ctx.strokeRect(logX, LAYOUT.top, LAYOUT.right, H - LAYOUT.top - LAYOUT.bottom);
+
+  ctx.fillStyle = '#FFD700';
+  ctx.font = '12px Consolas';
+  ctx.fillText('📋 操作日志', logX + 12, LAYOUT.top + 25);
+
+  logs.forEach((log, i) => {
+    ctx.fillStyle = '#666';
+    ctx.font = '9px Consolas';
+    ctx.fillText(log.time, logX + 12, LAYOUT.top + 50 + i * 18);
+    ctx.fillStyle = '#aaa';
+    ctx.fillText(log.msg, logX + 70, LAYOUT.top + 50 + i * 18);
+  });
+
+  if (logs.length === 0) {
+    log('弹出窗口系统已就绪');
+    log('点击按钮打开窗口');
+  }
+}
+
+// ===== 主循环 =====
+function render() {
+  clickables = [];
+  drawMainUI();
+
+  // 鼠标检测
+  const rect2 = canvas.getBoundingClientRect();
+  const scaleX = W / rect2.width;
+  const scaleY = H / rect2.height;
+  const mx = (mouseX - rect2.left) * scaleX;
+  const my = (mouseY - rect2.top) * scaleY;
+
+  hoveredItem = null;
+  for (const item of clickables) {
+    if (mx >= item.x && mx <= item.x + item.w && my >= item.y && my <= item.y + item.h) {
+      hoveredItem = item;
+      break;
+    }
+  }
+  canvas.style.cursor = hoveredItem ? 'pointer' : 'default';
+
+  requestAnimationFrame(render);
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  mouseX = e.clientX;
+  mouseY = e.clientY;
+});
+
+canvas.addEventListener('click', (e) => {
+  const rect2 = canvas.getBoundingClientRect();
+  const scaleX = W / rect2.width;
+  const scaleY = H / rect2.height;
+  const mx = (e.clientX - rect2.left) * scaleX;
+  const my = (e.clientY - rect2.top) * scaleY;
+
+  for (const item of clickables) {
+    if (mx >= item.x && mx <= item.x + item.w && my >= item.y && my <= item.y + item.h) {
+      if (item.popup) {
+        openPopup(item.popup);
+      }
+      break;
+    }
+  }
+});
+
+render();
+</script>
+</body>
+</html>

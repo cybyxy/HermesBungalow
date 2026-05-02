@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 02 建筑渲染</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #0a0a15; color: #eee; font-family: Consolas, monospace; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script>
+// ===== Hermes数字工作室 - 02 建筑渲染 =====
+// 职责：绘制建筑外墙、房间、门、走廊
+
+const canvas = document.getElementById('ui');
+canvas.width = 1920;
+canvas.height = 1000;
+const ctx = canvas.getContext('2d');
+
+// ===== 从 01-layout 获取常量 =====
+const LAYOUT = { top: 44, bottom: 56, left: 260, right: 260 };
+const CENTER_X = LAYOUT.left;
+const CENTER_Y = LAYOUT.top;
+const CENTER_W = 1920 - LAYOUT.left - LAYOUT.right;
+const CENTER_H = 1000 - LAYOUT.top - LAYOUT.bottom;
+
+// ===== 建筑尺寸计算 =====
+const WALL = 6;
+const DOOR = 24;
+const CORRIDOR_W = 0;
+const VISUAL_CORRIDOR_W = 32;
+const MID_CORRIDOR_H = 32;
+const BOTTOM_CORRIDOR_H = 32;
+const KING_H_RATIO = 1.2;
+const V_CORR_H = 14;
+
+const ROOM_H = Math.floor(
+  (CENTER_H - V_CORR_H - BOTTOM_CORRIDOR_H - 2 * MID_CORRIDOR_H - WALL * 5) / (3 + KING_H_RATIO)
+);
+const ROOM_W = Math.floor((CENTER_W - WALL * 5 - CORRIDOR_W) / 4);
+
+const BUILDING_W = ROOM_W * 4 + WALL * 5 + CORRIDOR_W;
+const KING_W = Math.floor(ROOM_W * 1.5);
+const KING_H = Math.floor(ROOM_H * KING_H_RATIO);
+const BUILDING_H =
+  KING_H +
+  V_CORR_H +
+  ROOM_H * 3 +
+  MID_CORRIDOR_H * 2 +
+  BOTTOM_CORRIDOR_H +
+  WALL * 5;
+
+// ===== 颜色 =====
+const C = {
+  bg: '#0a0a15',
+  wall: '#654321',
+  door: '#DAA520',
+  floor: '#1e1e35',
+  king: '#1a2a4a',
+  fixed: '#1a2a4a',
+  dynamic: '#1a3a2a',
+  border: '#333355',
+};
+
+// ===== 基础绘图函数 =====
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function stroke(x, y, w, h, color, lw = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.strokeRect(x, y, w, h);
+}
+
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+// ===== 绘制一行房间 =====
+function drawRow(y, labels, isFixed) {
+  for (let i = 0; i < 4; i++) {
+    const x = i * (ROOM_W + WALL);
+    
+    // 房间背景
+    rect(x, y, ROOM_W, ROOM_H, isFixed[i] ? C.fixed : C.dynamic);
+    stroke(x, y, ROOM_W, ROOM_H, isFixed[i] ? '#4169E1' : '#228B22', 2);
+    
+    // 房间名称
+    text(labels[i], x + ROOM_W/2, y + ROOM_H/2, '#fff', 9, 'center');
+    
+    // 门
+    if (i === 0 || i === 2) {
+      rect(x + ROOM_W*3/4 - DOOR/2, y + ROOM_H - WALL, DOOR, WALL, C.door);
+    } else {
+      rect(x + ROOM_W/4 - DOOR/2, y + ROOM_H - WALL, DOOR, WALL, C.door);
+    }
+  }
+}
+
+// ===== 绘制建筑 =====
+function drawBuilding() {
+  // 走廊X位置（中间）
+  const corridorCenterX = ROOM_W * 2 + WALL * 2 + WALL / 2;
+  const corridorX = corridorCenterX - VISUAL_CORRIDOR_W / 2;
+  const doorX = corridorCenterX - DOOR / 2;
+  
+  // ===== 城主办公室 =====
+  const kingX = (BUILDING_W - KING_W) / 2;
+  rect(kingX, 0, KING_W, KING_H, C.king);
+  stroke(kingX, 0, KING_W, KING_H, '#4169E1', 3);
+  text('城主办公室', kingX + KING_W/2, KING_H/2 + 4, '#fff', 12, 'center');
+  
+  // 城主办公室门
+  rect(doorX, KING_H, DOOR, WALL, C.door);
+  
+  // ===== 垂直走廊 =====
+  rect(doorX, KING_H + WALL, DOOR, V_CORR_H, C.floor);
+  
+  // ===== 第二层（4房间）=====
+  const row2Y = KING_H + WALL + V_CORR_H + WALL;
+  drawRow(row2Y, ['休息室','资料室','会议室','机房'], [true,true,true,true]);
+  
+  // 走廊穿透
+  rect(corridorX, row2Y, VISUAL_CORRIDOR_W, ROOM_H, C.floor);
+  
+  // ===== 水平走廊 =====
+  rect(0, row2Y + ROOM_H, corridorX + VISUAL_CORRIDOR_W, MID_CORRIDOR_H, C.floor);
+  rect(corridorX + VISUAL_CORRIDOR_W, row2Y + ROOM_H, BUILDING_W - (corridorX + VISUAL_CORRIDOR_W), MID_CORRIDOR_H, C.floor);
+  
+  // ===== 第三层（办公室1-4）=====
+  const row3Y = row2Y + ROOM_H + MID_CORRIDOR_H + WALL;
+  drawRow(row3Y, ['办公室1','办公室2','办公室3','办公室4'], [false,false,false,false]);
+  rect(corridorX, row3Y, VISUAL_CORRIDOR_W, ROOM_H, C.floor);
+  
+  // ===== 水平走廊 =====
+  rect(0, row3Y + ROOM_H, corridorX + VISUAL_CORRIDOR_W, MID_CORRIDOR_H, C.floor);
+  rect(corridorX + VISUAL_CORRIDOR_W, row3Y + ROOM_H, BUILDING_W - (corridorX + VISUAL_CORRIDOR_W), MID_CORRIDOR_H, C.floor);
+  
+  // ===== 第四层（办公室5-8）=====
+  const row4Y = row3Y + ROOM_H + MID_CORRIDOR_H + WALL;
+  drawRow(row4Y, ['办公室5','办公室6','办公室7','办公室8'], [false,false,false,false]);
+  rect(corridorX, row4Y, VISUAL_CORRIDOR_W, ROOM_H, C.floor);
+  
+  // ===== 底部走廊 =====
+  rect(0, row4Y + ROOM_H, corridorX + VISUAL_CORRIDOR_W, BOTTOM_CORRIDOR_H, C.floor);
+  rect(corridorX + VISUAL_CORRIDOR_W, row4Y + ROOM_H, BUILDING_W - (corridorX + VISUAL_CORRIDOR_W), BOTTOM_CORRIDOR_H, C.floor);
+  
+  // ===== 外墙 =====
+  const buildingEndY = row4Y + ROOM_H + BOTTOM_CORRIDOR_H + WALL;
+  rect(-8, 0, 8, buildingEndY + 8, C.wall);
+  rect(BUILDING_W, 0, 8, buildingEndY + 8, C.wall);
+  
+  // ===== 返回关键尺寸 =====
+  return {
+    corridorX,
+    corridorCenterX,
+    row2Y,
+    row3Y,
+    row4Y,
+    buildingEndY
+  };
+}
+
+// ===== 主渲染 =====
+function render() {
+  // 背景
+  rect(0, 0, 1920, 1000, C.bg);
+  
+  // 中央区域
+  rect(CENTER_X, CENTER_Y, CENTER_W, CENTER_H, C.bg);
+  stroke(CENTER_X, CENTER_Y, CENTER_W, CENTER_H, C.border, 2);
+  
+  // 居中、贴底
+  const sx = CENTER_X + (CENTER_W - BUILDING_W) / 2;
+  const sy = CENTER_Y + (CENTER_H - BUILDING_H);
+  
+  ctx.save();
+  ctx.translate(sx, sy);
+  
+  const dims = drawBuilding();
+  
+  ctx.restore();
+  
+  // 打印尺寸
+  console.log('ROOM_W:', ROOM_W, 'ROOM_H:', ROOM_H);
+  console.log('BUILDING_W:', BUILDING_W, 'BUILDING_H:', BUILDING_H);
+  
+  return dims;
+}
+
+// 导出给其他模块用
+window.BUILDING = {
+  ROOM_W, ROOM_H, WALL, DOOR, VISUAL_CORRIDOR_W,
+  KING_W, KING_H, BUILDING_W, BUILDING_H,
+  corridorX: 0, // 将在render后确定
+};
+
+const dims = render();
+Object.assign(window.BUILDING, dims);
+</script>
+</body>
+</html>

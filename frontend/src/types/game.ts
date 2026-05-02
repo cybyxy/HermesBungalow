@@ -1,42 +1,59 @@
-export type AgentRole = '城主' | '设计师' | '程序员' | '测试员' | '分析师';
-export type AgentStatus = 'idle' | 'working' | 'social' | 'slacking' | 'offline';
-
-export interface TeamAgent {
+/** Mirrors backend `api.game.models.Agent.to_dict()`; extras optional for older saves. */
+export interface Agent {
   id: string;
   name: string;
-  role: AgentRole;
-  status: AgentStatus;
+  display_name?: string;
+  profession: string;
+  profile?: string;
+  gender?: string;
+  status: string;
+  location: string;
   energy: number;
-  quota: number;
-  socialNeed: number;
-  roleMatch: number;
+  mood: number;
+  affection?: number;
+  relation?: number;
+  focus?: number;
+  sleepiness?: number;
+  satiety?: number;
+  speed?: number;
+  catchphrase?: string;
+  personality?: string;
+  memes?: string[];
+  reasoning_model?: string;
+  current_task_id?: number | null;
+  /** Server-pooled Hermes chat session for this game agent (see GET /api/game/agents). */
+  hermes_session_id?: string;
 }
 
-export interface ActivityEvent {
-  id: string;
-  title: string;
-  detail: string;
-  type: 'challenge' | 'opportunity' | 'info';
-  timestamp: number;
-}
-
-export type TaskType = 'design' | 'code' | 'test' | 'analyze' | 'review';
-
-export interface TaskItem {
-  id: string;
-  agentId: string;
-  taskType: TaskType;
+export interface GameTask {
+  id: number;
+  name: string;
+  description?: string;
   progress: number;
-  status: 'queued' | 'in_progress' | 'done' | 'cancelled' | 'failed';
-  priority: 1 | 2 | 3;
-  rewardPoints: number;
-  rewardWeek: number;
-  etaSec: number;
-  qualityScore: number;
-  qualityBreakdown?: {
-    roleMatchWeight: number;
-    energyWeight: number;
-    roleMatchPart: number;
-    energyPart: number;
-  };
+  status: string;
+  assignee_id?: string | null;
+  required_profession?: string;
+  difficulty: number;
+  reward: number;
+  is_collaborative?: boolean;
+}
+
+export interface GameRoom {
+  id: string;
+  name: string;
+  type: string;
+  agent_ids?: string[];
+}
+
+export interface GameWorldSnapshot {
+  day: number;
+  time: string;
+  money: number;
+  lord_level: number;
+  lord_xp: number;
+  agents: Agent[];
+  tasks: GameTask[];
+  rooms: GameRoom[];
+  competition_history: Record<string, unknown>[];
+  event_log?: Record<string, unknown>[];
 }

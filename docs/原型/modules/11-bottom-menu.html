@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 底部菜单设计</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { 
+    background: #0a0a15; 
+    color: #eee; 
+    font-family: Consolas, 'Microsoft YaHei', monospace;
+    overflow: hidden;
+  }
+  #ui { display: block; }
+  .menu-popup {
+    position: fixed;
+    background: rgba(20, 20, 40, 0.98);
+    border: 2px solid #FFD700;
+    border-radius: 8px;
+    padding: 8px 0;
+    min-width: 220px;
+    max-height: 500px;
+    overflow-y: auto;
+    box-shadow: 0 5px 30px rgba(0,0,0,0.5);
+    z-index: 1000;
+  }
+  .menu-popup::-webkit-scrollbar { width: 6px; }
+  .menu-popup::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+  .menu-header {
+    padding: 8px 16px;
+    color: #FFD700;
+    font-size: 11px;
+    border-bottom: 1px solid #333;
+    margin-bottom: 4px;
+  }
+  .menu-item {
+    padding: 10px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    transition: background 0.15s;
+  }
+  .menu-item:hover { background: rgba(255, 215, 0, 0.15); }
+  .menu-item.disabled { color: #555; cursor: not-allowed; }
+  .menu-item.disabled:hover { background: transparent; }
+  .menu-separator { height: 1px; background: #333; margin: 6px 0; }
+  .menu-hotkey { color: #666; font-size: 10px; margin-left: auto; }
+  .menu-sub { margin-left: 20px; border-left: 2px solid #333; padding-left: 8px; }
+  .tooltip {
+    position: fixed;
+    background: rgba(26,26,48,0.95);
+    border: 1px solid #FFD700;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    pointer-events: none;
+    display: none;
+    z-index: 1001;
+    color: #fff;
+    max-width: 300px;
+  }
+  .tooltip code { color: #FFD700; background: #333; padding: 1px 4px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<div class="menu-popup" id="menuPopup" style="display:none;"></div>
+<div class="tooltip" id="tooltip"></div>
+<script>
+// ===== Hermes数字工作室 - 底部菜单设计 =====
+const canvas = document.getElementById('ui');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+const menuPopup = document.getElementById('menuPopup');
+
+const W = 1920, H = 1000;
+canvas.width = W; canvas.height = H;
+
+function resizeCanvas() {
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width = (W * scale) + 'px';
+  canvas.style.height = (H * scale) + 'px';
+  canvas.style.position = 'absolute';
+  canvas.style.left = (window.innerWidth - W * scale) / 2 + 'px';
+  canvas.style.top = (window.innerHeight - H * scale) / 2 + 'px';
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+const LAYOUT = {top: 44, bottom: 56, left: 260, right: 260};
+const CENTER_X = LAYOUT.left;
+const CENTER_W = W - LAYOUT.left - LAYOUT.right;
+const CENTER_H = H - LAYOUT.top - LAYOUT.bottom;
+
+const C = {
+  bg: '#0a0a15', panel: '#1a1a30', border: '#333355',
+  text: '#aaa', bright: '#fff', gold: '#FFD700',
+  btn: '#2a3a5a', btnHover: '#3a4a6a',
+  green: '#228B22', red: '#DC143C', blue: '#4169E1',
+};
+
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+function stroke(x, y, w, h, color, lw = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.strokeRect(x, y, w, h);
+}
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+let clickables = [];
+let mouseX = 0, mouseY = 0;
+let hoveredItem = null;
+let menuOpen = null;
+let currentSubMenu = null;
+
+const state = {
+  day: 1, time: '08:30', pause: false, speed: 1,
+  money: 1250, lordXP: 0, lordLevel: 1,
+  agents: [], tasks: [], achievements: [],
+};
+
+// ===== 根据PRD设计的完整菜单系统 =====
+const MENUS = {
+  // 1. Agent管理（来源：Hermes Profile配置）
+  agent: {
+    label: '👥 Agent',
+    items: [
+      { id: 'addAgent', label: '➕ 添加Agent', hotkey: 'Ctrl+A', enabled: true,
+        tooltip: '通过配置Hermes Profile来添加新Agent' },
+      { id: 'agentList', label: '📋 Agent列表', hotkey: 'L', enabled: true },
+      { id: 'agentStats', label: '📊 统计面板', enabled: true },
+      { type: 'separator' },
+      { id: 'workMode', label: '💼 工作模式', submenu: 'workMode', enabled: true },
+      { id: 'restMode', label: '😴 休息模式', submenu: 'restMode', enabled: true },
+      { type: 'separator' },
+      { id: 'fireAgent', label: '➖ 解雇Agent', enabled: false, reason: '需要先选中Agent' },
+    ]
+  },
+
+  // 3. 任务系统
+  task: {
+    label: '📋 任务',
+    items: [
+      { id: 'newTask', label: '➕ 新建任务', hotkey: 'Ctrl+T', enabled: true },
+      { id: 'taskList', label: '📋 任务列表', hotkey: 'J', enabled: true },
+      { id: 'taskHistory', label: '📜 任务历史', enabled: true },
+      { type: 'separator' },
+      { id: 'competition', label: '🎲 任务竞争', enabled: true,
+        tooltip: '同职业Agent竞争任务机会，纯随机抽签' },
+      { id: 'collaboration', label: '🤝 协作任务', enabled: true,
+        tooltip: '多Agent配合完成任务，效率+30%' },
+      { type: 'separator' },
+      { id: 'prizePool', label: '🏆 奖励池', enabled: true },
+      { id: 'weeklyGoal', label: '📅 周目标', submenu: 'weekly', enabled: true },
+    ]
+  },
+
+  // 5. 社交系统
+  social: {
+    label: '💬 社交',
+    items: [
+      { id: 'relationMap', label: '🗺️ 关系图谱', enabled: true,
+        tooltip: '查看所有Agent之间的关系\n朋友→挚友（无恋人）' },
+      { id: 'chatLog', label: '💭 聊天记录', enabled: true },
+      { id: 'eventLog', label: '📰 事件日志', hotkey: 'E', enabled: true },
+      { type: 'separator' },
+      { id: 'greeting', label: '🤝 打招呼设置', enabled: true,
+        tooltip: '触发场景：休息室/会议室/资料室/机房\n条件：关系值≥11 | 冷却：10分钟' },
+      { id: 'collaborationChat', label: '💬 协作交流', enabled: true,
+        tooltip: '头顶气泡+会话记录\n气泡停留3-5秒\n效率加成上限+5%' },
+      { type: 'separator' },
+      { id: 'emotionInfect', label: '💗 情绪感染', enabled: true,
+        tooltip: '同房间: 80%传染\n休息室社交: 100%传染' },
+    ]
+  },
+
+  // 6. 基地建筑
+  building: {
+    label: '🏠 基地',
+    items: [
+      { id: 'buildRoom', label: '🔨 建造房间', enabled: true },
+      { id: 'demolish', label: '💥 拆除', enabled: false, reason: '需要先选中建筑' },
+      { id: 'repair', label: '🔧 维修', enabled: false, reason: '没有损坏的建筑' },
+      { type: 'separator' },
+      { id: 'roomList', label: '📋 房间列表', enabled: true },
+      { id: 'restRoom', label: '☕ 休息室升级', submenu: 'restRoom', enabled: true,
+        tooltip: 'Lv.1: 基准恢复\nLv.2: +25%效果 (500积分)\nLv.3: +50%效果 (1500积分)' },
+      { id: 'serverRoom', label: '🖥️ 机房升级', submenu: 'serverRoom', enabled: true,
+        tooltip: 'Token配额管理\nLv.2: +25%上限\nLv.3: +50%上限' },
+      { id: 'officeExpand', label: '📦 解锁新办公室', enabled: true,
+        tooltip: '解锁新办公室\n费用: 800积分/间' },
+      { type: 'separator' },
+      { id: 'snackMachine', label: '🍿 零食贩卖机', enabled: true,
+        tooltip: '解锁费用: 300积分\nAI实时推理选择零食' },
+    ]
+  },
+
+  // 7. 城主（含城主技能，合并为一菜单）
+  lord: {
+    label: '👑 城主',
+    items: [
+      { id: 'lordInfo', label: '📊 城主信息', enabled: true },
+      { id: 'lordLevel', label: '⬆️ 城主等级', enabled: true,
+        tooltip: 'Lv.1: 基础功能 (0 XP)\nLv.2: 精准分配 (200 XP)\nLv.3: 灵感赐予 (500 XP)\nLv.4: 光环效应 (1000 XP)\nLv.5: 全知视角 (2000 XP)' },
+      { id: 'points', label: '💰 积分', enabled: true,
+        tooltip: '获取: 完成任务+10~30\n协作任务+50\n挑战成功+100~500\n消耗: 设施升级、技能使用' },
+      { type: 'separator' },
+      { id: 'inspire', label: '📣 激励演说', hotkey: '1', enabled: true, level: 1,
+        tooltip: '恢复指定Agent饱食度+30，情绪+15\n冷却: 3秒 | 等级1解锁' },
+      { id: 'assign', label: '🎯 精准分配', enabled: true, level: 2,
+        tooltip: '任务匹配度判断准确率+20%\n等级2解锁 | 无冷却' },
+      { id: 'insight', label: '🔮 灵感赐予', enabled: true, level: 3,
+        tooltip: '给协作中Agent提供创意提示\n质量+15%，消耗30积分\n冷却: 7秒 | 等级3解锁' },
+      { id: 'aura', label: '🌟 光环效应', enabled: true, level: 4,
+        tooltip: '周围Agent情绪+10\n持续3秒，消耗80积分\n冷却: 10秒 | 等级4解锁' },
+      { id: 'omniscient', label: '👁️ 全知视角', enabled: true, level: 5,
+        tooltip: '查看任意Agent详细状态\n无消耗 | 等级5解锁' },
+      { type: 'separator' },
+      { id: 'skillInfo', label: '📖 技能详情', enabled: true },
+      { type: 'separator' },
+      { id: 'achievement', label: '🏆 成就系统', enabled: true },
+      { id: 'celebration', label: '🎉 庆功宴', enabled: true,
+        tooltip: '全员情绪+20\n关系度+5\n城主XP+15\n社交需求-30' },
+      { id: 'review', label: '📝 复盘', enabled: true,
+        tooltip: '快速复盘: x0.5奖励\n标准复盘: x1.0\n深度复盘: x2.0\n每个任务完成后自动启动' },
+    ]
+  },
+
+  // 8. 事件与挑战
+  event: {
+    label: '🎲 事件',
+    items: [
+      { id: 'challengeList', label: '⚡ 突发挑战', enabled: true,
+        tooltip: 'Token配额耗尽\n连续低质量输出\n职业匹配度危机' },
+      { id: 'periodicEvent', label: '📅 周期事件', enabled: true,
+        tooltip: '小型挑战: 每3天 (+100积分)\n中型挑战: 每周 (需要协作)\n大型挑战: 每月 (全员协作)' },
+      { id: 'milestone', label: '🎯 里程碑', enabled: true },
+      { type: 'separator' },
+      { id: 'crisis', label: '🚨 危机处理', enabled: true },
+    ]
+  },
+
+  // 9. 帮助
+  help: {
+    label: '❓ 帮助',
+    items: [
+      { id: 'guide', label: '📖 新手引导', enabled: true },
+      { id: 'manual', label: '📚 游戏手册', enabled: true },
+      { id: 'shortcut', label: '⌨️ 快捷键', enabled: true },
+      { id: 'about', label: 'ℹ️ 关于游戏', enabled: true },
+      { type: 'separator' },
+      { id: 'settings', label: '⚙️ 设置', hotkey: 'Esc', enabled: true },
+      { id: 'feedback', label: '💡 反馈问题', enabled: true },
+    ]
+  },
+};
+
+// 子菜单
+const SUB_MENUS = {
+  speed: {
+    label: '⏱️ 游戏速度',
+    items: [
+      { id: 'speed0', label: '⏸️ 暂停 (0x)' },
+      { id: 'speed1', label: '🐢 正常 (1x)' },
+      { id: 'speed2', label: '🐇 快速 (2x)' },
+      { id: 'speed3', label: '🚀 极快 (3x)' },
+    ]
+  },
+  time: {
+    label: '🕐 时间调整',
+    items: [
+      { id: 'timeDawn', label: '🌅 黎明 (06:00)' },
+      { id: 'timeMorning', label: '☀️ 上午 (09:00)' },
+      { id: 'timeNoon', label: '🌞 正午 (12:00)' },
+      { id: 'timeAfternoon', label: '🌤️ 下午 (15:00)' },
+      { id: 'timeEvening', label: '🌆 傍晚 (18:00)' },
+      { id: 'timeNight', label: '🌙 夜晚 (22:00)' },
+    ]
+  },
+  workMode: {
+    label: '💼 工作模式',
+    items: [
+      { id: 'workNormal', label: '📋 普通工作' },
+      { id: 'workHard', label: '🔥 拼命工作', tooltip: '效率+30%，情绪-0.5/秒' },
+      { id: 'workRelax', label: '😌 轻松工作', tooltip: '效率-10%，情绪+0.2/秒' },
+    ]
+  },
+  restMode: {
+    label: '😴 休息模式',
+    items: [
+      { id: 'restShort', label: '☕ 短休 (约45秒)' },
+      { id: 'restLong', label: '🛋️ 长休 (约15分钟)' },
+      { id: 'restSleep', label: '🛏️ 睡眠 (8小时)' },
+    ]
+  },
+  restRoom: {
+    label: '☕ 休息室升级',
+    items: [
+      { id: 'restLv1', label: 'Lv.1 基准 (当前)' },
+      { id: 'restLv2', label: 'Lv.2 +25%效果 (500积分)' },
+      { id: 'restLv3', label: 'Lv.3 +50%效果 (1500积分)' },
+    ]
+  },
+  serverRoom: {
+    label: '🖥️ 机房升级',
+    items: [
+      { id: 'serverLv1', label: 'Lv.1 Token上限100 (当前)' },
+      { id: 'serverLv2', label: 'Lv.2 +25%上限' },
+      { id: 'serverLv3', label: 'Lv.3 +50%上限' },
+    ]
+  },
+  weekly: {
+    label: '📅 周目标',
+    items: [
+      { id: 'weeklyTask', label: '📋 任务目标' },
+      { id: 'weeklyGrowth', label: '📈 成长目标' },
+      { id: 'weeklySocial', label: '💬 社交目标' },
+      { id: 'weeklyLord', label: '👑 城主目标' },
+    ]
+  },
+};
+
+// 操作处理
+const actions = {
+  pause: () => { state.pause = !state.pause; log(state.pause ? '⏸️ 游戏暂停' : '▶️ 游戏继续'); closeMenu(); },
+  fullscreen: () => { log('切换全屏'); closeMenu(); },
+  addAgent: () => { log('💡 通过配置Hermes Profile添加新Agent'); closeMenu(); },
+  agentList: () => { log('📋 打开Agent列表'); closeMenu(); },
+  agentStats: () => { log('📊 打开统计面板'); closeMenu(); },
+  newTask: () => { log('➕ 创建新任务'); closeMenu(); },
+  taskList: () => { log('📋 打开任务列表'); closeMenu(); },
+  taskHistory: () => { log('📜 打开任务历史'); closeMenu(); },
+  competition: () => { log('🎲 任务竞争机制：纯随机抽签，公平公正'); closeMenu(); },
+  collaboration: () => { log('🤝 协作任务：效率+30%，总Token消耗-20%'); closeMenu(); },
+  prizePool: () => { log('🏆 奖励池'); closeMenu(); },
+  inspire: () => { log('📣 激励演说：恢复指定Agent饱食度+30，情绪+15'); closeMenu(); },
+  assign: () => { log('🎯 精准分配：任务匹配度判断准确率+20%'); closeMenu(); },
+  insight: () => { log('🔮 灵感赐予：协作质量+15%，消耗30积分'); closeMenu(); },
+  aura: () => { log('🌟 光环效应：周围Agent情绪+10'); closeMenu(); },
+  omniscient: () => { log('👁️ 全知视角：查看任意Agent详细状态'); closeMenu(); },
+  skillInfo: () => { log('📖 城主技能详情'); closeMenu(); },
+  lordLevel: () => { log('⬆️ 城主等级与解锁路线'); closeMenu(); },
+  points: () => { log('💰 积分说明'); closeMenu(); },
+  relationMap: () => { log('🗺️ 关系图谱：朋友→挚友（无恋人）'); closeMenu(); },
+  chatLog: () => { log('💭 聊天记录'); closeMenu(); },
+  eventLog: () => { log('📰 事件日志'); closeMenu(); },
+  greeting: () => { log('🤝 打招呼：休息室/会议室/资料室/机房，关系≥11，10分钟冷却'); closeMenu(); },
+  buildRoom: () => { log('🔨 建造新房间'); closeMenu(); },
+  roomList: () => { log('📋 房间列表'); closeMenu(); },
+  officeExpand: () => { log('📦 解锁新办公室：800积分/间'); closeMenu(); },
+  snackMachine: () => { log('🍿 零食贩卖机：300积分解锁'); closeMenu(); },
+  lordInfo: () => { log(`👑 城主 Lv.${state.lordLevel} XP:${state.lordXP}`); closeMenu(); },
+  achievement: () => { log('🏆 成就系统'); closeMenu(); },
+  celebration: () => { log('🎉 召开庆功宴：全员情绪+20，关系+5'); closeMenu(); },
+  review: () => { log('📝 复盘系统'); closeMenu(); },
+  guide: () => { log('📖 新手引导'); closeMenu(); },
+  manual: () => { log('📚 游戏手册'); closeMenu(); },
+  shortcut: () => { log('⌨️ 快捷键列表'); closeMenu(); },
+  settings: () => { log('⚙️ 打开设置'); closeMenu(); },
+  speed0: () => { state.speed = 0; log('⏸️ 速度: 暂停'); closeMenu(); },
+  speed1: () => { state.speed = 1; log('🐢 速度: 正常'); closeMenu(); },
+  speed2: () => { state.speed = 2; log('🐇 速度: 快速'); closeMenu(); },
+  speed3: () => { state.speed = 3; log('🚀 速度: 极快'); closeMenu(); },
+  timeDawn: () => { state.time = '06:00'; log('🌅 时间: 06:00'); closeMenu(); },
+  timeMorning: () => { state.time = '09:00'; log('☀️ 时间: 09:00'); closeMenu(); },
+  timeNoon: () => { state.time = '12:00'; log('🌞 时间: 12:00'); closeMenu(); },
+  timeAfternoon: () => { state.time = '15:00'; log('🌤️ 时间: 15:00'); closeMenu(); },
+  timeEvening: () => { state.time = '18:00'; log('🌆 时间: 18:00'); closeMenu(); },
+  timeNight: () => { state.time = '22:00'; log('🌙 时间: 22:00'); closeMenu(); },
+};
+
+function closeMenu() {
+  menuOpen = null;
+  currentSubMenu = null;
+  menuPopup.style.display = 'none';
+}
+
+const logs = [];
+
+function log(msg) {
+  const time = state.time;
+  logs.unshift({ time, msg });
+  if (logs.length > 15) logs.pop();
+}
+
+// ===== 绘制底部栏 =====
+function drawBottomBar() {
+  const y = H - LAYOUT.bottom;
+  rect(0, y, W, LAYOUT.bottom, '#151525');
+  stroke(0, y, W, LAYOUT.bottom, C.border, 2);
+
+  // 左侧菜单按钮
+  const menuKeys = ['agent', 'task', 'social', 'building', 'lord', 'event', 'help'];
+  let menuX = 15;
+
+  menuKeys.forEach(key => {
+    const menu = MENUS[key];
+    if (!menu) return;
+
+    const btnW = key === 'help' ? 70 : 75;
+    const isOpen = menuOpen === key;
+    const isHovered = hoveredItem && hoveredItem.action === `menu_${key}`;
+
+    // 按钮
+    rect(menuX, y + 10, btnW, 34, isOpen ? '#3a4a6a' : isHovered ? C.btnHover : C.btn);
+    stroke(menuX, y + 10, btnW, 34, isOpen ? C.gold : isHovered ? '#fff' : C.border, isOpen ? 2 : 1);
+
+    ctx.fillStyle = isOpen ? C.gold : C.bright;
+    ctx.font = '10px Consolas';
+    ctx.textAlign = 'center';
+    ctx.fillText(menu.label, menuX + btnW/2, y + 31);
+    ctx.textAlign = 'left';
+
+    clickables.push({
+      x: menuX, y: y + 10, w: btnW, h: 34,
+      action: `menu_${key}`,
+      menuKey: key,
+      tooltip: `${menu.label.replace(/[^\u4e00-\u9fa5a-zA-Z]/g, '')} 菜单`
+    });
+
+    menuX += btnW + 5;
+  });
+
+  // 中间状态
+  const statusY = y + 24;
+  text(`第 ${state.day} 天`, W/2 - 80, statusY, C.text, 11, 'center');
+  text(state.time, W/2 - 10, statusY, C.gold, 12, 'center');
+
+  // 城主状态
+  text(`👑 Lv.${state.lordLevel}`, W/2 + 60, statusY, C.gold, 11, 'center');
+  text(`💰 ${state.money}`, W/2 + 130, statusY, '#FFD700', 11, 'center');
+  text(`XP: ${state.lordXP}`, W/2 + 190, statusY, C.text, 10, 'center');
+
+  // 暂停指示
+  if (state.pause) {
+    rect(W/2 + 240, statusY - 14, 60, 20, 'rgba(255,0,0,0.3)');
+    text('⏸️', W/2 + 270, statusY, '#FF6B6B', 11, 'center');
+  }
+}
+
+// ===== 画布内矩形 → 视口像素（与 resizeCanvas 缩放一致）=====
+function canvasRectToViewport(item) {
+  const r = canvas.getBoundingClientRect();
+  const sx = r.width / W;
+  const sy = r.height / H;
+  return {
+    x: r.left + item.x * sx,
+    y: r.top + item.y * sy,
+    w: item.w * sx,
+    h: item.h * sy,
+  };
+}
+
+// ===== 显示菜单 =====
+function showMenu(key, btnRect) {
+  if (menuOpen === key) {
+    closeMenu();
+    return;
+  }
+
+  menuOpen = key;
+  currentSubMenu = null;
+
+  const menu = MENUS[key];
+  if (!menu) return;
+
+  let html = `<div class="menu-header">${menu.label}</div>`;
+
+  menu.items.forEach(item => {
+    if (item.type === 'separator') {
+      html += '<div class="menu-separator"></div>';
+    } else {
+      const disabled = item.enabled === false;
+      const tooltipText = item.tooltip || item.reason || item.label;
+
+      html += `<div class="menu-item ${disabled ? 'disabled' : ''}"
+                   onclick="${disabled ? '' : `handleItemClick('${item.id}')`}"
+                   onmouseenter="showTooltip(event, '${tooltipText.replace(/'/g, "\\'")}')"
+                   onmouseleave="hideTooltip()">
+                <span>${item.label}</span>
+                ${item.hotkey ? `<span class="menu-hotkey">${item.hotkey}</span>` : ''}
+                ${item.submenu ? '<span style="margin-left:auto;">▶</span>' : ''}
+              </div>`;
+    }
+  });
+
+  menuPopup.innerHTML = html;
+  menuPopup.style.display = 'block';
+  menuPopup.style.visibility = 'hidden';
+  menuPopup.style.left = '0px';
+  menuPopup.style.top = '0px';
+
+  const measured = menuPopup.getBoundingClientRect();
+  const popupW = measured.width;
+  const popupH = measured.height;
+
+  let left = btnRect.x + btnRect.w / 2 - popupW / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - popupW - 8));
+
+  let top = btnRect.y - popupH - 8;
+  if (top < 8) {
+    top = btnRect.y + btnRect.h + 8;
+  }
+  if (top + popupH > window.innerHeight - 8) {
+    top = Math.max(8, window.innerHeight - popupH - 8);
+  }
+
+  menuPopup.style.left = left + 'px';
+  menuPopup.style.top = top + 'px';
+  menuPopup.style.visibility = 'visible';
+}
+
+window.handleItemClick = function(id) {
+  const menu = MENUS[menuOpen];
+  const item = menu.items.find(i => i.id === id);
+
+  if (item && item.submenu) {
+    showSubMenu(item.submenu);
+  } else if (item && item.toggle && id === 'pause') {
+    actions.pause();
+  } else if (actions[id]) {
+    actions[id]();
+  } else {
+    log(`未实现: ${id}`);
+    closeMenu();
+  }
+};
+
+function showSubMenu(subKey) {
+  const subMenu = SUB_MENUS[subKey];
+  if (!subMenu) return;
+
+  currentSubMenu = subKey;
+
+  let html = `<div class="menu-header">${subMenu.label}</div>`;
+
+  subMenu.items.forEach(item => {
+    const tooltipText = item.tooltip || item.label;
+    html += `<div class="menu-item"
+                 onclick="handleSubItemClick('${item.id}')"
+                 onmouseenter="showTooltip(event, '${tooltipText.replace(/'/g, "\\'")}')"
+                 onmouseleave="hideTooltip()">
+              <span>${item.label}</span>
+              ${item.hotkey ? `<span class="menu-hotkey">${item.hotkey}</span>` : ''}
+            </div>`;
+  });
+
+  menuPopup.innerHTML = html;
+  menuPopup.style.visibility = 'hidden';
+  menuPopup.style.left = '0px';
+  menuPopup.style.top = '0px';
+
+  const measured = menuPopup.getBoundingClientRect();
+  const popupW = measured.width;
+  const popupH = measured.height;
+
+  let left = 8;
+  let top = 8;
+  const menuBtn =
+    menuOpen && clickables.length
+      ? clickables.find((c) => c.menuKey === menuOpen && c.action === `menu_${menuOpen}`)
+      : null;
+  if (menuBtn) {
+    const vr = canvasRectToViewport(menuBtn);
+    left = vr.x + vr.w / 2 - popupW / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - popupW - 8));
+    top = vr.y - popupH - 8;
+    if (top < 8) top = vr.y + vr.h + 8;
+    if (top + popupH > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - popupH - 8);
+    }
+  }
+
+  menuPopup.style.left = left + 'px';
+  menuPopup.style.top = top + 'px';
+  menuPopup.style.visibility = 'visible';
+}
+
+window.handleSubItemClick = function(id) {
+  if (actions[id]) {
+    actions[id]();
+  } else {
+    log(`未实现: ${id}`);
+    closeMenu();
+  }
+};
+
+window.showTooltip = function(e, text) {
+  tooltip.innerHTML = text.replace(/\n/g, '<br>');
+  tooltip.style.display = 'block';
+  tooltip.style.left = (e.clientX + 15) + 'px';
+  tooltip.style.top = (e.clientY + 15) + 'px';
+};
+
+window.hideTooltip = function() {
+  tooltip.style.display = 'none';
+};
+
+// ===== 事件处理 =====
+canvas.addEventListener('mousemove', (e) => {
+  const rect2 = canvas.getBoundingClientRect();
+  const scaleX = W / rect2.width;
+  const scaleY = H / rect2.height;
+  mouseX = (e.clientX - rect2.left) * scaleX;
+  mouseY = (e.clientY - rect2.top) * scaleY;
+
+  hoveredItem = null;
+  for (const item of clickables) {
+    if (mouseX >= item.x && mouseX <= item.x + item.w &&
+        mouseY >= item.y && mouseY <= item.y + item.h) {
+      hoveredItem = item;
+      break;
+    }
+  }
+
+  canvas.style.cursor = hoveredItem ? 'pointer' : 'default';
+});
+
+canvas.addEventListener('click', (e) => {
+  const rect2 = canvas.getBoundingClientRect();
+  const scaleX = W / rect2.width;
+  const scaleY = H / rect2.height;
+  const mx = (e.clientX - rect2.left) * scaleX;
+  const my = (e.clientY - rect2.top) * scaleY;
+
+  for (const item of clickables) {
+    if (mx >= item.x && mx <= item.x + item.w &&
+        my >= item.y && my <= item.y + item.h) {
+      if (item.action.startsWith('menu_')) {
+        const key = item.menuKey;
+        showMenu(key, canvasRectToViewport(item));
+      }
+      break;
+    }
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('canvas') && !e.target.closest('.menu-popup')) {
+    closeMenu();
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeMenu();
+  }
+  if (e.key === ' ' && !e.target.closest('input')) {
+    e.preventDefault();
+    actions.pause();
+  }
+});
+
+// ===== 主循环 =====
+function render() {
+  clickables = [];
+  rect(0, 0, W, H, C.bg);
+
+  // 顶栏
+  rect(0, 0, W, LAYOUT.top, '#151525');
+  stroke(0, 0, W, LAYOUT.top, C.border, 2);
+  text('Hermes数字工作室 - 底部菜单设计', 15, 28, C.gold, 14);
+  text('基于PRD完整设计', 400, 28, '#888', 11);
+
+  // 中央说明区
+  const cx = CENTER_X + 100;
+  const cw = CENTER_W - 200;
+  rect(cx, 80, cw, H - 180, 'rgba(26,26,48,0.95)');
+  stroke(cx, 80, cw, H - 180, C.border, 2);
+
+  text('📋 底部菜单完整设计（基于PRD）', cx + cw/2, 110, C.gold, 14, 'center');
+
+  const menuDescs = [
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+    '🎮 游戏 - 暂停/速度/时间/全屏',
+    '',
+    '👥 Agent - 添加(通过Profile)/列表/工作模式/休息模式',
+    '    来源: Hermes Profile配置，非硬编码',
+    '',
+    '📋 任务 - 新建/列表/历史/竞争/协作/奖励池/周目标',
+    '    竞争: 纯随机抽签 | 协作: 效率+30%',
+    '',
+    '👑 城主 - 信息/等级/积分 + 城主技能（激励/精准分配/灵感/光环/全知）+ 成就/庆功/复盘',
+    '    技能与成长合并在同一菜单，减少底栏按钮',
+    '',
+    '💬 社交 - 关系图谱/聊天记录/打招呼/协作交流/情绪感染',
+    '    触发: 休息室/会议室/资料室/机房 | 关系≥11 | 10分钟冷却',
+    '',
+    '🏠 基地 - 建造/维修/休息室升级/机房升级/解锁办公室/零食机',
+    '    休息室Lv.2: 500积分 | Lv.3: 1500积分 | 零食机: 300积分',
+    '',
+    '🎲 事件 - 突发挑战/周期事件/里程碑/危机处理',
+    '    小型: 每3天 | 中型: 每周 | 大型: 每月',
+    '',
+    '❓ 帮助 - 新手引导/游戏手册/快捷键/设置',
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+    '💡 点击底部菜单按钮打开弹出菜单',
+    '💡 灰色选项表示功能未实现或需要特定条件',
+    '💡 按 Space 暂停游戏，按 Esc 关闭菜单',
+  ];
+
+  menuDescs.forEach((line, i) => {
+    ctx.fillStyle = line.startsWith('━') ? '#444' :
+                   line.startsWith('🎮') || line.startsWith('👥') ||
+                   line.startsWith('📋') || line.startsWith('⭐') ||
+                   line.startsWith('💬') || line.startsWith('🏠') ||
+                   line.startsWith('👑') || line.startsWith('🎲') ||
+                   line.startsWith('❓') ? C.gold : C.text;
+    ctx.font = '10px Consolas';
+    ctx.fillText(line, cx + 20, 145 + i * 18);
+  });
+
+  // 底部栏
+  drawBottomBar();
+
+  // 日志面板
+  const logX = W - LAYOUT.right;
+  rect(logX, LAYOUT.top, LAYOUT.right, H - LAYOUT.top - LAYOUT.bottom, 'rgba(26,26,48,0.9)');
+  stroke(logX, LAYOUT.top, LAYOUT.right, H - LAYOUT.top - LAYOUT.bottom, C.border, 2);
+  text('📋 操作日志', logX + 12, LAYOUT.top + 25, C.gold, 12);
+
+  logs.forEach((log, i) => {
+    ctx.fillStyle = '#666';
+    ctx.font = '9px Consolas';
+    ctx.fillText(log.time, logX + 12, LAYOUT.top + 50 + i * 20);
+    ctx.fillStyle = C.text;
+    ctx.fillText(log.msg, logX + 70, LAYOUT.top + 50 + i * 20);
+  });
+
+  // 初始化日志
+  if (logs.length === 0) {
+    log('底部菜单系统已就绪');
+    log('点击菜单查看功能');
+  }
+
+  requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>

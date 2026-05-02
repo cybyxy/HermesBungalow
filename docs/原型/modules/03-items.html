@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 03 物品渲染</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #0a0a15; color: #eee; font-family: Consolas, monospace; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script>
+// ===== Hermes数字工作室 - 03 物品渲染 =====
+// 职责：绘制房间内的物品（桌子、沙发、书架、咖啡机、贩卖机等）
+
+const canvas = document.getElementById('ui');
+canvas.width = 1920;
+canvas.height = 1000;
+const ctx = canvas.getContext('2d');
+
+// ===== 物品颜色 =====
+const C = {
+  desk: '#228B22',
+  monitor: '#DC143C',
+  keyboard: '#808080',
+  chair: '#FF6347',
+  shelf: '#9370DB',
+  plant: '#20B2AA',
+  sofa: '#8FBC8F',
+  server: '#2a2a4a',
+  coffee: '#8B4513',
+  vending: '#CD853F',
+};
+
+// ===== 基础绘图函数 =====
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+// ===== 桌子 =====
+function drawDesk(x, y, w, h, hasMonitor = true) {
+  // 桌面
+  rect(x, y, w, h, C.desk);
+  
+  // 桌腿
+  rect(x + 2, y + h, 4, 8, '#8B4513');
+  rect(x + w - 6, y + h, 4, 8, '#8B4513');
+  
+  // 显示器
+  if (hasMonitor) {
+    rect(x + w/2 - 9, y - 12, 18, 12, C.monitor);
+    rect(x + w/2 - 7, y - 10, 14, 2, '#333');
+    // 显示器支架
+    rect(x + w/2 - 2, y, 4, 4, '#333');
+  }
+}
+
+// ===== 沙发 =====
+function drawSofa(x, y) {
+  // 底座
+  rect(x, y, 55, 22, C.sofa);
+  // 靠背
+  rect(x, y - 12, 55, 12, C.sofa);
+  // 扶手
+  rect(x, y - 8, 6, 30, C.sofa);
+  rect(x + 49, y - 8, 6, 30, C.sofa);
+}
+
+// ===== 书架 =====
+function drawShelf(x, y) {
+  // 书架主体
+  rect(x, y, 40, 35, C.shelf);
+  // 书籍
+  rect(x + 3, y + 3, 10, 8, '#8B4513');
+  rect(x + 15, y + 2, 8, 10, '#A0522D');
+  rect(x + 26, y + 5, 6, 6, '#CD853F');
+  rect(x + 3, y + 14, 12, 8, '#D2691E');
+  rect(x + 18, y + 15, 10, 6, '#BC8F8F');
+}
+
+// ===== 服务器机柜 =====
+function drawServer(x, y) {
+  // 机柜
+  rect(x, y, 30, 50, C.server);
+  // 服务器指示灯
+  for (let i = 0; i < 4; i++) {
+    rect(x + 3, y + 4 + i * 11, 24, 7, '#333');
+    // LED灯
+    ctx.fillStyle = i % 2 === 0 ? '#00FF00' : '#FF0000';
+    ctx.fillRect(x + 5, y + 6 + i * 11, 3, 3);
+    ctx.fillRect(x + 10, y + 6 + i * 11, 3, 3);
+  }
+}
+
+// ===== 咖啡机 =====
+function drawCoffeeMachine(x, y) {
+  // 机身
+  rect(x, y, 24, 32, C.coffee);
+  // 出水口
+  rect(x + 8, y + 20, 8, 6, '#333');
+  // 杯子
+  rect(x + 6, y + 26, 12, 8, '#FFF');
+  // 标签
+  text('咖啡', x + 12, y + 16, '#FFF', 7, 'center');
+}
+
+// ===== 零食贩卖机 =====
+function drawVendingMachine(x, y) {
+  // 机身
+  rect(x, y, 30, 45, C.vending);
+  // 玻璃窗
+  rect(x + 3, y + 3, 24, 25, '#87CEEB');
+  // 商品
+  rect(x + 6, y + 6, 6, 8, '#FF6347');
+  rect(x + 14, y + 6, 6, 8, '#4169E1');
+  rect(x + 6, y + 16, 6, 8, '#32CD32');
+  rect(x + 14, y + 16, 6, 8, '#FFD700');
+  // 投币口
+  rect(x + 8, y + 32, 14, 6, '#333');
+  // 按钮
+  rect(x + 6, y + 40, 8, 4, '#DC143C');
+  rect(x + 16, y + 40, 8, 4, '#228B22');
+}
+
+// ===== 盆栽 =====
+function drawPlant(x, y) {
+  // 花盆
+  rect(x, y + 10, 10, 15, '#8B4513');
+  // 植物
+  rect(x - 2, y, 14, 12, C.plant);
+  rect(x + 2, y - 4, 6, 6, '#228B22');
+}
+
+// ===== 椅子 =====
+function drawChair(x, y) {
+  // 座垫
+  rect(x, y, 16, 12, C.chair);
+  // 靠背
+  rect(x, y - 10, 16, 10, C.chair);
+  // 椅腿
+  rect(x + 2, y + 12, 3, 6, '#333');
+  rect(x + 11, y + 12, 3, 6, '#333');
+}
+
+// ===== 床 =====
+function drawBed(x, y) {
+  // 床架
+  rect(x, y, 50, 25, '#DEB887');
+  // 床垫
+  rect(x + 2, y + 2, 46, 18, '#FFFAF0');
+  // 枕头
+  rect(x + 4, y + 4, 12, 10, '#FFF');
+  // 被子
+  rect(x + 18, y + 4, 28, 14, '#87CEEB');
+}
+
+// ===== 键盘 =====
+function drawKeyboard(x, y) {
+  rect(x, y, 18, 8, C.keyboard);
+  // 键位示意
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 5; j++) {
+      ctx.fillStyle = '#555';
+      ctx.fillRect(x + 2 + j * 3, y + 1 + i * 2, 2, 1);
+    }
+  }
+}
+
+// ===== 主渲染 - 展示所有物品 =====
+function render() {
+  rect(0, 0, 1920, 1000, '#0a0a15');
+  
+  // 标题
+  text('物品渲染展示', 960, 30, '#FFD700', 16, 'center');
+  
+  // 休息室物品
+  text('休息室', 150, 80, '#fff', 12);
+  drawSofa(100, 90);
+  drawCoffeeMachine(170, 80);
+  drawVendingMachine(210, 75);
+  drawPlant(260, 90);
+  
+  // 资料室物品
+  text('资料室', 400, 80, '#fff', 12);
+  drawShelf(350, 90);
+  drawPlant(400, 90);
+  
+  // 会议室物品
+  text('会议室', 600, 80, '#fff', 12);
+  drawDesk(550, 100, 60, 25);
+  drawChair(615, 110);
+  
+  // 机房物品
+  text('机房', 800, 80, '#fff', 12);
+  drawServer(750, 90);
+  drawServer(790, 90);
+  
+  // 办公室物品
+  text('办公室', 1000, 80, '#fff', 12);
+  drawDesk(950, 100, 55, 25);
+  drawMonitor(970, 85);
+  drawKeyboard(975, 100);
+  drawChair(1010, 110);
+  drawPlant(1015, 90);
+  
+  // 宿舍物品
+  text('宿舍', 1200, 80, '#fff', 12);
+  drawBed(1150, 90);
+  
+  // 图例
+  text('图例', 100, 160, '#aaa', 10);
+  const items = [
+    {fn: () => drawDesk(100, 170, 40, 20), label: '桌子'},
+    {fn: () => drawSofa(160, 170), label: '沙发'},
+    {fn: () => drawShelf(230, 165), label: '书架'},
+    {fn: () => drawServer(290, 160), label: '服务器'},
+    {fn: () => drawCoffeeMachine(340, 165), label: '咖啡机'},
+    {fn: () => drawVendingMachine(380, 160), label: '贩卖机'},
+    {fn: () => drawPlant(430, 170), label: '盆栽'},
+    {fn: () => drawChair(480, 170), label: '椅子'},
+    {fn: () => drawBed(530, 165), label: '床'},
+  ];
+  
+  items.forEach((item, i) => {
+    item.fn();
+    text(item.label, 100 + i * 55, 210, '#888', 8, 'center');
+  });
+}
+
+render();
+</script>
+</body>
+</html>

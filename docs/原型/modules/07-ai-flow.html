@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 07 AI推理流程</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #0a0a15; color: #eee; font-family: Consolas, monospace; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script>
+// ===== Hermes数字工作室 - 07 AI推理流程 =====
+// 职责：展示用户输入 → AI推理 → 状态更新 → 文档更新 → 前端推送的完整流程
+
+const canvas = document.getElementById('ui');
+canvas.width = 1920;
+canvas.height = 1000;
+const ctx = canvas.getContext('2d');
+
+// ===== 颜色 =====
+const C = {
+  bg: '#0a0a15',
+  panel: '#1a1a30',
+  border: '#333355',
+  text: '#aaa',
+  bright: '#fff',
+  gold: '#FFD700',
+  green: '#228B22',
+  blue: '#4169E1',
+  purple: '#9370DB',
+  orange: '#FF8C00',
+  red: '#DC143C',
+  step: '#2a3a5a',
+  stepActive: '#3a4a6a',
+  arrow: '#FFD700',
+};
+
+// ===== 基础绘图函数 =====
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function stroke(x, y, w, h, color, lw = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.strokeRect(x, y, w, h);
+}
+
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+// ===== 流程步骤类 =====
+class FlowStep {
+  constructor(x, y, w, h, title, description, icon) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.title = title;
+    this.description = description;
+    this.icon = icon;
+    this.active = false;
+    this.completed = false;
+    this.details = [];
+  }
+  
+  draw() {
+    // 背景
+    let bg = C.step;
+    if (this.completed) bg = '#1a3a1a';
+    else if (this.active) bg = C.stepActive;
+    
+    rect(this.x, this.y, this.w, this.h, bg);
+    stroke(this.x, this.y, this.w, this.h, this.completed ? C.green : this.active ? C.gold : C.border, this.active ? 2 : 1);
+    
+    // 图标
+    text(this.icon, this.x + 20, this.y + 25, C.gold, 16, 'center');
+    
+    // 标题
+    ctx.fillStyle = C.bright;
+    ctx.font = 'bold 11px Consolas';
+    ctx.textAlign = 'left';
+    ctx.fillText(this.title, this.x + 45, this.y + 22);
+    
+    // 描述
+    ctx.fillStyle = C.text;
+    ctx.font = '9px Consolas';
+    ctx.fillText(this.description, this.x + 45, this.y + 38);
+    
+    // 完成标记
+    if (this.completed) {
+      text('✓', this.x + this.w - 25, this.y + 22, C.green, 14, 'center');
+    }
+    
+    ctx.textAlign = 'left';
+  }
+  
+  setActive(active) {
+    this.active = active;
+  }
+  
+  setCompleted(completed) {
+    this.completed = completed;
+  }
+  
+  addDetail(detail) {
+    this.details.push(detail);
+  }
+}
+
+// ===== 流程箭头 =====
+function drawArrow(x1, y1, x2, y2, label = '') {
+  // 箭头线
+  ctx.strokeStyle = C.arrow;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  
+  // 箭头头部
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const headLen = 10;
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6), y2 - headLen * Math.sin(angle - Math.PI / 6));
+  ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6), y2 - headLen * Math.sin(angle + Math.PI / 6));
+  ctx.closePath();
+  ctx.fillStyle = C.arrow;
+  ctx.fill();
+  
+  // 标签
+  if (label) {
+    const mx = (x1 + x2) / 2;
+    const my = (y1 + y2) / 2 - 10;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(mx - 30, my - 8, 60, 16);
+    ctx.fillStyle = C.text;
+    ctx.font = '8px Consolas';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, mx, my + 4);
+    ctx.textAlign = 'left';
+  }
+}
+
+// ===== 输入框模拟 =====
+class InputSimulator {
+  constructor(x, y, w, h) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.value = '';
+    this.focused = true;
+    this.placeholder = '输入指令或 @Agent';
+    this.cursorVisible = true;
+  }
+  
+  draw() {
+    rect(this.x, this.y, this.w, this.h, '#1a1a30');
+    stroke(this.x, this.y, this.w, this.h, this.focused ? C.gold : C.border, 2);
+    
+    if (this.value) {
+      ctx.fillStyle = C.bright;
+      ctx.font = '11px Consolas';
+      ctx.fillText(this.value, this.x + 10, this.y + this.h / 2 + 4);
+    } else {
+      ctx.fillStyle = '#555';
+      ctx.font = '11px Consolas';
+      ctx.fillText(this.placeholder, this.x + 10, this.y + this.h / 2 + 4);
+    }
+    
+    // 光标
+    if (this.focused && this.cursorVisible) {
+      const tw = ctx.measureText(this.value).width;
+      ctx.fillStyle = C.bright;
+      ctx.fillRect(this.x + 10 + tw, this.y + 10, 1, this.h - 20);
+    }
+  }
+  
+  setValue(v) {
+    this.value = v;
+  }
+}
+
+// ===== 日志面板 =====
+class LogPanel {
+  constructor(x, y, w, h) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.logs = [];
+  }
+  
+  add(type, content) {
+    const time = new Date().toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+    this.logs.push({type, content, time});
+    if (this.logs.length > 50) this.logs.shift();
+  }
+  
+  draw() {
+    rect(this.x, this.y, this.w, this.h, 'rgba(26,26,48,0.9)');
+    stroke(this.x, this.y, this.w, this.h, C.border);
+    
+    text('📋 执行日志', this.x + 10, this.y + 20, C.gold, 11);
+    
+    const startY = this.y + 35;
+    const lineH = 14;
+    
+    this.logs.slice(-20).forEach((log, i) => {
+      const y = startY + i * lineH;
+      if (y > this.y + this.h - 15) return;
+      
+      const colors = {
+        input: C.blue,
+        parse: C.purple,
+        update: C.orange,
+        doc: C.green,
+        push: C.gold,
+        response: '#888',
+      };
+      
+      ctx.fillStyle = '#666';
+      ctx.font = '8px Consolas';
+      ctx.fillText(log.time, this.x + 8, y);
+      
+      ctx.fillStyle = colors[log.type] || '#888';
+      ctx.fillText('[' + log.type + ']', this.x + 75, y);
+      
+      ctx.fillStyle = C.text;
+      ctx.fillText(log.content.substring(0, 40), this.x + 130, y);
+    });
+  }
+}
+
+// ===== 主渲染 =====
+const LAYOUT = {top: 44, bottom: 56, left: 260, right: 260};
+const inputSim = new InputSimulator(LAYOUT.left + 20, 80, 400, 36);
+const logPanel = new LogPanel(LAYOUT.left + 20, 520, 400, 200);
+
+// 流程步骤
+const steps = [
+  new FlowStep(LAYOUT.left + 20, 140, 380, 55, '1. 用户输入', '普通输入/@指定Agent', '💬'),
+  new FlowStep(LAYOUT.left + 20, 210, 380, 55, '2. 意图解析', '识别命令/对话/询问/干预', '🔍'),
+  new FlowStep(LAYOUT.left + 20, 280, 380, 55, '3. 状态更新', '数值/任务/位置/社交', '📊'),
+  new FlowStep(LAYOUT.left + 20, 350, 380, 55, '4. 事件检查', '事件/成就/里程碑', '🎯'),
+  new FlowStep(LAYOUT.left + 20, 420, 380, 55, '5. 文档更新', 'PRD + 子系统文档', '📄'),
+];
+
+// 输入预设
+const presets = [
+  '让阿猿去休息室',
+  '@小美 今天工作怎么样？',
+  '/task A 编写代码',
+  '大家辛苦了！',
+];
+
+let currentPreset = 0;
+let stepIndex = 0;
+let autoPlay = false;
+let autoTimer = null;
+
+// ===== 事件 =====
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * canvas.width / rect.width;
+  const my = (e.clientY - rect.top) * canvas.height / rect.height;
+  
+  // 检查预设按钮
+  presets.forEach((preset, i) => {
+    const bx = LAYOUT.left + 20 + i * 95;
+    const by = 130;
+    if (mx >= bx && mx <= bx + 90 && my >= by && my <= by + 25) {
+      inputSim.setValue(preset);
+      currentPreset = i;
+    }
+  });
+  
+  // 执行按钮
+  const execBtn = {x: LAYOUT.left + 400, y: 130, w: 80, h: 25};
+  if (mx >= execBtn.x && mx <= execBtn.x + execBtn.w && my >= execBtn.y && my <= execBtn.y + execBtn.h) {
+    runFlow();
+  }
+  
+  // 自动播放
+  const autoBtn = {x: LAYOUT.left + 490, y: 130, w: 80, h: 25};
+  if (mx >= autoBtn.x && mx <= autoBtn.x + autoBtn.w && my >= autoBtn.y && my <= autoBtn.y + autoBtn.h) {
+    autoPlay = !autoPlay;
+    if (autoPlay) {
+      inputSim.setValue(presets[currentPreset]);
+      runFlow();
+    } {
+      clearInterval(autoTimer);
+    }
+  }
+});
+
+// 执行流程
+function runFlow() {
+  // 重置
+  steps.forEach(s => { s.setActive(false); s.setCompleted(false); });
+  logPanel.logs = [];
+  
+  const input = inputSim.value || presets[currentPreset];
+  logPanel.add('input', '收到输入: ' + input.substring(0, 30));
+  
+  // 模拟流程
+  const flow = [
+    {idx: 0, delay: 300, log: {type: 'parse', content: '识别为: ' + (input.startsWith('@') ? '@指定Agent' : input.startsWith('/') ? '命令' : '普通输入')}},
+    {idx: 1, delay: 600, log: {type: 'parse', content: '意图: 移动/对话/命令'}},
+    {idx: 2, delay: 900, log: {type: 'update', content: '状态更新: 能量-5, 位置变化'}},
+    {idx: 3, delay: 1200, log: {type: 'update', content: '任务: 已分配给 阿猿'}},
+    {idx: 4, delay: 1500, log: {type: 'doc', content: '更新: PRD + 任务系统文档'}},
+    {idx: 5, delay: 1800, log: {type: 'push', content: '推送: agent:update → 前端'}},
+    {idx: 6, delay: 2100, log: {type: 'response', content: '生成回复: "好的，已安排"'}},
+  ];
+  
+  flow.forEach(f => {
+    setTimeout(() => {
+      steps[f.idx].setActive(true);
+      steps[f.idx].setCompleted(true);
+      logPanel.add(f.log.type, f.log.content);
+      
+      if (f.idx === flow.length - 1) {
+        logPanel.add('response', '流程完成 ✓');
+      }
+    }, f.delay);
+  });
+}
+
+// 自动播放
+function autoRun() {
+  if (!autoPlay) return;
+  
+  setTimeout(() => {
+    currentPreset = (currentPreset + 1) % presets.length;
+    inputSim.setValue(presets[currentPreset]);
+    runFlow();
+    autoRun();
+  }, 3000);
+}
+
+function render() {
+  rect(0, 0, 1920, 1000, C.bg);
+  
+  // 顶栏
+  rect(0, 0, 1920, LAYOUT.top, '#151525');
+  stroke(0, 0, 1920, LAYOUT.top, C.border, 2);
+  text('Hermes数字工作室 - AI推理流程', 15, 28, C.gold, 14);
+  text('强制要求：每次用户输入 → 必须触发AI推理', 400, 28, C.text, 11);
+  
+  // 输入区域
+  text('💬 输入框', LAYOUT.left + 20, 70, C.bright, 11);
+  inputSim.draw();
+  
+  // 预设按钮
+  presets.forEach((preset, i) => {
+    const bx = LAYOUT.left + 20 + i * 95;
+    const by = 130;
+    const selected = i === currentPreset;
+    
+    ctx.fillStyle = selected ? '#3a4a6a' : '#2a3a5a';
+    ctx.fillRect(bx, by, 90, 25);
+    ctx.strokeStyle = selected ? C.gold : C.border;
+    ctx.strokeRect(bx, by, 90, 25);
+    
+    ctx.fillStyle = C.bright;
+    ctx.font = '8px Consolas';
+    ctx.textAlign = 'center';
+    ctx.fillText(preset.substring(0, 12), bx + 45, by + 16);
+  });
+  
+  // 执行按钮
+  ctx.fillStyle = '#2a5a2a';
+  ctx.fillRect(LAYOUT.left + 400, 130, 80, 25);
+  ctx.strokeStyle = C.green;
+  ctx.strokeRect(LAYOUT.left + 400, 130, 80, 25);
+  ctx.fillStyle = '#fff';
+  ctx.font = '10px Consolas';
+  ctx.textAlign = 'center';
+  ctx.fillText('▶ 执行', LAYOUT.left + 440, 147);
+  
+  // 自动播放
+  ctx.fillStyle = autoPlay ? '#5a2a2a' : '#2a3a5a';
+  ctx.fillRect(LAYOUT.left + 490, 130, 80, 25);
+  ctx.strokeStyle = autoPlay ? C.red : C.border;
+  ctx.strokeRect(LAYOUT.left + 490, 130, 80, 25);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(autoPlay ? '⏸ 停止' : '▶ 自动', LAYOUT.left + 530, 147);
+  
+  ctx.textAlign = 'left';
+  
+  // 流程步骤
+  steps.forEach(step => step.draw());
+  
+  // 箭头
+  for (let i = 0; i < steps.length - 1; i++) {
+    const y1 = steps[i].y + steps[i].h;
+    const y2 = steps[i + 1].y;
+    const x = steps[i].x + steps[i].w / 2;
+    drawArrow(x, y1 + 5, x, y2 - 5);
+  }
+  
+  // 日志面板
+  logPanel.draw();
+  
+  // 右侧说明
+  const infoX = 1920 - LAYOUT.right - 300;
+  rect(infoX, 80, 300, 640, 'rgba(26,26,48,0.9)');
+  stroke(infoX, 80, 300, 640, C.border);
+  
+  text('📖 AI推理流程说明', infoX + 15, 105, C.gold, 12);
+  
+  const infos = [
+    {title: '普通输入', content: '无@指定 → 主agent(Hermes)AI推理', color: C.blue},
+    {title: '@指定输入', content: '@Agent名 → 目标Agent AI推理', color: C.purple},
+    {title: '意图解析', content: '识别命令/对话/询问/干预', color: C.text},
+    {title: '状态更新', content: '数值/任务/位置/社交变化', color: C.orange},
+    {title: '事件检查', content: '事件/成就/里程碑触发', color: C.red},
+    {title: '文档更新', content: 'PRD + 相关子系统文档', color: C.green},
+    {title: '前端推送', content: 'agent:update / task:update', color: C.gold},
+    {title: '响应生成', content: '回复内容 + Agent响应', color: '#888'},
+  ];
+  
+  infos.forEach((info, i) => {
+    const y = 130 + i * 65;
+    
+    ctx.fillStyle = info.color;
+    ctx.font = 'bold 10px Consolas';
+    ctx.fillText(info.title, infoX + 15, y);
+    
+    ctx.fillStyle = C.text;
+    ctx.font = '9px Consolas';
+    const lines = [];
+    let line = '';
+    for (const char of info.content) {
+      line += char;
+      if (line.length >= 30) {
+        lines.push(line);
+        line = '';
+      }
+    }
+    if (line) lines.push(line);
+    lines.forEach((l, li) => {
+      ctx.fillText(l, infoX + 15, y + 15 + li * 14);
+    });
+  });
+  
+  // 底栏
+  const bottomY = 1000 - LAYOUT.bottom;
+  rect(0, bottomY, 1920, LAYOUT.bottom, '#151525');
+  stroke(0, bottomY, 1920, LAYOUT.bottom, C.border, 2);
+  text('💡 点击"执行"或"自动"演示完整流程', 15, bottomY + 24, '#888', 10);
+  
+  requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>

@@ -46,7 +46,6 @@ _OPENAI_COMPAT_ENDPOINTS = {
 # but the backend re-fetches on every /api/models/live call.
 
 from api.config import (
-    GATEWAY_MODE,
     STATE_DIR,
     SESSION_DIR,
     DEFAULT_WORKSPACE,
@@ -915,26 +914,9 @@ def handle_get(handler, parsed) -> bool:
         return _handle_list_dir(handler, parsed)
 
     if parsed.path == "/api/personalities":
-        # Read personalities from config.yaml agent.personalities section
-        # (matches hermes-agent CLI behavior, not filesystem SOUL.md approach)
-        from api.config import reload_config as _reload_cfg
+        from api.hermes_personalities import personalities_payload_for_api
 
-        _reload_cfg()  # pick up config.yaml changes without server restart
-        from api.config import get_config as _get_cfg
-
-        _cfg = _get_cfg()
-        agent_cfg = _cfg.get("agent", {})
-        raw_personalities = agent_cfg.get("personalities", {})
-        personalities = []
-        if isinstance(raw_personalities, dict):
-            for name, value in raw_personalities.items():
-                desc = ""
-                if isinstance(value, dict):
-                    desc = value.get("description", "")
-                elif isinstance(value, str):
-                    desc = value[:80] + ("..." if len(value) > 80 else "")
-                personalities.append({"name": name, "description": desc})
-        return j(handler, {"personalities": personalities})
+        return j(handler, personalities_payload_for_api())
 
     if parsed.path == "/api/git-info":
         qs = parse_qs(parsed.query)
@@ -2042,17 +2024,6 @@ def _handle_gateway_sse_stream(handler, parsed):
     Streams change events from the gateway watcher background thread.
     Only active when show_cli_sessions (show_agent_sessions) setting is enabled.
     """
-    if not GATEWAY_MODE:
-        return j(
-            handler,
-            {
-                "enabled": False,
-                "ok": False,
-                "error": "gateway mode disabled",
-                "fallback_poll_ms": 30000,
-            },
-            status=404,
-        )
     settings = load_settings()
 
     from api.gateway_watcher import get_watcher
@@ -2786,24 +2757,34 @@ def _handle_chat_start(handler, body):
         return bad(handler, str(e))
     requested_model = body.get("model") or s.model
     model, normalized_model = _resolve_compatible_session_model(requested_model)
-    # Prevent duplicate runs in the same session while a stream is still active.
-    # This commonly happens after page refresh/reconnect races and can produce
-    # duplicated clarify cards for what appears to be a single user request.
+    # If a stream is still registered, a previous turn is in-flight (slow model,
+    # clarify/approval wait, or the browser closed SSE while the server kept
+    # generating). Returning 409 wedged the session for users who only see an
+    # idle UI. Supersede: cancel the old stream, then start the new message.
+    #
+    # Stale active_stream_id with no STREAMS entry (crashed worker, etc.) is cleared.
     current_stream_id = getattr(s, "active_stream_id", None)
     if current_stream_id:
         with STREAMS_LOCK:
             current_active = current_stream_id in STREAMS
         if current_active:
-            return j(
-                handler,
-                {
-                    "error": "session already has an active stream",
-                    "active_stream_id": current_stream_id,
-                },
-                status=409,
+            logger.info(
+                "chat/start superseding active stream %s for session %s",
+                current_stream_id[:12],
+                (s.session_id or "")[:12],
             )
-        # Stale stream id from a previous run; clear and continue.
-        s.active_stream_id = None
+            cancel_stream(current_stream_id)
+            with _get_session_agent_lock(s.session_id):
+                s = get_session(body["session_id"])
+                if getattr(s, "active_stream_id", None) == current_stream_id:
+                    s.active_stream_id = None
+                    s.pending_user_message = None
+                    s.pending_attachments = []
+                    s.pending_started_at = None
+                    s.save(skip_index=True)
+        else:
+            # Stale stream id from a previous run; clear and continue.
+            s.active_stream_id = None
     stream_id = uuid.uuid4().hex
     with _get_session_agent_lock(s.session_id):
         s.workspace = workspace
@@ -2817,9 +2798,12 @@ def _handle_chat_start(handler, body):
     q = queue.Queue()
     with STREAMS_LOCK:
         STREAMS[stream_id] = q
+    _bungalow_aid = body.get("bungalow_agent_id") or body.get("agent_id")
+    _bungalow_aid = str(_bungalow_aid).strip() if _bungalow_aid else None
     thr = threading.Thread(
         target=_run_agent_streaming,
         args=(s.session_id, msg, model, workspace, stream_id, attachments),
+        kwargs={"bungalow_agent_id": _bungalow_aid or None},
         daemon=True,
     )
     thr.start()
@@ -2872,18 +2856,21 @@ def _handle_chat_sync(handler, body):
                     f"[webui] WARNING: resolve_runtime_provider failed: {_e}",
                     flush=True,
                 )
-            agent = AIAgent(
-                model=_model,
-                provider=_provider,
-                base_url=_base_url,
-                api_key=_api_key,
-                # Identify browser-originated sessions as WebUI so Hermes Agent
-                # does not inject CLI-specific terminal/output guidance.
-                platform="webui",
-                quiet_mode=True,
-                enabled_toolsets=_resolve_cli_toolsets(),
-                session_id=s.session_id,
-            )
+            from api.hermes_compression_overlay import bungalow_hermes_load_config_overlay
+
+            with bungalow_hermes_load_config_overlay():
+                agent = AIAgent(
+                    model=_model,
+                    provider=_provider,
+                    base_url=_base_url,
+                    api_key=_api_key,
+                    # Identify browser-originated sessions as WebUI so Hermes Agent
+                    # does not inject CLI-specific terminal/output guidance.
+                    platform="webui",
+                    quiet_mode=True,
+                    enabled_toolsets=_resolve_cli_toolsets(),
+                    session_id=s.session_id,
+                )
             workspace_ctx = f"[Workspace: {s.workspace}]\n"
             workspace_system_msg = (
                 f"Active workspace at session start: {s.workspace}\n"
@@ -3481,18 +3468,21 @@ def _handle_session_compress(handler, body):
         original_messages = list(messages)
         approx_tokens = _estimate_messages_tokens_rough(original_messages)
 
-        agent = _run_agent.AIAgent(
-            model=resolved_model,
-            provider=resolved_provider,
-            base_url=resolved_base_url,
-            api_key=resolved_api_key,
-            # Identify browser-originated sessions as WebUI so Hermes Agent
-            # does not inject CLI-specific terminal/output guidance.
-            platform="webui",
-            quiet_mode=True,
-            enabled_toolsets=_resolve_cli_toolsets(),
-            session_id=sid,
-        )
+        from api.hermes_compression_overlay import bungalow_hermes_load_config_overlay
+
+        with bungalow_hermes_load_config_overlay():
+            agent = _run_agent.AIAgent(
+                model=resolved_model,
+                provider=resolved_provider,
+                base_url=resolved_base_url,
+                api_key=resolved_api_key,
+                # Identify browser-originated sessions as WebUI so Hermes Agent
+                # does not inject CLI-specific terminal/output guidance.
+                platform="webui",
+                quiet_mode=True,
+                enabled_toolsets=_resolve_cli_toolsets(),
+                session_id=sid,
+            )
         compressed = agent.context_compressor.compress(
             original_messages,
             current_tokens=approx_tokens,

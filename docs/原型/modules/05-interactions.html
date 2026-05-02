@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 05 前端交互</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #0a0a15; color: #eee; font-family: Consolas, monospace; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script>
+// ===== Hermes数字工作室 - 05 前端交互 =====
+// 职责：输入框交互、按钮交互、事件监听、消息处理
+
+const canvas = document.getElementById('ui');
+canvas.width = 1920;
+canvas.height = 1000;
+const ctx = canvas.getContext('2d');
+
+// ===== 布局 =====
+const LAYOUT = { top: 44, bottom: 56, left: 260, right: 260 };
+const CENTER_X = LAYOUT.left;
+const CENTER_Y = LAYOUT.top;
+const CENTER_W = 1920 - LAYOUT.left - LAYOUT.right;
+const CENTER_H = 1000 - LAYOUT.top - LAYOUT.bottom;
+
+// ===== 颜色 =====
+const C = {
+  bg: '#0a0a15',
+  top: '#151525',
+  bottom: '#151525',
+  border: '#333355',
+  text: '#aaa',
+  bright: '#fff',
+  gold: '#FFD700',
+  button: '#2a3a5a',
+  buttonHover: '#3a4a6a',
+  buttonActive: '#4a5a7a',
+  inputBg: '#1a1a30',
+  inputBorder: '#444466',
+  inputFocus: '#6666AA',
+};
+
+// ===== 基础绘图函数 =====
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function stroke(x, y, w, h, color, lw = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.strokeRect(x, y, w, h);
+}
+
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+// ===== 按钮类 =====
+class Button {
+  constructor(x, y, w, h, label, onClick) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.label = label;
+    this.onClick = onClick;
+    this.hovered = false;
+    this.active = false;
+  }
+  
+  draw() {
+    let bg = C.button;
+    if (this.active) bg = C.buttonActive;
+    else if (this.hovered) bg = C.buttonHover;
+    
+    rect(this.x, this.y, this.w, this.h, bg);
+    stroke(this.x, this.y, this.w, this.h, C.border);
+    
+    ctx.fillStyle = C.bright;
+    ctx.font = '10px Consolas';
+    ctx.textAlign = 'center';
+    ctx.fillText(this.label, this.x + this.w/2, this.y + this.h/2 + 3);
+    ctx.textAlign = 'left';
+  }
+  
+  contains(mx, my) {
+    return mx >= this.x && mx <= this.x + this.w &&
+           my >= this.y && my <= this.y + this.h;
+  }
+  
+  handleMouseMove(mx, my) {
+    this.hovered = this.contains(mx, my);
+    return this.hovered;
+  }
+  
+  handleClick() {
+    if (this.onClick) this.onClick();
+  }
+}
+
+// ===== 输入框类 =====
+class InputBox {
+  constructor(x, y, w, h, placeholder) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.placeholder = placeholder;
+    this.value = '';
+    this.focused = false;
+    this.cursorVisible = true;
+    this.cursorTimer = null;
+  }
+  
+  draw() {
+    // 背景
+    rect(this.x, this.y, this.w, this.h, C.inputBg);
+    
+    // 边框
+    let borderColor = C.inputBorder;
+    if (this.focused) borderColor = C.inputFocus;
+    stroke(this.x, this.y, this.w, this.h, borderColor, 2);
+    
+    // 文字
+    if (this.value) {
+      ctx.fillStyle = C.bright;
+      ctx.font = '11px Consolas';
+      ctx.textAlign = 'left';
+      ctx.fillText(this.value, this.x + 8, this.y + this.h/2 + 3);
+    } else if (!this.focused) {
+      ctx.fillStyle = '#555';
+      ctx.font = '11px Consolas';
+      ctx.textAlign = 'left';
+      ctx.fillText(this.placeholder, this.x + 8, this.y + this.h/2 + 3);
+    }
+    
+    // 光标
+    if (this.focused && this.cursorVisible) {
+      const textWidth = ctx.measureText(this.value).width;
+      ctx.fillStyle = C.bright;
+      ctx.fillRect(this.x + 8 + textWidth, this.y + 8, 1, this.h - 16);
+    }
+    
+    ctx.textAlign = 'left';
+  }
+  
+  contains(mx, my) {
+    return mx >= this.x && mx <= this.x + this.w &&
+           my >= this.y && my <= this.y + this.h;
+  }
+  
+  handleFocus(focused) {
+    this.focused = focused;
+    if (focused) {
+      this.startCursorBlink();
+    } else {
+      this.stopCursorBlink();
+    }
+  }
+  
+  startCursorBlink() {
+    this.cursorTimer = setInterval(() => {
+      this.cursorVisible = !this.cursorVisible;
+    }, 500);
+  }
+  
+  stopCursorBlink() {
+    if (this.cursorTimer) {
+      clearInterval(this.cursorTimer);
+      this.cursorTimer = null;
+    }
+    this.cursorVisible = false;
+  }
+  
+  handleInput(char) {
+    this.value += char;
+  }
+  
+  handleBackspace() {
+    this.value = this.value.slice(0, -1);
+  }
+  
+  handleEnter() {
+    console.log('输入:', this.value);
+    return this.value;
+  }
+}
+
+// ===== 消息日志 =====
+class MessageLog {
+  constructor(x, y, w, h, maxLines = 10) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.maxLines = maxLines;
+    this.messages = [];
+  }
+  
+  add(type, sender, content) {
+    const time = new Date().toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
+    this.messages.push({type, sender, content, time});
+    if (this.messages.length > this.maxLines) {
+      this.messages.shift();
+    }
+  }
+  
+  draw() {
+    // 背景
+    rect(this.x, this.y, this.w, this.h, 'rgba(26,26,48,0.8)');
+    stroke(this.x, this.y, this.w, this.h, C.border);
+    
+    // 标题
+    text('📋 消息日志', this.x + 10, this.y + 18, C.gold, 10);
+    
+    // 消息
+    const startY = this.y + 30;
+    this.messages.forEach((msg, i) => {
+      const y = startY + i * 16;
+      if (y > this.y + this.h - 10) return;
+      
+      // 时间
+      ctx.fillStyle = '#666';
+      ctx.font = '8px Consolas';
+      ctx.fillText(msg.time, this.x + 10, y);
+      
+      // 类型标识
+      const typeColors = {
+        system: '#888',
+        user: '#4169E1',
+        agent: '#228B22',
+        task: '#FFD700',
+      };
+      ctx.fillStyle = typeColors[msg.type] || '#888';
+      ctx.fillText('[' + msg.type + ']', this.x + 55, y);
+      
+      // 发送者
+      if (msg.sender) {
+        ctx.fillStyle = C.bright;
+        ctx.fillText(msg.sender + ':', this.x + 95, y);
+      }
+      
+      // 内容
+      ctx.fillStyle = C.text;
+      const contentX = msg.sender ? this.x + 110 : this.x + 95;
+      const content = msg.content.substring(0, 30);
+      ctx.fillText(content, contentX, y);
+    });
+  }
+  
+  clear() {
+    this.messages = [];
+  }
+}
+
+// ===== 模拟游戏状态 =====
+const gameState = {
+  day: 1,
+  time: '08:30',
+  money: 1250,
+  agentCount: 6,
+  taskCount: 3,
+  selectedAgent: null,
+  agents: [
+    {id: 'A', name: '阿猿', status: 'working', energy: 75},
+    {id: 'B', name: '小美', status: 'idle', energy: 90},
+    {id: 'C', name: '点点', status: 'resting', energy: 60},
+    {id: 'D', name: '数据帝', status: 'working', energy: 55},
+    {id: 'E', name: '分析师', status: 'idle', energy: 85},
+    {id: 'F', name: '设计师', status: 'eating', energy: 70},
+  ],
+  tasks: [
+    {id: 1, name: '编写代码', progress: 65},
+    {id: 2, name: '设计UI', progress: 30},
+    {id: 3, name: '修复Bug', progress: 80},
+  ],
+  logs: [],
+};
+
+// ===== 绘制顶栏 =====
+function drawTopBar() {
+  rect(0, 0, 1920, LAYOUT.top, C.top);
+  stroke(0, 0, 1920, LAYOUT.top, C.border, 2);
+  
+  text('Hermes数字工作室', 15, 28, C.gold, 16);
+  text(`第 ${gameState.day} 天  ${gameState.time}`, 200, 28, C.text, 12);
+  text(`💰 ${gameState.money}  ⚡ ${gameState.agentCount}  👥 ${gameState.agentCount}  📋 ${gameState.taskCount}`, 400, 28, C.text, 11);
+}
+
+// ===== 绘制底栏（带输入框）=====
+function drawBottomBar() {
+  const y = 1000 - LAYOUT.bottom;
+  rect(0, y, 1920, LAYOUT.bottom, C.bottom);
+  stroke(0, y, 1920, LAYOUT.bottom, C.border, 2);
+  
+  text('位置: 城主办公室', 15, y + 24, C.bright, 11);
+  
+  // 输入框
+  inputBox.draw();
+  
+  // 发送按钮
+  sendBtn.draw();
+}
+
+// ===== 消息日志 =====
+const msgLog = new MessageLog(LAYOUT.left + 20, 100, 300, 200, 8);
+
+// ===== UI元素 =====
+const sendBtn = new Button(1160, 1000 - 56 + 14, 55, 30, '发送', () => {
+  const msg = inputBox.handleEnter();
+  if (msg) {
+    msgLog.add('user', '城主', msg);
+    inputBox.value = '';
+    // 模拟AI响应
+    setTimeout(() => {
+      msgLog.add('system', '', '收到消息: ' + msg.substring(0, 20));
+    }, 500);
+  }
+});
+
+const inputBox = new InputBox(750, 1000 - 56 + 12, 400, 34, '输入指令...');
+
+// ===== Agent列表按钮 =====
+const agentButtons = [];
+gameState.agents.forEach((agent, i) => {
+  const btn = new Button(8, LAYOUT.top + 40 + i * 38, LAYOUT.left - 16, 32, '', () => {
+    gameState.selectedAgent = agent;
+    msgLog.add('system', '', `选中: ${agent.name}`);
+  });
+  agentButtons.push(btn);
+});
+
+// ===== 鼠标状态 =====
+let mouseX = 0;
+let mouseY = 0;
+let isMouseDown = false;
+
+// ===== 事件监听 =====
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  mouseX = (e.clientX - rect.left) * scaleX;
+  mouseY = (e.clientY - rect.top) * scaleY;
+  
+  // 更新悬停状态
+  agentButtons.forEach(btn => btn.handleMouseMove(mouseX, mouseY));
+  sendBtn.handleMouseMove(mouseX, mouseY);
+});
+
+canvas.addEventListener('mousedown', () => { isMouseDown = true; });
+canvas.addEventListener('mouseup', () => { isMouseDown = false; });
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top) * scaleY;
+  
+  // 检查按钮点击
+  agentButtons.forEach(btn => {
+    if (btn.contains(mx, my)) btn.handleClick();
+  });
+  
+  if (sendBtn.contains(mx, my)) sendBtn.handleClick();
+  
+  // 检查输入框焦点
+  inputBox.handleFocus(inputBox.contains(mx, my));
+});
+
+// 键盘事件
+let keyboardBuffer = '';
+document.addEventListener('keydown', (e) => {
+  if (!inputBox.focused) return;
+  
+  if (e.key === 'Enter') {
+    sendBtn.handleClick();
+  } else if (e.key === 'Backspace') {
+    inputBox.handleBackspace();
+  } else if (e.key.length === 1) {
+    inputBox.handleInput(e.key);
+  }
+});
+
+// ===== 主渲染 =====
+function render() {
+  rect(0, 0, 1920, 1000, C.bg);
+  
+  drawTopBar();
+  drawBottomBar();
+  
+  // Agent列表
+  rect(0, LAYOUT.top, LAYOUT.left, CENTER_H, 'rgba(26,26,48,0.9)');
+  stroke(0, LAYOUT.top, LAYOUT.left, CENTER_H, C.border, 2);
+  text('◀ 角色', 12, LAYOUT.top + 25, C.bright, 12);
+  
+  gameState.agents.forEach((agent, i) => {
+    const btn = agentButtons[i];
+    btn.draw();
+    
+    // Agent名字
+    ctx.fillStyle = C.bright;
+    ctx.font = '11px Consolas';
+    ctx.textAlign = 'left';
+    ctx.fillText(agent.name, 16, LAYOUT.top + 54 + i * 38);
+    
+    // 状态
+    const statusColors = {
+      working: '#90EE90',
+      idle: '#FFD700',
+      resting: '#87CEEB',
+      eating: '#FF6347',
+    };
+    ctx.fillStyle = statusColors[agent.status] || '#888';
+    ctx.font = '9px Consolas';
+    ctx.fillText(agent.status, 16, LAYOUT.top + 66 + i * 38);
+    
+    // 能量条
+    ctx.fillStyle = '#333';
+    ctx.fillRect(LAYOUT.left - 90, LAYOUT.top + 48 + i * 38, 50, 8);
+    ctx.fillStyle = '#228B22';
+    ctx.fillRect(LAYOUT.left - 90, LAYOUT.top + 48 + i * 38, 50 * agent.energy / 100, 8);
+  });
+  
+  // 消息日志
+  msgLog.draw();
+  
+  // 中央区域提示
+  rect(CENTER_X, CENTER_Y, CENTER_W, CENTER_H, C.bg);
+  stroke(CENTER_X, CENTER_Y, CENTER_W, CENTER_H, C.border, 2);
+  text('中央区域 - 建筑渲染', CENTER_X + CENTER_W/2, CENTER_Y + CENTER_H/2, '#555', 14, 'center');
+  text('点击左面板选择Agent，底部输入指令', CENTER_X + CENTER_W/2, CENTER_Y + CENTER_H/2 + 30, '#444', 10, 'center');
+  
+  // 右面板
+  const rx = 1920 - LAYOUT.right;
+  rect(rx, LAYOUT.top, LAYOUT.right, CENTER_H, 'rgba(26,26,48,0.9)');
+  stroke(rx, LAYOUT.top, LAYOUT.right, CENTER_H, C.border, 2);
+  
+  text('▶ 任务', rx + 12, LAYOUT.top + 25, C.bright, 12);
+  
+  gameState.tasks.forEach((task, i) => {
+    const ty = LAYOUT.top + 45 + i * 52;
+    rect(rx + 8, ty, LAYOUT.right - 16, 44, C.button);
+    stroke(rx + 8, ty, LAYOUT.right - 16, 44, C.border);
+    ctx.fillStyle = C.bright;
+    ctx.font = '11px Consolas';
+    ctx.fillText(task.name, rx + 16, ty + 16);
+    ctx.fillStyle = '#333';
+    ctx.fillRect(rx + 16, ty + 26, 140, 6);
+    ctx.fillStyle = '#4169E1';
+    ctx.fillRect(rx + 16, ty + 26, 140 * task.progress / 100, 6);
+    ctx.fillStyle = C.text;
+    ctx.font = '9px Consolas';
+    ctx.fillText(task.progress + '%', rx + 160, ty + 32);
+  });
+  
+  text('▶ 日志', rx + 12, LAYOUT.top + 230, C.bright, 12);
+  ['08:20 进入机房', '08:15 完成代码', '08:10 新任务'].forEach((l, i) => {
+    ctx.fillStyle = '#888';
+    ctx.font = '9px Consolas';
+    ctx.fillText(l, rx + 12, LAYOUT.top + 255 + i * 18);
+  });
+  
+  requestAnimationFrame(render);
+}
+
+// 初始化
+msgLog.add('system', '', '系统启动');
+msgLog.add('system', '', '点击左面板Agent选择');
+msgLog.add('system', '', '底部输入框发送指令');
+
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 06 WebSocket通信</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #0a0a15; color: #eee; font-family: Consolas, monospace; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script>
+// ===== Hermes数字工作室 - 06 WebSocket通信 =====
+// 职责：模拟WebSocket通信、前端←→后端消息交互
+
+const canvas = document.getElementById('ui');
+canvas.width = 1920;
+canvas.height = 1000;
+const ctx = canvas.getContext('2d');
+
+// ===== 颜色 =====
+const C = {
+  bg: '#0a0a15',
+  panel: '#1a1a30',
+  border: '#333355',
+  text: '#aaa',
+  bright: '#fff',
+  gold: '#FFD700',
+  green: '#228B22',
+  red: '#DC143C',
+  blue: '#4169E1',
+  yellow: '#FFD700',
+  purple: '#9370DB',
+};
+
+// ===== 基础绘图函数 =====
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function stroke(x, y, w, h, color, lw = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.strokeRect(x, y, w, h);
+}
+
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+// ===== WebSocket模拟 =====
+class WebSocketSimulator {
+  constructor() {
+    this.connected = false;
+    this.messages = [];
+    this.callbacks = {};
+    this.reconnectTimer = null;
+    this.heartbeatTimer = null;
+  }
+  
+  connect() {
+    this.connected = true;
+    this.messages.push({dir: '→', type: 'system', content: '连接成功', time: now()});
+    this.startHeartbeat();
+    this.notify('connect', {status: 'connected'});
+  }
+  
+  disconnect() {
+    this.connected = false;
+    this.messages.push({dir: '→', type: 'system', content: '连接断开', time: now()});
+    this.stopHeartbeat();
+    this.notify('disconnect', {status: 'disconnected'});
+  }
+  
+  startHeartbeat() {
+    this.heartbeatTimer = setInterval(() => {
+      if (this.connected) {
+        this.messages.push({dir: '↔', type: 'heartbeat', content: 'ping/pong', time: now()});
+      }
+    }, 5000);
+  }
+  
+  stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+  
+  send(type, data) {
+    if (!this.connected) {
+      this.messages.push({dir: '✗', type: 'error', content: '未连接', time: now()});
+      return false;
+    }
+    
+    const msg = {type, data, timestamp: Date.now()};
+    this.messages.push({dir: '→', type, content: JSON.stringify(data).substring(0, 50), time: now()});
+    
+    // 模拟后端响应
+    setTimeout(() => this.simulateResponse(type, data), 100 + Math.random() * 200);
+    
+    return true;
+  }
+  
+  simulateResponse(type, data) {
+    let response = null;
+    
+    switch(type) {
+      case 'assign_task':
+        response = {
+          type: 'task_update',
+          data: {taskId: data.taskId, status: 'in_progress', assignee: data.agentId}
+        };
+        break;
+      case 'move_agent':
+        response = {
+          type: 'agent_update',
+          data: {agentId: data.agentId, location: data.targetRoom, status: 'moving'}
+        };
+        break;
+      case 'use_skill':
+        response = {
+          type: 'skill_effect',
+          data: {skill: data.skill, target: data.targetId, effect: '+15情绪'}
+        };
+        break;
+      case 'chat':
+        response = {
+          type: 'agent_response',
+          data: {agentId: data.targetId, message: '收到！', emotion: 'happy'}
+        };
+        break;
+    }
+    
+    if (response) {
+      this.messages.push({dir: '←', type: response.type, content: JSON.stringify(response.data).substring(0, 50), time: now()});
+      this.notify(response.type, response.data);
+    }
+  }
+  
+  on(event, callback) {
+    this.callbacks[event] = callback;
+  }
+  
+  off(event) {
+    delete this.callbacks[event];
+  }
+  
+  notify(event, data) {
+    if (this.callbacks[event]) {
+      this.callbacks[event](data);
+    }
+  }
+  
+  getMessages() {
+    return this.messages.slice(-50); // 最近50条
+  }
+  
+  clearMessages() {
+    this.messages = [];
+  }
+}
+
+// ===== 消息面板 =====
+class MessagePanel {
+  constructor(x, y, w, h) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.messages = [];
+    this.scrollOffset = 0;
+  }
+  
+  add(dir, type, content) {
+    this.messages.push({dir, type, content, time: now()});
+    if (this.messages.length > 100) {
+      this.messages.shift();
+    }
+  }
+  
+  draw() {
+    // 背景
+    rect(this.x, this.y, this.w, this.h, 'rgba(26,26,48,0.9)');
+    stroke(this.x, this.y, this.w, this.h, C.border, 2);
+    
+    // 标题
+    text('📡 WebSocket 消息', this.x + 10, this.y + 20, C.gold, 11);
+    
+    // 连接状态
+    const statusColor = ws.connected ? C.green : C.red;
+    text('●', this.x + this.w - 30, this.y + 18, statusColor, 12);
+    text(ws.connected ? '已连接' : '未连接', this.x + this.w - 90, this.y + 20, statusColor, 9);
+    
+    // 消息列表
+    const startY = this.y + 35;
+    const lineHeight = 16;
+    const visibleLines = Math.floor((this.h - 50) / lineHeight);
+    
+    const visible = this.messages.slice(-visibleLines);
+    visible.forEach((msg, i) => {
+      const y = startY + i * lineHeight;
+      
+      // 方向
+      const dirColor = msg.dir === '→' ? C.blue : msg.dir === '←' ? C.green : msg.dir === '✗' ? C.red : '#666';
+      ctx.fillStyle = dirColor;
+      ctx.font = '10px Consolas';
+      ctx.textAlign = 'center';
+      ctx.fillText(msg.dir, this.x + 20, y);
+      
+      // 类型
+      ctx.fillStyle = '#888';
+      ctx.textAlign = 'left';
+      const typeStr = '[' + (msg.type || 'system') + ']';
+      ctx.fillText(typeStr.substring(0, 12), this.x + 35, y);
+      
+      // 内容
+      ctx.fillStyle = C.text;
+      ctx.fillText(msg.content, this.x + 120, y);
+      
+      // 时间
+      ctx.fillStyle = '#555';
+      ctx.font = '8px Consolas';
+      ctx.textAlign = 'right';
+      ctx.fillText(msg.time, this.x + this.w - 10, y);
+    });
+    
+    ctx.textAlign = 'left';
+  }
+}
+
+// ===== 命令面板 =====
+class CommandPanel {
+  constructor(x, y, w, h) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.commands = [];
+    this.selectedIndex = 0;
+    
+    // 预设命令
+    this.presets = [
+      {label: '分配任务', cmd: {type: 'assign_task', agentId: 'A', taskId: 1}},
+      {label: '移动Agent', cmd: {type: 'move_agent', agentId: 'B', targetRoom: '休息室'}},
+      {label: '使用技能', cmd: {type: 'use_skill', skill: '激励', targetId: 'C'}},
+      {label: '发送消息', cmd: {type: 'chat', targetId: 'A', message: '干得漂亮！'}},
+      {label: '断开连接', cmd: {type: 'disconnect'}},
+      {label: '重新连接', cmd: {type: 'connect'}},
+    ];
+  }
+  
+  draw() {
+    rect(this.x, this.y, this.w, this.h, 'rgba(26,26,48,0.9)');
+    stroke(this.x, this.y, this.w, this.h, C.border, 2);
+    
+    text('📨 发送命令', this.x + 10, this.y + 20, C.gold, 11);
+    
+    // 命令按钮
+    const btnW = 90;
+    const btnH = 28;
+    const cols = 3;
+    
+    this.presets.forEach((preset, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const bx = this.x + 10 + col * (btnW + 8);
+      const by = this.y + 35 + row * (btnH + 8);
+      
+      const selected = i === this.selectedIndex;
+      
+      ctx.fillStyle = selected ? '#3a4a6a' : '#2a3a5a';
+      ctx.fillRect(bx, by, btnW, btnH);
+      ctx.strokeStyle = selected ? C.gold : C.border;
+      ctx.lineWidth = selected ? 2 : 1;
+      ctx.strokeRect(bx, by, btnW, btnH);
+      
+      ctx.fillStyle = C.bright;
+      ctx.font = '9px Consolas';
+      ctx.textAlign = 'center';
+      ctx.fillText(preset.label, bx + btnW/2, by + 17);
+      
+      preset.bx = bx;
+      preset.by = by;
+      preset.bw = btnW;
+      preset.bh = btnH;
+    });
+    
+    ctx.textAlign = 'left';
+    ctx.lineWidth = 1;
+    
+    // 发送按钮
+    const sendBtn = {x: this.x + 10, y: this.y + this.h - 40, w: this.w - 20, h: 30};
+    ctx.fillStyle = C.green;
+    ctx.fillRect(sendBtn.x, sendBtn.y, sendBtn.w, sendBtn.h);
+    ctx.strokeStyle = '#1a5a1a';
+    ctx.strokeRect(sendBtn.x, sendBtn.y, sendBtn.w, sendBtn.h);
+    ctx.fillStyle = '#fff';
+    ctx.font = '11px Consolas';
+    ctx.textAlign = 'center';
+    ctx.fillText('发送选中的命令', sendBtn.x + sendBtn.w/2, sendBtn.y + 20);
+    ctx.textAlign = 'left';
+    
+    return sendBtn;
+  }
+  
+  getSendBtn() {
+    return {x: this.x + 10, y: this.y + this.h - 40, w: this.w - 20, h: 30};
+  }
+  
+  handleClick(mx, my) {
+    // 检查预设按钮
+    for (let i = 0; i < this.presets.length; i++) {
+      const p = this.presets[i];
+      if (mx >= p.bx && mx <= p.bx + p.bw && my >= p.by && my <= p.by + p.bh) {
+        this.selectedIndex = i;
+        return;
+      }
+    }
+  }
+  
+  sendSelected() {
+    const preset = this.presets[this.selectedIndex];
+    if (!preset) return;
+    
+    const cmd = preset.cmd;
+    
+    if (cmd.type === 'disconnect') {
+      ws.disconnect();
+    } else if (cmd.type === 'connect') {
+      ws.connect();
+    } else {
+      ws.send(cmd.type, cmd);
+    }
+  }
+}
+
+// ===== 状态面板 =====
+class StatusPanel {
+  constructor(x, y, w, h) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.agents = [
+      {id: 'A', name: '阿猿', status: 'working', location: '办公室1', energy: 75},
+      {id: 'B', name: '小美', status: 'idle', location: '休息室', energy: 90},
+      {id: 'C', name: '点点', status: 'resting', location: '休息室', energy: 60},
+    ];
+  }
+  
+  draw() {
+    rect(this.x, this.y, this.w, this.h, 'rgba(26,26,48,0.9)');
+    stroke(this.x, this.y, this.w, this.h, C.border, 2);
+    
+    text('🤖 Agent 状态', this.x + 10, this.y + 20, C.gold, 11);
+    
+    // 表头
+    const cols = [this.x + 10, this.x + 60, this.x + 130, this.x + 210, this.x + 280];
+    const headers = ['ID', '名称', '状态', '位置', '能量'];
+    headers.forEach((h, i) => {
+      ctx.fillStyle = '#888';
+      ctx.font = '9px Consolas';
+      ctx.fillText(h, cols[i], this.y + 38);
+    });
+    
+    // 数据行
+    this.agents.forEach((agent, i) => {
+      const y = this.y + 55 + i * 22;
+      
+      ctx.fillStyle = C.bright;
+      ctx.font = '9px Consolas';
+      ctx.fillText(agent.id, cols[0], y);
+      ctx.fillText(agent.name, cols[1], y);
+      
+      // 状态颜色
+      const statusColors = {working: C.green, idle: C.yellow, resting: C.blue};
+      ctx.fillStyle = statusColors[agent.status] || '#888';
+      ctx.fillText(agent.status, cols[2], y);
+      
+      ctx.fillStyle = C.text;
+      ctx.fillText(agent.location, cols[3], y);
+      
+      // 能量条
+      ctx.fillStyle = '#333';
+      ctx.fillRect(cols[4], y - 6, 60, 8);
+      ctx.fillStyle = agent.energy > 50 ? C.green : agent.energy > 25 ? C.yellow : C.red;
+      ctx.fillRect(cols[4], y - 6, 60 * agent.energy / 100, 8);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(agent.energy + '%', cols[4] + 65, y);
+    });
+  }
+  
+  updateAgent(agentId, updates) {
+    const agent = this.agents.find(a => a.id === agentId);
+    if (agent) {
+      Object.assign(agent, updates);
+    }
+  }
+}
+
+// ===== 工具函数 =====
+function now() {
+  const d = new Date();
+  return d.toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+}
+
+// ===== 初始化 =====
+const ws = new WebSocketSimulator();
+const msgPanel = new MessagePanel(LAYOUT.left + 20, 100, 400, 300);
+const cmdPanel = new CommandPanel(LAYOUT.left + 20, 420, 400, 180);
+const statusPanel = new StatusPanel(LAYOUT.left + 20, 620, 400, 150);
+
+const LAYOUT = {top: 44, bottom: 56, left: 260, right: 260};
+
+// WebSocket事件
+ws.on('connect', () => msgPanel.add('←', 'system', '连接已建立'));
+ws.on('disconnect', () => msgPanel.add('←', 'system', '连接已断开'));
+ws.on('agent_update', (data) => {
+  msgPanel.add('←', 'agent_update', `Agent ${data.agentId} → ${data.location}`);
+  statusPanel.updateAgent(data.agentId, {location: data.location, status: data.status});
+});
+ws.on('task_update', (data) => msgPanel.add('←', 'task_update', `任务${data.taskId}: ${data.status}`));
+ws.on('skill_effect', (data) => msgPanel.add('←', 'skill_effect', `${data.skill} → ${data.target}: ${data.effect}`));
+ws.on('agent_response', (data) => msgPanel.add('←', 'agent_response', `${data.agentId}: ${data.message}`));
+
+// 自动连接
+ws.connect();
+
+// ===== 鼠标状态 =====
+let mouseX = 0, mouseY = 0;
+
+// ===== 事件监听 =====
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  mouseX = (e.clientX - rect.left) * scaleX;
+  mouseY = (e.clientY - rect.top) * scaleY;
+});
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top) * scaleY;
+  
+  cmdPanel.handleClick(mx, my);
+  
+  const sendBtn = cmdPanel.getSendBtn();
+  if (mx >= sendBtn.x && mx <= sendBtn.x + sendBtn.w && my >= sendBtn.y && my <= sendBtn.y + sendBtn.h) {
+    cmdPanel.sendSelected();
+  }
+});
+
+// ===== 主渲染 =====
+function render() {
+  rect(0, 0, 1920, 1000, C.bg);
+  
+  // 顶栏
+  rect(0, 0, 1920, LAYOUT.top, '#151525');
+  stroke(0, 0, 1920, LAYOUT.top, C.border, 2);
+  text('Hermes数字工作室 - WebSocket通信模拟', 15, 28, C.gold, 14);
+  text('📡 前后端消息交互演示', 400, 28, C.text, 11);
+  
+  // 消息面板
+  msgPanel.draw();
+  
+  // 命令面板
+  cmdPanel.draw();
+  
+  // 状态面板
+  statusPanel.draw();
+  
+  // 说明面板
+  const infoX = 1920 - LAYOUT.right - 280;
+  rect(infoX, 100, 280, 670, 'rgba(26,26,48,0.9)');
+  stroke(infoX, 100, 280, 670, C.border, 2);
+  text('ℹ️ 说明', infoX + 10, 120, C.gold, 11);
+  text('WebSocket消息类型：', infoX + 10, 145, C.bright, 9);
+  const types = [
+    {t: 'assign_task', d: '分配任务'},
+    {t: 'move_agent', d: '移动Agent'},
+    {t: 'use_skill', d: '使用技能'},
+    {t: 'chat', d: '聊天消息'},
+    {t: 'agent_update', d: 'Agent状态更新'},
+    {t: 'task_update', d: '任务状态更新'},
+    {t: 'heartbeat', d: '心跳检测'},
+  ];
+  types.forEach((item, i) => {
+    ctx.fillStyle = C.blue;
+    ctx.font = '8px Consolas';
+    ctx.fillText(item.t, infoX + 15, 165 + i * 16);
+    ctx.fillStyle = C.text;
+    ctx.fillText(item.d, infoX + 100, 165 + i * 16);
+  });
+  
+  text('方向说明：', infoX + 10, 290, C.bright, 9);
+  ctx.fillStyle = C.blue;
+  ctx.fillText('→ 发送', infoX + 15, 310);
+  ctx.fillStyle = C.green;
+  ctx.fillText('← 接收', infoX + 15, 330);
+  ctx.fillStyle = '#666';
+  ctx.fillText('↔ 心跳', infoX + 15, 350);
+  ctx.fillStyle = C.red;
+  ctx.fillText('✗ 错误', infoX + 15, 370);
+  
+  text('操作：', infoX + 10, 400, C.bright, 9);
+  ctx.fillStyle = C.text;
+  const tips = [
+    '1. 点击命令按钮选择',
+    '2. 点击"发送"执行',
+    '3. 观察消息流向',
+    '4. 查看右侧状态更新',
+  ];
+  tips.forEach((tip, i) => {
+    ctx.fillText(tip, infoX + 15, 420 + i * 18);
+  });
+  
+  // 底栏
+  const bottomY = 1000 - LAYOUT.bottom;
+  rect(0, bottomY, 1920, LAYOUT.bottom, '#151525');
+  stroke(0, bottomY, 1920, LAYOUT.bottom, C.border, 2);
+  text('💡 提示：这是WebSocket通信的模拟演示，真实环境需要连接后端服务器', 15, bottomY + 24, '#888', 10);
+  
+  requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>

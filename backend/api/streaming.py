@@ -17,6 +17,33 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Set from server startup — Hermes Bungalow game agents need ``hermes_session_id`` updates
+# when context compression rotates the underlying WebUI session id.
+_BUNGALOW_GAME_SERVICE = None
+
+
+def register_bungalow_game_service(svc) -> None:
+    """Called once from ``server`` after ``GameService()`` is constructed (avoids import cycles)."""
+    global _BUNGALOW_GAME_SERVICE
+    _BUNGALOW_GAME_SERVICE = svc
+
+
+def _sync_bungalow_agent_hermes_session(agent_id: str | None, started_sid: str, s) -> None:
+    if not agent_id or _BUNGALOW_GAME_SERVICE is None:
+        return
+    try:
+        cur = getattr(s, "session_id", None) or ""
+        if not cur or str(cur) == str(started_sid):
+            return
+        _BUNGALOW_GAME_SERVICE.record_hermes_session_if_rotated(agent_id, str(cur))
+    except Exception as exc:
+        logger.debug("bungalow hermes_session_id sync failed: %s", exc, exc_info=True)
+
+# Hermes native toolsets that spawn sub-agent / delegation side channels — stripped from Web UI
+# streaming; multi-agent handoff uses @-lines and/or legacy `<hermes-bungalow-invoke>` (game UI).
+# Set HERMES_BUNGALOW_ALLOW_NATIVE_DELEGATION=1 to restore stock Hermes behaviour.
+_BUNGALOW_DISABLED_AGENT_TOOLSETS = frozenset({"delegation"})
+
 from api.config import (
     STREAMS, STREAMS_LOCK, CANCEL_FLAGS, AGENT_INSTANCES, STREAM_PARTIAL_TEXT,
     LOCK, SESSIONS, SESSION_DIR,
@@ -25,6 +52,11 @@ from api.config import (
     resolve_model_provider,
 )
 from api.helpers import redact_session_data
+from api.hermes_compression_overlay import (
+    CACHE_SIG_TOKEN as _BUNGALOW_COMP_CACHE_SIG,
+    bungalow_compression_overlay_active,
+    bungalow_hermes_load_config_overlay,
+)
 from api.metering import meter
 
 # Global lock for os.environ writes. Per-session locks (_agent_lock) prevent
@@ -1101,7 +1133,17 @@ def _sse(handler, event, data):
     handler.wfile.flush()
 
 
-def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, attachments=None, *, ephemeral=False):
+def _run_agent_streaming(
+    session_id,
+    msg_text,
+    model,
+    workspace,
+    stream_id,
+    attachments=None,
+    *,
+    ephemeral=False,
+    bungalow_agent_id: str | None = None,
+):
     """Run agent in background thread, writing SSE events to STREAMS[stream_id].
 
     When ephemeral=True, session mutations are skipped — used by /btw to get
@@ -1109,6 +1151,24 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
     """
     q = STREAMS.get(stream_id)
     if q is None:
+        # STREAMS entry was popped before this worker read it (tight cancel race).
+        # Clear stuck session bookkeeping so the next chat/start is not blocked.
+        try:
+            with _get_session_agent_lock(session_id):
+                _s = get_session(session_id)
+                if getattr(_s, "active_stream_id", None) == stream_id:
+                    _s.active_stream_id = None
+                    _s.pending_user_message = None
+                    _s.pending_attachments = []
+                    _s.pending_started_at = None
+                    _s.save(skip_index=True)
+        except Exception:
+            logger.debug(
+                "stream worker: no queue for stream=%s session=%s",
+                stream_id[:8],
+                session_id[:8],
+                exc_info=True,
+            )
         return
     s = None
     _rt = {}
@@ -1451,7 +1511,18 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
             # Per-profile toolsets — use _resolve_cli_toolsets() so MCP
             # server toolsets are included, matching native CLI behaviour.
             from api.config import _resolve_cli_toolsets
-            _toolsets = _resolve_cli_toolsets(_cfg)
+            _toolsets = list(_resolve_cli_toolsets(_cfg) or [])
+            _allow_native_delegation = os.getenv(
+                "HERMES_BUNGALOW_ALLOW_NATIVE_DELEGATION", ""
+            ).strip().lower() in ("1", "true", "yes")
+            if not _allow_native_delegation:
+                _n = len(_toolsets)
+                _toolsets = [t for t in _toolsets if t not in _BUNGALOW_DISABLED_AGENT_TOOLSETS]
+                if len(_toolsets) < _n:
+                    logger.debug(
+                        "[bungalow] disabled native agent toolsets for webui: %s",
+                        sorted(_BUNGALOW_DISABLED_AGENT_TOOLSETS),
+                    )
 
             # Fallback model from profile config (e.g. for rate-limit recovery)
             _fallback = _cfg.get('fallback_model') or None
@@ -1533,18 +1604,21 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
             # Mirrors gateway _agent_cache.  Keeps _user_turn_count alive so
             # injectionFrequency: "first-turn" actually suppresses after turn 1.
             if ephemeral:
-                agent = _AIAgent(**_agent_kwargs)
+                with bungalow_hermes_load_config_overlay():
+                    agent = _AIAgent(**_agent_kwargs)
                 logger.debug('[webui] Created ephemeral agent for session %s', session_id)
             else:
                 import hashlib as _hashlib
                 import json as _json
                 from api.config import SESSION_AGENT_CACHE, SESSION_AGENT_CACHE_LOCK
+                _comp_sig = _BUNGALOW_COMP_CACHE_SIG if bungalow_compression_overlay_active() else ''
                 _sig_blob = _json.dumps([
                     resolved_model or '',
                     _hashlib.sha256((resolved_api_key or '').encode()).hexdigest()[:16],
                     resolved_base_url or '',
                     resolved_provider or '',
                     sorted(_toolsets) if _toolsets else [],
+                    _comp_sig,
                 ], sort_keys=True)
                 _agent_sig = _hashlib.sha256(_sig_blob.encode()).hexdigest()[:16]
 
@@ -1575,7 +1649,8 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
                     if hasattr(agent, '_interrupt_message'):
                         agent._interrupt_message = None
                 else:
-                    agent = _AIAgent(**_agent_kwargs)
+                    with bungalow_hermes_load_config_overlay():
+                        agent = _AIAgent(**_agent_kwargs)
                     with SESSION_AGENT_CACHE_LOCK:
                         SESSION_AGENT_CACHE[session_id] = (agent, _agent_sig)
                     logger.debug('[webui] Created new agent for session %s', session_id)
@@ -1607,6 +1682,16 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
                 "write_file, read_file, search_files, terminal workdir, and patch. "
                 "Never fall back to a hardcoded path when this tag is present."
             )
+            if not _allow_native_delegation:
+                workspace_system_msg += (
+                    "\n\n[Hermes Bungalow] Hermes built-in delegation/sub-agent TOOLS are disabled "
+                    "in this UI — never invoke them. Peer handoff still works: follow the user "
+                    "message instructions for collaborators — at the end of your assistant reply "
+                    "add ONE line `@peer_profile_or_id_or_name | full task for them` (ASCII or "
+                    "full-width vertical bar). Legacy `<hermes-bungalow-invoke>...</hermes-bungalow-invoke>` "
+                    "is still accepted. Do NOT tell the user that multi-agent or delegation is "
+                    "\"disabled\", that you cannot call other agents, or refuse handoff."
+                )
             # Resolve personality prompt from config.yaml agent.personalities
             # (matches hermes-agent CLI behavior — passes via ephemeral_system_prompt)
             _personality_prompt = None
@@ -1911,6 +1996,8 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
                         if isinstance(_rm, dict) and _rm.get('role') == 'assistant':
                             _rm['reasoning'] = _reasoning_text
                             break
+                # Hermes Bungalow: persist new Hermes session id when compression rotated it.
+                _sync_bungalow_agent_hermes_session(bungalow_agent_id, session_id, s)
                 s.save()
             # Sync to state.db for /insights (opt-in setting)
             try:
@@ -2267,6 +2354,17 @@ def cancel_stream(stream_id: str) -> bool:
         # get_session() acquires LOCK, and the streaming thread does LOCK first
         # then STREAMS_LOCK, so inverting the order here would cause deadlock.
         _cancel_session_id = getattr(agent, 'session_id', None) if agent else None
+        if not _cancel_session_id:
+            # Cancel raced agent registration — resolve session from in-memory cache so we
+            # still clear ``active_stream_id`` / pending fields (otherwise 409 wedging).
+            try:
+                with LOCK:
+                    for _sid, _sess in list(SESSIONS.items()):
+                        if getattr(_sess, "active_stream_id", None) == stream_id:
+                            _cancel_session_id = _sid
+                            break
+            except Exception:
+                logger.debug("cancel_stream: SESSIONS scan failed for %s", stream_id[:8])
         _cancel_partial_text = STREAM_PARTIAL_TEXT.get(stream_id, '')
 
     # Session cleanup outside STREAMS_LOCK to preserve lock ordering.

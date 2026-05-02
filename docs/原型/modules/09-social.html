@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Hermes数字工作室 - 09 社交系统</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #0a0a15; color: #eee; font-family: Consolas, monospace; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script>
+// ===== Hermes数字工作室 - 09 社交系统 =====
+// 职责：打招呼、协作交流、关系阶段、情绪病毒
+
+const canvas = document.getElementById('ui');
+canvas.width = 1920;
+canvas.height = 1000;
+const ctx = canvas.getContext('2d');
+
+const LAYOUT = {top: 44, bottom: 56, left: 260, right: 260};
+
+const C = {
+  bg: '#0a0a15',
+  panel: '#1a1a30',
+  border: '#333355',
+  text: '#aaa',
+  bright: '#fff',
+  gold: '#FFD700',
+  green: '#228B22',
+  blue: '#4169E1',
+  purple: '#9370DB',
+  orange: '#FF8C00',
+  red: '#DC143C',
+  yellow: '#FFD700',
+};
+
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function stroke(x, y, w, h, color, lw = 1) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.strokeRect(x, y, w, h);
+}
+
+function text(str, x, y, color, size = 12, align = 'left') {
+  ctx.fillStyle = color;
+  ctx.font = size + 'px Consolas';
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+
+// ===== Agent类 =====
+class SocialAgent {
+  constructor(id, name, profession, relationship = 20, affection = 40) {
+    this.id = id;
+    this.name = name;
+    this.profession = profession;
+    this.relationship = relationship; // 0-100
+    this.affection = affection; // 0-100
+    this.mood = 60; // 0-100
+    this.socialNeed = 30; // 0-100
+    this.status = 'idle';
+    this.location = '';
+    this.lastGreetTime = 0;
+  }
+  
+  get stage() {
+    if (this.relationship < 11) return '陌生';
+    if (this.relationship < 31) return '认识';
+    if (this.relationship < 71) return '朋友';
+    return '挚友';
+  }
+  
+  get moodEmoji() {
+    if (this.mood >= 90) return '😄';
+    if (this.mood >= 75) return '😊';
+    if (this.mood >= 60) return '😐';
+    if (this.mood >= 45) return '😔';
+    return '😢';
+  }
+  
+  canGreet(other) {
+    if (this.id === other.id) return false;
+    if (this.relationship < 11) return false;
+    if (this.lastGreetTime > 0 && Date.now() - this.lastGreetTime < 600000) return false; // 10分钟冷却
+    return true;
+  }
+  
+  greet(other) {
+    if (!this.canGreet(other)) return null;
+    
+    this.lastGreetTime = Date.now();
+    other.lastGreetTime = Date.now();
+    
+    // 关系更新
+    const affectionGain = 1 + Math.floor(Math.random() * 3); // 1-3
+    const relationGain = 1;
+    
+    this.affection = Math.min(100, this.affection + affectionGain);
+    other.affection = Math.min(100, other.affection + affectionGain);
+    this.relationship = Math.min(100, this.relationship + relationGain);
+    other.relationship = Math.min(100, other.relationship + relationGain);
+    
+    // 打招呼内容根据关系阶段
+    const greetings = {
+      '认识': ['你好', '嗨', '早上好'],
+      '朋友': ['最近怎么样？', '有空聊聊', '一起吃饭？'],
+      '挚友': ['老铁！', '想死你了', '来聊会儿！'],
+    };
+    
+    const greeting = greetings[this.stage]?.[Math.floor(Math.random() * greetings[this.stage].length)] || '你好';
+    
+    return {
+      from: this.name,
+      to: other.name,
+      content: greeting,
+      affectionGain,
+      relationGain,
+    };
+  }
+}
+
+// ===== 社交事件类 =====
+class SocialEvent {
+  constructor(type, participants, content, effects) {
+    this.type = type;
+    this.participants = participants;
+    this.content = content;
+    this.effects = effects;
+    this.createdAt = Date.now();
+    this.duration = 3000; // 3秒显示
+  }
+  
+  draw(x, y) {
+    const elapsed = Date.now() - this.createdAt;
+    const alpha = elapsed < this.duration ? 1 : 0;
+    
+    // 背景
+    ctx.globalAlpha = alpha;
+    rect(x, y, 350, 100, 'rgba(26,26,48,0.95)');
+    stroke(x, y, 350, 100, C.gold, 2);
+    
+    // 类型标签
+    const typeColors = {
+      greeting: C.green,
+      collab: C.blue,
+      share: C.orange,
+      conflict: C.red,
+    };
+    ctx.fillStyle = typeColors[this.type] || C.text;
+    ctx.font = 'bold 10px Consolas';
+    ctx.fillText('[' + this.type + ']', x + 10, y + 20);
+    
+    // 内容
+    ctx.fillStyle = C.bright;
+    ctx.font = '11px Consolas';
+    ctx.fillText(this.content, x + 10, y + 45);
+    
+    // 效果
+    ctx.fillStyle = C.text;
+    ctx.font = '9px Consolas';
+    const effectStr = Object.entries(this.effects).map(([k, v]) => `${k}+${v}`).join(', ');
+    ctx.fillText(effectStr, x + 10, y + 70);
+    
+    ctx.globalAlpha = 1;
+  }
+  
+  isDone() {
+    return Date.now() - this.createdAt > this.duration;
+  }
+}
+
+// ===== 房间类 =====
+class Room {
+  constructor(name, type) {
+    this.name = name;
+    this.type = type; // 'fixed' or 'office'
+    this.agents = [];
+    this.items = [];
+  }
+  
+  addAgent(agent) {
+    if (!this.agents.find(a => a.id === agent.id)) {
+      this.agents.push(agent);
+      agent.location = this.name;
+    }
+  }
+  
+  removeAgent(agent) {
+    this.agents = this.agents.filter(a => a.id !== agent.id);
+  }
+  
+  getAgentPairs() {
+    const pairs = [];
+    for (let i = 0; i < this.agents.length; i++) {
+      for (let j = i + 1; j < this.agents.length; j++) {
+        pairs.push([this.agents[i], this.agents[j]]);
+      }
+    }
+    return pairs;
+  }
+}
+
+// ===== 游戏状态 =====
+const state = {
+  agents: [
+    new SocialAgent('A', '阿猿', '程序员', 25, 45),
+    new SocialAgent('B', '小美', '设计师', 55, 60),
+    new SocialAgent('C', '点点', '测试员', 15, 30),
+    new SocialAgent('D', '数据帝', '分析师', 80, 75),
+  ],
+  rooms: [
+    new Room('休息室', 'fixed'),
+    new Room('会议室', 'fixed'),
+    new Room('资料室', 'fixed'),
+    new Room('机房', 'fixed'),
+  ],
+  events: [],
+  time: 0,
+};
+
+// ===== 模拟社交 =====
+function simulateGreeting() {
+  // 找一个可以打招呼的对
+  for (const room of state.rooms) {
+    const pairs = room.getAgentPairs();
+    for (const [a, b] of pairs) {
+      if (a.canGreet(b)) {
+        const result = a.greet(b);
+        if (result) {
+          state.events.push(new SocialEvent('greeting', [a, b],
+            `${result.from}对${result.to}说："${result.content}"`,
+            { affection: result.affectionGain, relation: result.relationGain }
+          ));
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// ===== 主渲染 =====
+let lastTime = Date.now();
+
+function render() {
+  const now = Date.now();
+  const dt = now - lastTime;
+  lastTime = now;
+  state.time += dt;
+  
+  rect(0, 0, 1920, 1000, C.bg);
+  
+  // 顶栏
+  rect(0, 0, 1920, LAYOUT.top, '#151525');
+  stroke(0, 0, 1920, LAYOUT.top, C.border, 2);
+  text('Hermes数字工作室 - 社交系统', 15, 28, C.gold, 14);
+  text('打招呼 | 协作交流 | 关系阶段 | 情绪病毒', 400, 28, C.text, 11);
+  
+  // 左侧 - Agent关系面板
+  rect(0, LAYOUT.top, LAYOUT.left, 800, 'rgba(26,26,48,0.9)');
+  stroke(0, LAYOUT.top, LAYOUT.left, 800, C.border, 2);
+  text('👥 Agent关系', 12, LAYOUT.top + 25, C.gold, 12);
+  
+  state.agents.forEach((agent, i) => {
+    const ay = LAYOUT.top + 40 + i * 95;
+    
+    rect(8, ay, LAYOUT.left - 16, 85, '#2a3a5a');
+    stroke(8, ay, LAYOUT.left - 16, 85, C.border);
+    
+    // 名字和表情
+    ctx.fillStyle = C.bright;
+    ctx.font = 'bold 11px Consolas';
+    ctx.fillText(agent.moodEmoji + ' ' + agent.name, 16, ay + 18);
+    
+    // 职业
+    ctx.fillStyle = C.purple;
+    ctx.font = '9px Consolas';
+    ctx.fillText(agent.profession, 16, ay + 32);
+    
+    // 关系阶段
+    const stageColors = { '陌生': '#888', '认识': '#4169E1', '朋友': C.green, '挚友': C.gold };
+    ctx.fillStyle = stageColors[agent.stage];
+    ctx.fillText('[' + agent.stage + ']', 80, ay + 32);
+    
+    // 关系值
+    ctx.fillStyle = C.text;
+    ctx.fillText('好感:' + agent.affection + ' 关系:' + agent.relationship, 16, ay + 50);
+    
+    // 情绪条
+    ctx.fillStyle = '#333';
+    ctx.fillRect(16, ay + 56, 100, 6);
+    const moodColor = agent.mood >= 60 ? C.green : agent.mood >= 30 ? C.yellow : C.red;
+    ctx.fillStyle = moodColor;
+    ctx.fillRect(16, ay + 56, agent.mood, 6);
+    ctx.fillStyle = C.text;
+    ctx.font = '8px Consolas';
+    ctx.fillText('情绪:' + agent.mood + '%', 120, ay + 62);
+    
+    // 社交需求
+    ctx.fillStyle = '#333';
+    ctx.fillRect(16, ay + 66, 100, 6);
+    ctx.fillStyle = agent.socialNeed > 50 ? C.orange : C.blue;
+    ctx.fillRect(16, ay + 66, agent.socialNeed, 6);
+    ctx.fillStyle = C.text;
+    ctx.fillText('社交:' + agent.socialNeed, 120, ay + 72);
+  });
+  
+  // 中间 - 房间社交
+  const centerX = LAYOUT.left + 50;
+  
+  text('🏠 房间社交', centerX, LAYOUT.top + 30, C.gold, 12);
+  
+  state.rooms.forEach((room, i) => {
+    const rx = centerX + (i % 2) * 300;
+    const ry = LAYOUT.top + 50 + Math.floor(i / 2) * 150;
+    
+    rect(rx, ry, 280, 130, '#1a1a30');
+    stroke(rx, ry, 280, 130, C.border);
+    
+    // 房间名
+    ctx.fillStyle = C.bright;
+    ctx.font = 'bold 10px Consolas';
+    ctx.fillText(room.name, rx + 10, ry + 18);
+    
+    // 在房间的Agent
+    room.agents.forEach((agent, j) => {
+      ctx.fillStyle = C.blue;
+      ctx.font = '9px Consolas';
+      ctx.fillText(agent.moodEmoji + ' ' + agent.name, rx + 10 + j * 80, ry + 40);
+    });
+    
+    if (room.agents.length === 0) {
+      ctx.fillStyle = '#555';
+      ctx.font = '9px Consolas';
+      ctx.fillText('(空)', rx + 10, ry + 40);
+    }
+    
+    // 社交触发
+    const canGreet = room.agents.some(a => 
+      room.agents.some(b => a.id !== b.id && a.canGreet(b))
+    );
+    
+    ctx.fillStyle = canGreet ? C.green : '#555';
+    ctx.font = '8px Consolas';
+    ctx.fillText(canGreet ? '● 可打招呼' : '○ 无社交', rx + 10, ry + 60);
+    
+    // 房间类型
+    ctx.fillStyle = room.type === 'fixed' ? C.purple : C.blue;
+    ctx.fillText('[' + (room.type === 'fixed' ? '功能房' : '办公室') + ']', rx + 10, ry + 75);
+  });
+  
+  // 社交规则说明
+  rect(centerX, LAYOUT.top + 360, 580, 180, '#1a1a30');
+  stroke(centerX, LAYOUT.top + 360, 580, 180, C.border);
+  text('📖 社交规则', centerX + 10, LAYOUT.top + 380, C.gold, 11);
+  
+  const rules = [
+    '触发场景：休息室/会议室/资料室/机房',
+    '触发条件：关系值≥11（认识阶段）',
+    '竞争关系：同职业Agent存在竞争，不触发',
+    '冷却时间：10分钟（同一对Agent在同地点）',
+    '效果：好感+1~3，关系+1',
+    '',
+    '关系阶段：',
+    '  陌生 0-10 / 认识 11-30',
+    '  朋友 31-70 / 挚友 71-100',
+    '  （无恋人阶段）',
+  ];
+  
+  rules.forEach((rule, i) => {
+    ctx.fillStyle = rule.startsWith('  ') ? C.text : (rule.includes('：') ? C.bright : C.text);
+    ctx.font = '9px Consolas';
+    ctx.fillText(rule, centerX + 10, LAYOUT.top + 395 + i * 14);
+  });
+  
+  // 右侧 - 事件日志
+  const rightX = 1920 - LAYOUT.right;
+  rect(rightX, LAYOUT.top, LAYOUT.right, 800, 'rgba(26,26,48,0.9)');
+  stroke(rightX, LAYOUT.top, LAYOUT.right, 800, C.border, 2);
+  text('📋 社交事件', rightX + 12, LAYOUT.top + 25, C.gold, 12);
+  
+  state.events.slice(-8).forEach((event, i) => {
+    const ey = LAYOUT.top + 40 + i * 45;
+    event.draw(rightX + 8, ey);
+  });
+  
+  // 底部
+  const bottomY = 1000 - LAYOUT.bottom;
+  rect(0, bottomY, 1920, LAYOUT.bottom, '#151525');
+  stroke(0, bottomY, 1920, LAYOUT.bottom, C.border, 2);
+  text('💡 点击Agent头像将其移入休息室，自动触发打招呼', 15, bottomY + 24, C.text, 10);
+  
+  // 模拟：每5秒尝试打招呼
+  if (state.time % 5000 < 20) {
+    simulateGreeting();
+  }
+  
+  // 清理完成的事件
+  state.events = state.events.filter(e => !e.isDone());
+  
+  requestAnimationFrame(render);
+}
+
+// 初始化：放置一些Agent到休息室
+state.rooms[0].addAgent(state.agents[0]); // 阿猿在休息室
+state.rooms[0].addAgent(state.agents[1]); // 小美在休息室
+
+render();
+</script>
+</body>
+</html>

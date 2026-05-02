@@ -1,5 +1,5 @@
 {
-  "name": "hermes-bungalow-frontend",
+  "name": "hermes-bungalow",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -9,8 +9,11 @@
     "preview": "vite preview --host 0.0.0.0 --port 3000 --strictPort"
   },
   "dependencies": {
+    "phaser": "^3.80.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.6"
   },
   "devDependencies": {

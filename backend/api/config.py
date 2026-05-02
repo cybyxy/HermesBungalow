@@ -31,14 +31,6 @@ REPO_ROOT = Path(__file__).parent.parent.resolve()
 HOST = os.getenv("HERMES_WEBUI_HOST", "127.0.0.1")
 PORT = int(os.getenv("HERMES_WEBUI_PORT", "8787"))
 
-# Project override: disable gateway mode by default.
-# Set HERMES_WEBUI_GATEWAY_MODE=1 to re-enable gateway watcher endpoints.
-GATEWAY_MODE = os.getenv("HERMES_WEBUI_GATEWAY_MODE", "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-}
-
 # ── TLS/HTTPS config (optional, env-overridable) ────────────────────────────
 TLS_CERT = os.getenv("HERMES_WEBUI_TLS_CERT", "").strip() or None
 TLS_KEY = os.getenv("HERMES_WEBUI_TLS_KEY", "").strip() or None
@@ -477,15 +469,35 @@ _DEFAULT_TOOLSETS = [
 ]
 def _resolve_cli_toolsets(cfg=None):
     """Resolve CLI toolsets using the agent's _get_platform_tools() so that
-    MCP server toolsets are automatically included, matching CLI behaviour."""
+    MCP server toolsets are automatically included, matching CLI behaviour.
+
+    Hermes `_get_platform_tools` treats ``platform_toolsets.cli: []`` as an
+    explicit empty allow-list and returns no toolsets; `AIAgent` then gets
+    ``enabled_toolsets=[]`` and loads **zero** tools (see model_tools
+    ``get_tool_definitions``). Empty resolution is therefore upgraded to the
+    built-in default list so WebUI / game agents keep file/terminal/web tools.
+    """
     if cfg is None:
         cfg = get_config()
+    out: list[str] = []
     try:
         from hermes_cli.tools_config import _get_platform_tools
-        return list(_get_platform_tools(cfg, "cli"))
+
+        raw = _get_platform_tools(cfg, "cli")
+        out = [str(x) for x in (raw or [])]
     except Exception:
-        # Fallback: read raw list from config (MCP toolsets will be missing)
-        return cfg.get("platform_toolsets", {}).get("cli", _DEFAULT_TOOLSETS)
+        cli = (cfg.get("platform_toolsets") or {}).get("cli", _DEFAULT_TOOLSETS)
+        if isinstance(cli, list):
+            out = [str(x) for x in cli]
+        else:
+            out = list(_DEFAULT_TOOLSETS)
+    if not out:
+        logger.warning(
+            "platform_toolsets.cli resolved to no toolsets (empty list or invalid config); "
+            "using built-in default toolsets so agents retain tools."
+        )
+        out = list(_DEFAULT_TOOLSETS)
+    return out
 
 CLI_TOOLSETS = _resolve_cli_toolsets()
 

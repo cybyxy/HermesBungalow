@@ -12,6 +12,7 @@ __pycache__/
 *.pyc
 backend/__pycache__/
 backend/*.pyc
+backend/data/*.db
 
 # Environment
 .env
