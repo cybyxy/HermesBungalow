@@ -113,10 +113,6 @@ def _extract_assistant_from_done_payload(data: Any) -> str:
     return ""
 
 
-_INVITE_RE = re.compile(
-    r'<hermes-bungalow-invoke\s+agent=["\']([^"\']+)["\']\s*>([\s\S]*?)</hermes-bungalow-invoke>',
-    re.IGNORECASE,
-)
 _AT_PIPE_LINE = re.compile(r"^\s*@([^\s|@]+)\s*[|\uff5c]\s*(.+)\s*$")
 _AT_SPACE_LINE = re.compile(r"^\s*@([^\s|@]+)\s+(.+)\s*$")
 
@@ -132,11 +128,11 @@ def _build_peer_hint_lines(agents: list[Any]) -> str:
     list_str = "，".join(parts)
     return (
         "（多 Agent：同伴无主从，可互转。Hermes 内置委派工具已关，同伴转交请在全文**最后单独一行**写："
-        "`@对方的 profile、游戏 id 或 姓名 | 交给对方的完整问题`（全角｜可代替|）。"
-        "也可用无竖线：`@对方 完整问题`。仍兼容旧标签 `<hermes-bungalow-invoke>...</hermes-bungalow-invoke>`。"
+        "`@对方的 profile、游戏 id、姓名或显示名 | 交给对方的完整说明`（全角｜可代替|）。"
+        "也可用无竖线：`@对方 完整说明`；群发除自己外全体：`@所有人 | 同一说明` 或 `@所有人 同一说明`（或 `@all …`）。"
         "勿向用户声称多 Agent 已禁用。同伴："
         + list_str
-        + "。无需转交时不要输出转交行/标签。）\n\n"
+        + "。无需转交时不要写以 `@` 开头的该行。）\n\n"
     )
 
 
@@ -162,29 +158,38 @@ def _parse_at_handoffs(text: str) -> list[tuple[str, str]]:
 
 def _parse_hermes_bungalow_invokes(text: str) -> list[tuple[str, str]]:
     seen: set[tuple[str, str]] = set()
-    merged: list[tuple[str, str]] = []
-    for m in _INVITE_RE.finditer(text or ""):
-        t, msg = m.group(1).strip(), m.group(2).strip()
-        if t and msg:
-            key = (t, msg)
-            if key not in seen:
-                seen.add(key)
-                merged.append((t, msg))
+    out: list[tuple[str, str]] = []
     for t, msg in _parse_at_handoffs(text):
         key = (t, msg)
         if key not in seen:
             seen.add(key)
-            merged.append((t, msg))
-    return merged
+            out.append((t, msg))
+    return out
+
+
+def _expand_broadcast_invokes(primary_agent: Any, agents: list[Any], invokes: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """`@所有人 | msg` / `@all | msg` → 除 primary 外每名同伴一条 (profile_token, msg)。"""
+    pid = getattr(primary_agent, "id", None)
+    out: list[tuple[str, str]] = []
+    for tt, msg in invokes:
+        t = str(tt).strip()
+        if t == "所有人" or t.lower() == "all":
+            for a in agents:
+                if getattr(a, "id", None) == pid:
+                    continue
+                prof = str(getattr(a, "profile", "") or "").strip() or str(getattr(a, "id", ""))
+                out.append((prof, msg))
+        else:
+            out.append((t, msg))
+    return out
 
 
 HANDOFF_CONTEXT_MAX = 28000
 
 
 def _strip_bungalow_invokes(text: str) -> str:
-    raw = _INVITE_RE.sub("\n", text or "")
     lines: list[str] = []
-    for raw_line in raw.splitlines():
+    for raw_line in (text or "").splitlines():
         line = raw_line.replace("\uff5c", "|").strip()
         if line.startswith("@") and (_AT_PIPE_LINE.match(line) or _AT_SPACE_LINE.match(line)):
             continue
@@ -211,7 +216,7 @@ def _compose_peer_handoff(peer_hint: str, invoker_full_reply: str, invoke_body: 
     if not stripped:
         return peer_hint + body
     ctx = (
-        "\n\n──────── 同伴本轮对用户输出的正文（转交行/@ 与旧 invoke 标签已剥离）────────\n"
+        "\n\n──────── 同伴本轮对用户输出的正文（@ 转交行已剥离）────────\n"
         f"{_truncate_handoff_context(stripped)}\n\n"
         "──────── 对方点名要你处理的任务 ────────\n"
         f"{body}"
@@ -348,7 +353,7 @@ def _orchestrated_peer_turns_sync(
     user_message: str,
     auto_peer: bool,
 ) -> dict[str, Any]:
-    """Primary turn (+ auto peer hint), parse @ / XML handoffs, run peer relay turns."""
+    """Primary turn (+ auto peer hint), parse @ handoffs, run peer relay turns."""
     with game._lock:
         agents = list(game.world.agents)
     peer_hint = _build_peer_hint_lines(agents) if auto_peer and len(agents) > 1 else ""
@@ -356,9 +361,12 @@ def _orchestrated_peer_turns_sync(
     sid0 = game.ensure_hermes_session_for_agent(primary_agent.id)
     prim = _sync_session_turn(sid0, full_message, bungalow_agent_id=primary_agent.id)
     primary_reply = str(prim.get("reply") or "")
-    invokes = _parse_hermes_bungalow_invokes(primary_reply)
+    invokes = _expand_broadcast_invokes(primary_agent, agents, _parse_hermes_bungalow_invokes(primary_reply))
     primary_prof = str(getattr(primary_agent, "profile", "") or "default")
     self_tokens = {primary_agent.id, primary_prof, primary_agent.name}
+    _dn = str(getattr(primary_agent, "display_name", "") or "").strip()
+    if _dn:
+        self_tokens.add(_dn)
     delegations: list[dict[str, Any]] = []
     for target_token, submsg in invokes:
         if target_token in self_tokens:
@@ -391,16 +399,23 @@ def _resolve_game_agent_token(token: str):
     t = token.strip()
     if not t:
         return None
+    tl = t.lower()
     with game._lock:
         agents = list(game.world.agents)
     for a in agents:
         if a.id == t:
             return a
     for a in agents:
-        if str(getattr(a, "profile", "") or "") == t:
+        prof = str(getattr(a, "profile", "") or "").strip()
+        if prof and (prof == t or prof.lower() == tl):
             return a
     for a in agents:
-        if a.name == t:
+        nm = str(getattr(a, "name", "") or "").strip()
+        if nm and (nm == t or nm.lower() == tl):
+            return a
+    for a in agents:
+        dn = str(getattr(a, "display_name", "") or "").strip()
+        if dn and (dn == t or dn.lower() == tl):
             return a
     return None
 
@@ -823,7 +838,7 @@ async def post_agent_relay_chat(request: Request) -> JSONResponse:
 
 
 async def post_agent_chat_orchestrated(request: Request) -> JSONResponse:
-    """One request: peer hint → primary Hermes turn → parse XML → peer relay turns.
+    """One request: peer hint → primary Hermes turn → parse @ handoffs → peer relay turns.
 
     Uses the server-side Hermes session pool (``ensure_hermes_session_for_agent``) for
     the primary and each peer so conversations accumulate. Body: ``agent_id``,

@@ -1,6 +1,6 @@
 /**
  * 全页 Phaser 壳：顶栏、右侧会话/过程（遮罩滚动 Text）、底栏菜单。
- * 底栏输入为覆盖在画布上的原生 textarea（IME 中文、复制粘贴由浏览器处理）；选图仍用系统 API。
+ * 底栏会话输入仅用 DOM textarea（定位叠在画布上），不在 Phaser 里绘制输入框描边。
  */
 import type Phaser from 'phaser';
 import type { InferenceEntry } from '../store/uiStore';
@@ -102,6 +102,9 @@ export class StudioShellUi {
     _ev: unknown,
   ) => void;
   private readonly textareaKeydown: (e: KeyboardEvent) => void;
+  /** 与 sync 解耦：滚动/缩放后仍对齐画布上的底栏框 */
+  private readonly boundLayoutChatInputDom: () => void;
+  private inputLayoutObserver: ResizeObserver | null = null;
 
   constructor(scene: Phaser.Scene, getSlice: () => ShellSyncSlice, getHandlers: () => ShellHandlers) {
     this.scene = scene;
@@ -193,15 +196,17 @@ export class StudioShellUi {
     const ta = document.createElement('textarea');
     ta.autocomplete = 'off';
     ta.spellcheck = true;
-    ta.placeholder = '输入消息 · Enter 发送 · Shift+Enter 换行 · 支持中文与粘贴';
+    ta.placeholder =
+      '输入消息 · Enter 发送 · Shift+Enter 换行 · @对方|或空格+要说的话 · 群发：@所有人|或 @所有人 同一说明';
     ta.tabIndex = 0;
     Object.assign(ta.style, {
       position: 'fixed',
-      zIndex: '10000',
+      /** 高于 BottomSheetHost(1100) / 其它壳层，避免被叠在下面「看不见」 */
+      zIndex: '2147483000',
       boxSizing: 'border-box',
       margin: '0',
       padding: '8px',
-      border: 'none',
+      border: `1px solid ${colors.border}`,
       borderRadius: '6px',
       background: 'rgba(26,26,48,0.97)',
       color: studioInk.body,
@@ -213,10 +218,19 @@ export class StudioShellUi {
       outline: 'none',
       overflow: 'auto',
       display: 'block',
-      pointerEvents: 'none',
+      pointerEvents: 'auto',
+      cursor: 'text',
+      visibility: 'visible',
+      opacity: '1',
     });
     this.chatInputEl = ta;
     document.body.appendChild(ta);
+
+    this.boundLayoutChatInputDom = () => {
+      this.layoutChatInputDom();
+    };
+    window.addEventListener('resize', this.boundLayoutChatInputDom);
+    window.addEventListener('scroll', this.boundLayoutChatInputDom, true);
 
     this.textareaKeydown = (e: KeyboardEvent) => {
       const aid = useUiStore.getState().selectedAgentId;
@@ -229,23 +243,52 @@ export class StudioShellUi {
       }
     };
     ta.addEventListener('keydown', this.textareaKeydown);
+
+    const mount = this.scene.game.canvas.parentElement;
+    if (typeof ResizeObserver !== 'undefined' && mount) {
+      this.inputLayoutObserver = new ResizeObserver(this.boundLayoutChatInputDom);
+      this.inputLayoutObserver.observe(mount);
+    }
+    this.layoutChatInputDom();
   }
 
   private layoutChatInputDom(): void {
     const canvas = this.scene.game.canvas;
+    if (!canvas || canvas.width < 2 || canvas.height < 2) return;
     const br = canvas.getBoundingClientRect();
     const scaleX = br.width / Math.max(1, canvas.width);
     const scaleY = br.height / Math.max(1, canvas.height);
     const { x, y, w, h } = this.inputRect;
     const el = this.chatInputEl;
+    const cw = Math.max(32, w * scaleX);
+    const ch = Math.max(28, h * scaleY);
     el.style.left = `${br.left + x * scaleX}px`;
     el.style.top = `${br.top + y * scaleY}px`;
-    el.style.width = `${Math.max(0, w * scaleX)}px`;
-    el.style.height = `${Math.max(0, h * scaleY)}px`;
-    el.style.pointerEvents = document.activeElement === el ? 'auto' : 'none';
+    el.style.width = `${cw}px`;
+    el.style.height = `${ch}px`;
+    el.style.visibility = cw >= 8 && ch >= 8 ? 'visible' : 'hidden';
+    el.style.pointerEvents = 'auto';
+
+    const aid = useUiStore.getState().selectedAgentId;
+    const streaming = Boolean(aid && useUiStore.getState().agentStreamIds[aid]);
+    const focused = document.activeElement === el;
+    if (streaming) {
+      el.style.border = `1px solid ${colors.border}`;
+      el.style.opacity = '0.75';
+    } else if (focused) {
+      el.style.border = `2px solid ${colors.gold}`;
+      el.style.opacity = '1';
+    } else {
+      el.style.border = `1px solid ${colors.border}`;
+      el.style.opacity = '1';
+    }
   }
 
   destroy(): void {
+    window.removeEventListener('resize', this.boundLayoutChatInputDom);
+    window.removeEventListener('scroll', this.boundLayoutChatInputDom, true);
+    this.inputLayoutObserver?.disconnect();
+    this.inputLayoutObserver = null;
     this.scene.input.off('wheel', this.wheelHandler);
     this.chatInputEl.removeEventListener('keydown', this.textareaKeydown);
     this.chatInputEl.remove();
@@ -544,10 +587,6 @@ export class StudioShellUi {
     const tay = by + 6;
     const inputH = Math.min(120, Math.max(34, bottom.h - 20));
     this.inputRect = { x: tax, y: tay, w: taW, h: inputH };
-    const inputActive = document.activeElement === this.chatInputEl;
-    this.bottomG.lineStyle(inputActive ? 2 : 1, inputActive ? hx(colors.gold) : hx(colors.border), 1);
-    this.bottomG.strokeRoundedRect(tax, tay, taW, inputH, 6);
-    this.miscHitZones.push({ x: tax, y: tay, w: taW, h: inputH, kind: 'focusInput' });
 
     const sendX = tax + taW + 8;
     const streaming = Boolean(selectedAgentId && useUiStore.getState().agentStreamIds[selectedAgentId]);
@@ -588,11 +627,6 @@ export class StudioShellUi {
     }
     for (const z of this.miscHitZones) {
       if (!hit(z)) continue;
-      if (z.kind === 'focusInput') {
-        this.layoutChatInputDom();
-        this.chatInputEl.focus({ preventScroll: true });
-        return true;
-      }
       const h = this.getHandlers();
       if (z.kind === 'refresh') {
         h.onRefresh();

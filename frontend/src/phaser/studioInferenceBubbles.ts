@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import type { InferenceEntry, InferenceVariant } from '../store/uiStore';
 import type { Agent, GameWorldSnapshot } from '../types/game';
 import { colors, professionColor, studioFontMeta, studioFontUi, studioInk } from '../ui/theme';
+import * as gameApi from '../services/gameApi';
 
 function hx(hex: string): number {
   return parseInt(hex.slice(1), 16);
@@ -26,17 +27,11 @@ function entryBubbleStyle(v: InferenceVariant): { border: number; fill: number; 
 
 export function userInferenceTargetNamePh(e: InferenceEntry, snapshot: GameWorldSnapshot): string {
   const body = (e.body || '').trim();
-  const relayM = body.match(/^\/relay\s+(\S+)\s*\|\s*/i);
-  if (relayM) {
-    const token = relayM[1]!.trim();
-    const hit = snapshot.agents.find((a) => a.id === token || a.profile === token || a.name === token);
-    return hit?.name ?? token;
-  }
-  const atM = body.match(/^@(\S+)\s*[|｜]\s*/);
-  if (atM) {
-    const token = atM[1]!.trim();
-    const hit = snapshot.agents.find((a) => a.id === token || a.profile === token || a.name === token);
-    return hit?.name ?? token;
+  const h = gameApi.parseUserHandoffPrefix(body);
+  if (h) {
+    if (gameApi.isBroadcastAllHandoffToken(h.token)) return '全体同伴';
+    const hit = gameApi.resolveGameAgent(snapshot.agents, h.token);
+    return hit?.name ?? h.token;
   }
   if (e.agentId) {
     const hit = snapshot.agents.find((a) => a.id === e.agentId);

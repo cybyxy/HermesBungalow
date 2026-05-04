@@ -37,9 +37,7 @@ function _eventTypeToChinese(eventType: string): string {
 }
 
 export function resolveAgent(snapshot: GameWorldSnapshot | null, token: string): Agent | undefined {
-  if (!snapshot) return undefined;
-  const t = token.trim();
-  return snapshot.agents.find((a) => a.id === t || a.profile === t || a.name === t);
+  return gameApi.resolveGameAgent(snapshot?.agents, token);
 }
 
 export function agentReplyHeadline(agent: Agent): string {
@@ -66,7 +64,7 @@ function buildHandoffPeerUserMessage(
   if (!stripped) {
     return withPeerHintForMessage(snapshot, task);
   }
-  const ctx = `\n\n──────── 同伴本轮对用户输出的正文（@/invoke 转交行已剥离，供你衔接上下文）────────\n${gameApi.truncateHandoffContext(stripped)}\n\n──────── 对方点名要你处理的任务 ────────\n${task}`;
+  const ctx = `\n\n──────── 同伴本轮对用户输出的正文（@ 转交行已剥离，供你衔接上下文）────────\n${gameApi.truncateHandoffContext(stripped)}\n\n──────── 对方点名要你处理的任务 ────────\n${task}`;
   return withPeerHintForMessage(snapshot, ctx);
 }
 
@@ -238,12 +236,15 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
     if (depth > MAX_INVOKE_DEPTH) {
       return;
     }
+    const expanded = gameApi.expandHermesInvokesForSender(fromAgent, snapshot?.agents ?? [], invokeList);
     const selfSet = new Set(
-      [fromAgent.id, fromAgent.profile ?? '', fromAgent.name].filter(Boolean) as string[],
+      [fromAgent.id, fromAgent.profile ?? '', fromAgent.name, (fromAgent.display_name ?? '').trim()].filter(
+        Boolean,
+      ) as string[],
     );
     type TargetRow = { peer: Agent; message: string };
     const targets: TargetRow[] = [];
-    for (const iv of invokeList) {
+    for (const iv of expanded) {
       if (selfSet.has(iv.target)) {
         continue;
       }
@@ -285,17 +286,54 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
     await runCollabWalkReturnToSpawn(fromAgent.id);
   };
 
-  const relayM = text.match(/^\/relay\s+(\S+)\s*\|\s*([\s\S]+)$/i);
-  const atRelayM = relayM ? null : text.match(/^@(\S+)\s*[|｜]\s*([\s\S]+)$/);
-  if (relayM || atRelayM) {
-    const token = String(relayM?.[1] ?? atRelayM?.[1] ?? '').trim();
-    const sub = String(relayM?.[2] ?? atRelayM?.[2] ?? '').trim();
+  const handoff = gameApi.parseUserHandoffPrefix(text);
+  if (handoff) {
+    const { token, message: sub } = handoff;
     if (!sub) {
-      onToast('转发内容不能为空（`/relay 目标 | 消息` 或 `@目标 | 消息`）');
+      onToast(
+        '转发内容不能为空。请使用：`@对方 profile/id/姓名/显示名 | 要说的话` 或 `@对方 要说的话`；群发：`@所有人 | …` 或 `@所有人 …`（竖线可用全角｜）',
+      );
       clearPendingFiles();
       return;
     }
     const append = useUiStore.getState().appendInference;
+
+    if (gameApi.isBroadcastAllHandoffToken(token)) {
+      if (!selectedAgent) {
+        onToast('请先在顶部选一个 Agent，再发 `@所有人 | …`（由当前 Agent 群发至其余同伴）');
+        clearPendingFiles();
+        return;
+      }
+      if (!snapshot || snapshot.agents.length < 2) {
+        onToast('至少需要两名 Agent 才能使用 `@所有人`');
+        clearPendingFiles();
+        return;
+      }
+      const relayRoundUserIdx = useUiStore.getState().inferenceLog.length;
+      append({
+        variant: 'user',
+        headline: '你 · 群发',
+        body: `@所有人 | ${sub}`,
+        agentId: selectedAgent.id,
+      });
+      try {
+        await dispatchInvokes(selectedAgent, [{ target: '所有人', message: sub }], 0, '');
+        void loadState();
+      } catch (e) {
+        append({
+          variant: 'error',
+          headline: '系统',
+          body: (e as Error).message,
+          agentId: selectedAgent.id,
+        });
+      } finally {
+        finalizeRound(relayRoundUserIdx);
+        clearInput();
+        clearPendingFiles();
+      }
+      return;
+    }
+
     const peer = resolveAgent(snapshot, token);
     if (peer && useUiStore.getState().agentStreamIds[peer.id]) {
       onToast(`${peer.name} 正在推理中，请稍后再试或切换到其他 Agent`);
@@ -306,14 +344,14 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
     append({
       variant: 'user',
       headline: '你 · 手动转发',
-      body: relayM ? `/relay ${token} | ${sub}` : `@${token} | ${sub}`,
+      body: `@${token} | ${sub}`,
       agentId: selectedAgent?.id ?? peer?.id ?? null,
     });
     if (!peer) {
       append({
         variant: 'error',
         headline: '系统',
-        body: `未找到目标「${token}」。请使用当前存档里 Agent 的 id、profile 或姓名。`,
+        body: `未找到目标「${token}」。请使用当前存档里 Agent 的 id、profile、姓名或显示名（@ 同一行）。`,
         agentId: selectedAgent?.id ?? null,
       });
       finalizeRound(relayRoundUserIdx);
@@ -328,7 +366,11 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
         agentReplyHeadline(peer),
         withPeerHintForMessage(snapshot, sub),
       );
-      const relayInvokes = gameApi.parseHermesBungalowInvokes(relayAcc);
+      const relayInvokes = gameApi.expandHermesInvokesForSender(
+        peer,
+        snapshot?.agents ?? [],
+        gameApi.parseHermesBungalowInvokes(relayAcc),
+      );
       if (relayInvokes.length > 0) {
         await dispatchInvokes(peer, relayInvokes, 0, relayAcc);
       }
@@ -350,7 +392,7 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
 
   if (!selectedAgent) {
     onToast(
-      '请先在顶部选一个 Agent 作为本轮对话入口（各 Agent 独立会话、地位对等）；点名另一名请用 `/relay id或profile或姓名 | 消息` 或 `@id或profile或姓名 | 消息`',
+      '请先在顶部选一个 Agent 作为本轮对话入口（各 Agent 独立会话、地位对等）；点名另一名请单独发：`@对方的 profile / id / 姓名 / 显示名 | 消息`（竖线可用全角｜）',
     );
     clearPendingFiles();
     return;
@@ -415,7 +457,11 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
       attachments,
     );
 
-    const invokes = gameApi.parseHermesBungalowInvokes(acc);
+    const invokes = gameApi.expandHermesInvokesForSender(
+      selectedAgent,
+      snapshot?.agents ?? [],
+      gameApi.parseHermesBungalowInvokes(acc),
+    );
     if (invokes.length > 0) {
       await dispatchInvokes(selectedAgent, invokes, 0, acc);
     }

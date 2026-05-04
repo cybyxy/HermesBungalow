@@ -45,19 +45,13 @@ function _eventTypeToChinese(eventType: string): string {
   return '工具使用中';
 }
 
-function resolveAgent(snapshot: GameWorldSnapshot | null, token: string): Agent | undefined {
-  if (!snapshot) return undefined;
-  const t = token.trim();
-  return snapshot.agents.find((a) => a.id === t || a.profile === t || a.name === t);
-}
-
 /** 右侧推理与对话区：Agent 回复行标题为「名称 · 职业」。 */
 function agentReplyHeadline(agent: Agent): string {
   const p = (agent.profession || '').trim();
   return p ? `${agent.name} · ${p}` : agent.name;
 }
 
-/** Prepend the same peer handoff instructions (@ / legacy XML) so every turn (any agent) can reach others. */
+/** Prepend 同伴 @ 转交说明，使每轮（任意 Agent）都能点名其他人。 */
 function withPeerHintForMessage(snapshot: GameWorldSnapshot | null, core: string): string {
   if (!snapshot || snapshot.agents.length < 2) return core;
   return (
@@ -78,7 +72,7 @@ function buildHandoffPeerUserMessage(
   if (!stripped) {
     return withPeerHintForMessage(snapshot, task);
   }
-  const ctx = `\n\n──────── 同伴本轮对用户输出的正文（@/invoke 转交行已剥离，供你衔接上下文）────────\n${gameApi.truncateHandoffContext(stripped)}\n\n──────── 对方点名要你处理的任务 ────────\n${task}`;
+  const ctx = `\n\n──────── 同伴本轮对用户输出的正文（@ 转交行已剥离，供你衔接上下文）────────\n${gameApi.truncateHandoffContext(stripped)}\n\n──────── 对方点名要你处理的任务 ────────\n${task}`;
   return withPeerHintForMessage(snapshot, ctx);
 }
 
@@ -495,16 +489,19 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
       if (depth > MAX_INVOKE_DEPTH) {
         return;
       }
+      const expanded = gameApi.expandHermesInvokesForSender(fromAgent, snapshot?.agents ?? [], invokeList);
       const selfSet = new Set(
-        [fromAgent.id, fromAgent.profile ?? '', fromAgent.name].filter(Boolean) as string[],
+        [fromAgent.id, fromAgent.profile ?? '', fromAgent.name, (fromAgent.display_name ?? '').trim()].filter(
+          Boolean,
+        ) as string[],
       );
       type TargetRow = { peer: Agent; message: string };
       const targets: TargetRow[] = [];
-      for (const iv of invokeList) {
+      for (const iv of expanded) {
         if (selfSet.has(iv.target)) {
           continue;
         }
-        const peer = resolveAgent(snapshot, iv.target);
+        const peer = gameApi.resolveGameAgent(snapshot?.agents, iv.target);
         if (!peer) {
           append({
             variant: 'error',
@@ -542,18 +539,55 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
       await runCollabWalkReturnToSpawn(fromAgent.id);
     };
 
-    const relayM = text.match(/^\/relay\s+(\S+)\s*\|\s*([\s\S]+)$/i);
-    const atRelayM = relayM ? null : text.match(/^@(\S+)\s*[|｜]\s*([\s\S]+)$/);
-    if (relayM || atRelayM) {
-      const token = String(relayM?.[1] ?? atRelayM?.[1] ?? '').trim();
-      const sub = String(relayM?.[2] ?? atRelayM?.[2] ?? '').trim();
+    const handoff = gameApi.parseUserHandoffPrefix(text);
+    if (handoff) {
+      const { token, message: sub } = handoff;
       if (!sub) {
-        setToast('转发内容不能为空（`/relay 目标 | 消息` 或 `@目标 | 消息`）');
+        setToast(
+          '转发内容不能为空。请使用：`@对方 profile/id/姓名/显示名 | 要说的话` 或 `@对方 要说的话`；群发：`@所有人 | …` 或 `@所有人 …`（竖线可用全角｜）',
+        );
         setPendingImages([]);
         return;
       }
       const append = useUiStore.getState().appendInference;
-      const peer = resolveAgent(snapshot, token);
+
+      if (gameApi.isBroadcastAllHandoffToken(token)) {
+        if (!selectedAgent) {
+          setToast('请先在顶部选一个 Agent，再发 `@所有人 | …`（由当前 Agent 群发至其余同伴）');
+          setPendingImages([]);
+          return;
+        }
+        if (!snapshot || snapshot.agents.length < 2) {
+          setToast('至少需要两名 Agent 才能使用 `@所有人`');
+          setPendingImages([]);
+          return;
+        }
+        const relayRoundUserIdx = useUiStore.getState().inferenceLog.length;
+        append({
+          variant: 'user',
+          headline: '你 · 群发',
+          body: `@所有人 | ${sub}`,
+          agentId: selectedAgent.id,
+        });
+        try {
+          await dispatchInvokes(selectedAgent, [{ target: '所有人', message: sub }], 0, '');
+          void loadState();
+        } catch (e) {
+          append({
+            variant: 'error',
+            headline: '系统',
+            body: (e as Error).message,
+            agentId: selectedAgent.id,
+          });
+        } finally {
+          finalizeRound(relayRoundUserIdx);
+          setInput('');
+          setPendingImages([]);
+        }
+        return;
+      }
+
+      const peer = gameApi.resolveGameAgent(snapshot?.agents, token);
       if (peer && useUiStore.getState().agentStreamIds[peer.id]) {
         setToast(`${peer.name} 正在推理中，请稍后再试或切换到其他 Agent`);
         setPendingImages([]);
@@ -563,14 +597,14 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
       append({
         variant: 'user',
         headline: '你 · 手动转发',
-        body: relayM ? `/relay ${token} | ${sub}` : `@${token} | ${sub}`,
+        body: `@${token} | ${sub}`,
         agentId: selectedAgent?.id ?? peer?.id ?? null,
       });
       if (!peer) {
         append({
           variant: 'error',
           headline: '系统',
-          body: `未找到目标「${token}」。请使用当前存档里 Agent 的 id、profile 或姓名。`,
+          body: `未找到目标「${token}」。请使用当前存档里 Agent 的 id、profile、姓名或显示名（@ 同一行）。`,
           agentId: selectedAgent?.id ?? null,
         });
         finalizeRound(relayRoundUserIdx);
@@ -584,7 +618,11 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
           agentReplyHeadline(peer),
           withPeerHintForMessage(snapshot, sub),
         );
-        const relayInvokes = gameApi.parseHermesBungalowInvokes(relayAcc);
+        const relayInvokes = gameApi.expandHermesInvokesForSender(
+          peer,
+          snapshot?.agents ?? [],
+          gameApi.parseHermesBungalowInvokes(relayAcc),
+        );
         if (relayInvokes.length > 0) {
           await dispatchInvokes(peer, relayInvokes, 0, relayAcc);
         }
@@ -606,7 +644,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
 
     if (!selectedAgent) {
       setToast(
-        '请先在顶部选一个 Agent 作为本轮对话入口（各 Agent 独立会话、地位对等）；点名另一名请用 `/relay id或profile或姓名 | 消息` 或 `@id或profile或姓名 | 消息`',
+        '请先在顶部选一个 Agent 作为本轮对话入口（各 Agent 独立会话、地位对等）；点名另一名请单独发：`@对方的 profile / id / 姓名 / 显示名 | 消息`（竖线可用全角｜）',
       );
       setPendingImages([]);
       return;
@@ -666,7 +704,11 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
 
       const { text: acc } = await runSseForAgent(selectedAgent, agentReplyHeadline(selectedAgent), messageToModel, attachments);
 
-      const invokes = gameApi.parseHermesBungalowInvokes(acc);
+      const invokes = gameApi.expandHermesInvokesForSender(
+        selectedAgent,
+        snapshot?.agents ?? [],
+        gameApi.parseHermesBungalowInvokes(acc),
+      );
       if (invokes.length > 0) {
         await dispatchInvokes(selectedAgent, invokes, 0, acc);
       }
@@ -836,7 +878,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
                   boxSizing: 'border-box',
                   boxShadow: '0 -6px 20px rgba(0,0,0,0.35)',
                 }}
-                placeholder="支持 Markdown；Enter 发送，Shift+Enter 换行。`/relay 对方 | 消息` 或 `@对方 | 消息` 可点名另一名收件人"
+                placeholder="Markdown；Enter 发送。点名：`@对方profile或id或姓名|消息`；群发：`@所有人|同一消息`（全角｜亦可）"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {

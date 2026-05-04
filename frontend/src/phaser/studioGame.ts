@@ -192,6 +192,9 @@ class StudioScene extends Phaser.Scene {
   /** 协作走近：办公室本地脚底像素，覆盖 Tiled spawn 仅用于绘制 */
   private collabWalkFootOverride = new Map<string, { ox: number; oy: number }>();
   private collabWalkBusy = new Set<string>();
+  /** 协作对话时朝向对方；与 {@link collabFacingPeer} 成对清除 */
+  private collabFacingOverride = new Map<string, Direction>();
+  private collabFacingPeer = new Map<string, string>();
 
   constructor() {
     super({ key: 'StudioScene' });
@@ -663,7 +666,8 @@ class StudioScene extends Phaser.Scene {
 
       const vis = pack.agentVisuals[agent.id] ?? { dir: 'down' as Direction, frame: 0 };
       const useMapFacing = !!spawn && this.officeRoot && agent.status !== 'walking';
-      const dirForFrame = useMapFacing ? spawn.direction : vis.dir;
+      const convFace = this.collabFacingOverride.get(agent.id);
+      const dirForFrame = convFace ? convFace : useMapFacing ? spawn.direction : vis.dir;
       const frame = personFrameIndex(dirForFrame, vis.frame);
       if (logAgentPlacement) {
         const hasTexture = this.textures.exists(texKey);
@@ -781,9 +785,51 @@ class StudioScene extends Phaser.Scene {
 
   private static readonly COLLAB_WALK_STEP_MS = 95;
 
+  /** 脚底连线方向：谁脚在谁哪一侧（与 CenterStage `dirFromDelta` 一致） */
+  private static directionTowardDelta(dx: number, dy: number): Direction {
+    if (dx === 0 && dy === 0) return 'down';
+    if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
+    return dy > 0 ? 'down' : 'up';
+  }
+
+  /** 解除「与某 Agent 面对面」状态（双方恢复 Tiled 默认朝向） */
+  private clearCollabFacingPair(agentId: string): void {
+    const peer = this.collabFacingPeer.get(agentId);
+    this.collabFacingOverride.delete(agentId);
+    this.collabFacingPeer.delete(agentId);
+    if (peer) {
+      this.collabFacingOverride.delete(peer);
+      this.collabFacingPeer.delete(peer);
+    }
+  }
+
+  /** 走近后双方脚底互视朝向 */
+  private applyCollabConversationFacing(
+    fromAgentId: string,
+    peerAgentId: string,
+    fromSpawn: OfficeSceneSpawn,
+    peerSpawn: OfficeSceneSpawn,
+  ): void {
+    this.clearCollabFacingPair(fromAgentId);
+    this.clearCollabFacingPair(peerAgentId);
+    const fromW = this.collabWalkFootOverride.get(fromAgentId);
+    const peerW = this.collabWalkFootOverride.get(peerAgentId);
+    const fromPx = fromW?.ox ?? fromSpawn.px;
+    const fromPy = fromW?.oy ?? fromSpawn.py;
+    const peerPx = peerW?.ox ?? peerSpawn.px;
+    const peerPy = peerW?.oy ?? peerSpawn.py;
+    const fromDir = StudioScene.directionTowardDelta(peerPx - fromPx, peerPy - fromPy);
+    const peerDir = StudioScene.directionTowardDelta(fromPx - peerPx, fromPy - peerPy);
+    this.collabFacingOverride.set(fromAgentId, fromDir);
+    this.collabFacingOverride.set(peerAgentId, peerDir);
+    this.collabFacingPeer.set(fromAgentId, peerAgentId);
+    this.collabFacingPeer.set(peerAgentId, fromAgentId);
+  }
+
   /** 清除协作行走覆盖（进入新一轮转交前调用） */
   clearCollabWalkFootOverride(agentId: string): void {
     this.collabWalkFootOverride.delete(agentId);
+    this.clearCollabFacingPair(agentId);
   }
 
   /** 脚底路径动画；`clearOverrideWhenDone` 为 true 时结束时删除覆盖（走回出生点） */
@@ -852,11 +898,19 @@ class StudioScene extends Phaser.Scene {
     const peerSpawn = StudioScene.matchOfficeSpawn(peerA, this.officeMapSpawns);
     if (!fromSpawn || !peerSpawn) return false;
 
+    /** 同伴若在地图上已有行走覆盖，以其当前脚底为准，避免仍走向 Tiled 出生工位 */
+    const peerO = this.collabWalkFootOverride.get(peerAgentId);
+    const peerTargetFoot: OfficeSceneSpawn = peerO
+      ? { ...peerSpawn, px: peerO.ox, py: peerO.oy }
+      : peerSpawn;
+
     const feetBlock: { px: number; py: number }[] = [];
     for (const a of pack.snapshot.agents) {
-      if (a.id === fromAgentId || a.id === peerAgentId) continue;
+      if (a.id === fromAgentId) continue;
       const s = StudioScene.matchOfficeSpawn(a, this.officeMapSpawns);
-      if (s) feetBlock.push({ px: s.px, py: s.py });
+      if (!s) continue;
+      const wlk = this.collabWalkFootOverride.get(a.id);
+      feetBlock.push({ px: wlk?.ox ?? s.px, py: wlk?.oy ?? s.py });
     }
     const o = opts?.chainFromCurrent ? this.collabWalkFootOverride.get(fromAgentId) : undefined;
     const fromFootOverride = o ? { px: o.ox, py: o.oy } : null;
@@ -868,11 +922,14 @@ class StudioScene extends Phaser.Scene {
       this.officeObstacleTilesCache,
       feetBlock,
       fromSpawn,
-      peerSpawn,
+      peerTargetFoot,
       fromFootOverride,
     );
     if (!plan) return false;
+    this.clearCollabFacingPair(fromAgentId);
+    this.clearCollabFacingPair(peerAgentId);
     if (plan.steps.length <= 1) {
+      this.applyCollabConversationFacing(fromAgentId, peerAgentId, fromSpawn, peerSpawn);
       return true;
     }
     await this.runCollabFootAnimation(
@@ -881,6 +938,7 @@ class StudioScene extends Phaser.Scene {
       StudioScene.COLLAB_WALK_STEP_MS,
       false,
     );
+    this.applyCollabConversationFacing(fromAgentId, peerAgentId, fromSpawn, peerSpawn);
     return true;
   }
 
@@ -903,7 +961,9 @@ class StudioScene extends Phaser.Scene {
     for (const a of pack.snapshot.agents) {
       if (a.id === fromAgentId) continue;
       const s = StudioScene.matchOfficeSpawn(a, this.officeMapSpawns);
-      if (s) feetBlock.push({ px: s.px, py: s.py });
+      if (!s) continue;
+      const wlk = this.collabWalkFootOverride.get(a.id);
+      feetBlock.push({ px: wlk?.ox ?? s.px, py: wlk?.oy ?? s.py });
     }
     const o = this.collabWalkFootOverride.get(fromAgentId);
     const fromFoot = o ? { px: o.ox, py: o.oy } : { px: fromSpawn.px, py: fromSpawn.py };
@@ -919,6 +979,7 @@ class StudioScene extends Phaser.Scene {
     );
     if (!plan || plan.steps.length <= 1) {
       this.collabWalkFootOverride.delete(fromAgentId);
+      this.clearCollabFacingPair(fromAgentId);
       return plan !== null;
     }
     await this.runCollabFootAnimation(
@@ -927,6 +988,7 @@ class StudioScene extends Phaser.Scene {
       StudioScene.COLLAB_WALK_STEP_MS,
       true,
     );
+    this.clearCollabFacingPair(fromAgentId);
     return true;
   }
 

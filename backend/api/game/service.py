@@ -14,6 +14,7 @@ GREETING_ALLOWED_ROOMS = frozenset({"休息室", "会议室", "资料室", "机�
 GREETING_COOLDOWN_SEC = 600.0
 GAME_TICK_MINUTES = 1
 
+from .competition import resolve_task_competition
 from .llm_events import apply_parsed_events, extract_game_event_tags
 from .models import Agent, GameWorld, Task, default_world
 from .persistence import get_save_meta, init_db, load_world_from_db, save_world_to_db, _connect
@@ -338,47 +339,41 @@ class GameService:
                 return result
 
             if len(candidates) >= 2:
-                # 同一 profile（owner）的同职业 Agent 不能互相竞争，只留一个
-                by_profile: dict[str, Agent] = {}
-                for c in candidates:
-                    by_profile.setdefault(c.profile, c)
-                competition_pool = list(by_profile.values())
-                if len(competition_pool) < 2:
-                    # 只有一个有效竞争者，直接分配
-                    a = competition_pool[0]
-                    task.assignee_id = a.id
-                    task.status = "in_progress"
-                    a.status = "working"
-                    a.current_task_id = task_id
+                # 竞争抽签：使用 competition.py
+                competition_result = resolve_task_competition(
+                    task=task,
+                    world_agents=self._world.agents,
+                    broadcast_fn=self._broadcast,
+                )
+                if competition_result:
+                    result["competition"] = True
+                    result["winner_id"] = competition_result.winner_id
+                    # 已在 resolve_task_competition 内广播
+                    # 同步写 event_logs（数据完整性 > 性能）
                     self._append_event_log(
-                        "task_assign", {"task_id": task_id, "assignee_id": a.id, "competition": False}
+                        "competition_result",
+                        {
+                            "task_id": task_id,
+                            "winner_id": competition_result.winner_id,
+                            "loser_ids": competition_result.loser_ids,
+                            "winner_reward": competition_result.winner_reward,
+                            "loser_moods": competition_result.loser_moods,
+                            "loser_relations": competition_result.loser_relations,
+                            "double_penalty": competition_result.double_penalty,
+                        },
                     )
-                    self._broadcast("task", {"action": "assign", "task": task.to_dict()})
                     return result
-                winner = random.choice(competition_pool)
-                loser = next((c for c in competition_pool if c.id != winner.id), None)
-                mood_gain = random.randint(8, 15)
-                mood_loss = random.randint(5, 10)
-                winner.mood = min(100, winner.mood + mood_gain)
-                if loser:
-                    loser.mood = max(0, loser.mood - mood_loss)
-                task.assignee_id = winner.id
+                # 兜底：单人分配
+                a = candidates[0]
+                task.assignee_id = a.id
                 task.status = "in_progress"
-                winner.status = "working"
-                winner.current_task_id = task_id
-                hist = {
-                    "id": str(uuid.uuid4()),
-                    "task_id": task_id,
-                    "profession": prof,
-                    "winner_id": winner.id,
-                    "loser_id": loser.id if loser else None,
-                    "mood_gain": mood_gain,
-                    "mood_loss": mood_loss,
-                }
-                self._world.competition_history.insert(0, hist)
-                result["competition"] = True
-                result["winner_id"] = winner.id
-                self._broadcast("competition", hist)
+                a.status = "working"
+                a.current_task_id = task_id
+                self._append_event_log(
+                    "task_assign", {"task_id": task_id, "assignee_id": a.id, "competition": False}
+                )
+                self._broadcast("task", {"action": "assign", "task": task.to_dict()})
+                return result
             elif len(candidates) == 1:
                 a = candidates[0]
                 task.assignee_id = a.id

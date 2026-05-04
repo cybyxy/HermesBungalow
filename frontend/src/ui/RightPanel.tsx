@@ -6,6 +6,7 @@ import { AgentAvatar } from './AgentAvatar';
 import { InferenceMarkdownBody, inferenceMono } from './inferenceMarkdown';
 import { MarkdownWorkspace } from './MarkdownWorkspace';
 import { colors, layoutPx } from './theme';
+import * as gameApi from '../services/gameApi';
 
 const panel: CSSProperties = {
   width: layoutPx.sidePanel,
@@ -83,20 +84,14 @@ function UserAvatar(props: { size?: number }) {
   );
 }
 
-/** 用户消息首行：对话目标 Agent 名称（``agentId``；``/relay`` 或 ``@…|`` 从正文解析收件人）。 */
+/** 用户消息首行：对话目标 Agent 名称（``agentId``；正文 ``@…|`` 或旧式 ``/relay`` 解析收件人）。 */
 function userInferenceTargetName(e: InferenceEntry, snapshot: GameWorldSnapshot): string {
   const body = (e.body || '').trim();
-  const relayM = body.match(/^\/relay\s+(\S+)\s*\|\s*/i);
-  if (relayM) {
-    const token = relayM[1].trim();
-    const hit = snapshot.agents.find((a) => a.id === token || a.profile === token || a.name === token);
-    return hit?.name ?? token;
-  }
-  const atM = body.match(/^@(\S+)\s*[|｜]\s*/);
-  if (atM) {
-    const token = atM[1].trim();
-    const hit = snapshot.agents.find((a) => a.id === token || a.profile === token || a.name === token);
-    return hit?.name ?? token;
+  const h = gameApi.parseUserHandoffPrefix(body);
+  if (h) {
+    if (gameApi.isBroadcastAllHandoffToken(h.token)) return '全体同伴';
+    const hit = gameApi.resolveGameAgent(snapshot.agents, h.token);
+    return hit?.name ?? h.token;
   }
   if (e.agentId) {
     const hit = snapshot.agents.find((a) => a.id === e.agentId);

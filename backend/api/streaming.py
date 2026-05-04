@@ -42,7 +42,7 @@ def _sync_bungalow_agent_hermes_session(agent_id: str | None, started_sid: str, 
         logger.debug("bungalow hermes_session_id sync failed: %s", exc, exc_info=True)
 
 # Hermes native toolsets that spawn sub-agent / delegation side channels — stripped from Web UI
-# streaming; multi-agent handoff uses @-lines and/or legacy `<hermes-bungalow-invoke>` (game UI).
+# streaming; multi-agent handoff uses @-lines (game UI).
 # Set HERMES_BUNGALOW_ALLOW_NATIVE_DELEGATION=1 to restore stock Hermes behaviour.
 _BUNGALOW_DISABLED_AGENT_TOOLSETS = frozenset({"delegation"})
 
@@ -1771,11 +1771,11 @@ def _run_agent_streaming(
             if not _allow_native_delegation:
                 workspace_system_msg += (
                     "\n\n[Hermes Bungalow] Hermes built-in delegation/sub-agent TOOLS are disabled "
-                    "in this UI — never invoke them. Peer handoff still works: follow the user "
-                    "message instructions for collaborators — at the end of your assistant reply "
-                    "add ONE line `@peer_profile_or_id_or_name | full task for them` (ASCII or "
-                    "full-width vertical bar). Legacy `<hermes-bungalow-invoke>...</hermes-bungalow-invoke>` "
-                    "is still accepted. Do NOT tell the user that multi-agent or delegation is "
+                    "in this UI — never invoke them. Peer handoff: at the end of your assistant reply "
+                    "add ONE line `@peer_profile_or_id_or_name_or_display_name | full task for them` "
+                    "(ASCII or full-width vertical bar), or one line `@peer_token full task` without a bar, "
+                    "or `@所有人 | same task for everyone except yourself` / `@all | ...` for broadcast. "
+                    "Do NOT tell the user that multi-agent or delegation is "
                     "\"disabled\", that you cannot call other agents, or refuse handoff."
                 )
             # Resolve personality prompt from config.yaml agent.personalities
