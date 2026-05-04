@@ -21,7 +21,8 @@ interface GameStore {
   error: string | null;
   gatewayStatus: GatewayStatus;
   lastEvents: { channel: string; data: Record<string, unknown>; at: number }[];
-  loadState: () => Promise<void>;
+  /** `silent`: 不置 `loading: true`，用于编排/轮询后刷新，避免顶栏「刷新」与推理态被全局 loading 打断。 */
+  loadState: (opts?: { silent?: boolean }) => Promise<void>;
   moveAgent: (agentId: string, roomId: string) => Promise<void>;
   assignTask: (taskId: number, agentId?: string | null) => Promise<void>;
   applyLlmTags: (text: string) => Promise<void>;
@@ -52,8 +53,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
   gatewayStatus: 'disconnected',
   lastEvents: [],
 
-  loadState: async () => {
-    set({ loading: true, error: null });
+  loadState: async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent);
+    if (!silent) set({ loading: true, error: null });
+    else set({ error: null });
     let lastErr: Error | null = null;
     for (let attempt = 0; attempt < LOAD_STATE_MAX_ATTEMPTS; attempt++) {
       try {

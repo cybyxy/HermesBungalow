@@ -445,12 +445,32 @@ export function buildPeerInvokeHint(agentLines: { name: string; profile?: string
  * Backend-orchestrated chat: injects peer hint (if ≥2 agents), runs primary turn,
  * parses @ handoff lines, runs peer relays. Sessions come from the server pool.
  */
+/** 后端编排时从 Hermes 流式队列收集的「过程」条目（推理 / 工具起止）。 */
+export type OrchestrationTraceRow =
+  | { type: 'reasoning'; text: string }
+  | {
+      type: 'tool';
+      name?: string;
+      preview?: string;
+      event_type?: string;
+      args?: Record<string, string>;
+    }
+  | {
+      type: 'tool_complete';
+      name?: string;
+      preview?: string;
+      event_type?: string;
+      duration?: unknown;
+      is_error?: boolean;
+    };
+
 export type OrchestrationDelegationRow = {
   target: string;
   profile?: string;
   ok?: boolean;
   reply?: string;
   error?: string | null;
+  trace?: OrchestrationTraceRow[];
   nested?: OrchestrationDelegationRow[];
 };
 
@@ -464,6 +484,7 @@ export type AgentChatOrchestratedResult = {
     profile?: string;
     internal_session_id?: string;
     user_handoff?: string;
+    trace?: OrchestrationTraceRow[];
   };
   delegations?: OrchestrationDelegationRow[];
   error?: string;
@@ -485,6 +506,44 @@ export async function agentChatOrchestrated(payload: {
       auto_peer: payload.auto_peer !== false,
       attachments: payload.attachments?.length ? payload.attachments : undefined,
     }),
+  });
+  return parseJson(res);
+}
+
+export type AgentChatOrchestratedRunResponse = {
+  ok: boolean;
+  run_id?: string;
+  work_order_id?: string;
+  error?: string;
+};
+
+/** 启动编排一轮（随后用 EventSource GET …/stream?run_id= 收 SSE）。 */
+export async function postAgentChatOrchestratedRun(payload: {
+  agent_id: string;
+  message: string;
+  auto_peer?: boolean;
+  attachments?: string[];
+}): Promise<AgentChatOrchestratedRunResponse> {
+  const res = await fetch('/api/game/agent-chat-orchestrated/run', {
+    method: 'POST',
+    headers: JSON_HDR,
+    credentials: 'same-origin',
+    body: JSON.stringify({
+      agent_id: payload.agent_id,
+      message: payload.message,
+      auto_peer: payload.auto_peer !== false,
+      attachments: payload.attachments?.length ? payload.attachments : undefined,
+    }),
+  });
+  return parseJson(res);
+}
+
+export async function cancelGameAgentStream(stream_id: string): Promise<{ ok: boolean; cancelled?: boolean }> {
+  const res = await fetch('/api/game/agent-stream/cancel', {
+    method: 'POST',
+    headers: JSON_HDR,
+    credentials: 'same-origin',
+    body: JSON.stringify({ stream_id }),
   });
   return parseJson(res);
 }

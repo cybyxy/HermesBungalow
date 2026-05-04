@@ -53,6 +53,7 @@ import json
 import logging
 import random
 import re
+import itertools
 import queue
 import threading
 import time
@@ -60,6 +61,7 @@ import uuid
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -104,6 +106,9 @@ def _orchestrated_peer_turns_sync(
     user_message: str,
     auto_peer: bool,
     primary_attachments: list[str] | None = None,
+    *,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
+    run_id: str = "",
 ) -> dict[str, Any]:
     return bung_agent.orchestrated_peer_turns_sync(
         primary_agent,
@@ -111,6 +116,8 @@ def _orchestrated_peer_turns_sync(
         auto_peer,
         game,
         primary_attachments=primary_attachments,
+        event_sink=event_sink,
+        run_id=run_id,
     )
 
 
@@ -121,9 +128,70 @@ def _run_recursive_peer_invokes(
     invoker_full_reply: str,
     peer_hint: str,
     agents: list[Any],
+    *,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
+    run_id: str = "",
 ) -> list[dict[str, Any]]:
     return bung_agent.run_recursive_peer_invokes(
-        game, invoker_agent, invoke_rows, depth, invoker_full_reply, peer_hint, agents
+        game,
+        invoker_agent,
+        invoke_rows,
+        depth,
+        invoker_full_reply,
+        peer_hint,
+        agents,
+        event_sink=event_sink,
+        run_id=run_id,
+    )
+
+
+_ORCH_SSE_LOCK = threading.Lock()
+_ORCH_SSE_QUEUES: dict[str, queue.Queue] = {}
+
+
+def _orchestrate_turn_sync(
+    primary: Any,
+    message: str,
+    auto_peer: bool,
+    primary_attachments: list[str] | None,
+    *,
+    event_sink: Callable[[dict[str, Any]], None] | None,
+    run_id: str,
+) -> dict[str, Any]:
+    """Sync core of orchestrated chat (JSON and SSE workers)."""
+    uh = parse_user_handoff_prefix(message)
+    if uh:
+        with game._lock:
+            agents = list(game.world.agents)
+        peer_hint = _build_peer_hint_lines(agents) if auto_peer and len(agents) > 1 else ""
+        token = str(uh.get("token") or "").strip()
+        sub = str(uh.get("message") or "").strip()
+        if not sub:
+            raise ValueError("empty_handoff_body")
+        if is_broadcast_all_handoff_token(token):
+            if len(agents) < 2:
+                raise ValueError("need_two_agents_for_broadcast")
+            delegations = _run_recursive_peer_invokes(
+                primary, [(token, sub)], 0, "", peer_hint, agents, event_sink=event_sink, run_id=run_id
+            )
+            return {
+                "ok": True,
+                "primary": {"ok": True, "reply": "", "error": None, "user_handoff": "broadcast"},
+                "delegations": delegations,
+            }
+        peer = _resolve_game_agent_token(token)
+        if not peer:
+            raise LookupError("target_agent_not_found")
+        delegations = _run_recursive_peer_invokes(
+            primary, [(token, sub)], 0, "", peer_hint, agents, event_sink=event_sink, run_id=run_id
+        )
+        return {
+            "ok": True,
+            "primary": {"ok": True, "reply": "", "error": None, "user_handoff": "relay"},
+            "delegations": delegations,
+        }
+    return _orchestrated_peer_turns_sync(
+        primary, message, auto_peer, primary_attachments, event_sink=event_sink, run_id=run_id
     )
 
 
@@ -608,55 +676,29 @@ async def post_agent_chat_orchestrated(request: Request) -> JSONResponse:
     wo_id = game.monitor_start_work_order(message, primary.id)
     loop = asyncio.get_event_loop()
     try:
-        uh = parse_user_handoff_prefix(message)
-        if uh:
-            with game._lock:
-                agents = list(game.world.agents)
-            peer_hint = _build_peer_hint_lines(agents) if auto_peer and len(agents) > 1 else ""
-            token = str(uh.get("token") or "").strip()
-            sub = str(uh.get("message") or "").strip()
-            if not sub:
-                game.monitor_abort_work_order(wo_id, "empty_handoff_body")
-                return JSONResponse({"ok": False, "error": "empty_handoff_body"}, status_code=400)
-            if is_broadcast_all_handoff_token(token):
-                if len(agents) < 2:
-                    game.monitor_abort_work_order(wo_id, "need_two_agents_for_broadcast")
-                    return JSONResponse({"ok": False, "error": "need_two_agents_for_broadcast"}, status_code=400)
-                delegations = _run_recursive_peer_invokes(
-                    primary, [(token, sub)], 0, "", peer_hint, agents
-                )
-                result = {
-                    "ok": True,
-                    "primary": {"ok": True, "reply": "", "error": None, "user_handoff": "broadcast"},
-                    "delegations": delegations,
-                }
-            else:
-                peer = _resolve_game_agent_token(token)
-                if not peer:
-                    game.monitor_abort_work_order(wo_id, "target_agent_not_found")
-                    return JSONResponse(
-                        {"ok": False, "error": "target_agent_not_found", "token": token},
-                        status_code=404,
-                    )
-                delegations = _run_recursive_peer_invokes(
-                    primary, [(token, sub)], 0, "", peer_hint, agents
-                )
-                result = {
-                    "ok": True,
-                    "primary": {"ok": True, "reply": "", "error": None, "user_handoff": "relay"},
-                    "delegations": delegations,
-                }
-        else:
-            result = await loop.run_in_executor(
-                None,
-                partial(
-                    _orchestrated_peer_turns_sync,
-                    primary,
-                    message,
-                    auto_peer,
-                    primary_attachments,
-                ),
-            )
+        result = await loop.run_in_executor(
+            None,
+            partial(
+                _orchestrate_turn_sync,
+                primary,
+                message,
+                auto_peer,
+                primary_attachments,
+                event_sink=None,
+                run_id="",
+            ),
+        )
+    except ValueError as e:
+        code = str(e)
+        game.monitor_abort_work_order(wo_id, code)
+        if code == "empty_handoff_body":
+            return JSONResponse({"ok": False, "error": "empty_handoff_body"}, status_code=400)
+        if code == "need_two_agents_for_broadcast":
+            return JSONResponse({"ok": False, "error": "need_two_agents_for_broadcast"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "orchestrate_failed", "detail": code}, status_code=500)
+    except LookupError:
+        game.monitor_abort_work_order(wo_id, "target_agent_not_found")
+        return JSONResponse({"ok": False, "error": "target_agent_not_found"}, status_code=404)
     except Exception as e:
         game.monitor_abort_work_order(wo_id, str(e))
         return JSONResponse({"ok": False, "error": "orchestrate_failed", "detail": str(e)}, status_code=500)
@@ -667,6 +709,115 @@ async def post_agent_chat_orchestrated(request: Request) -> JSONResponse:
     result = dict(result)
     result["work_order_id"] = wo_id
     return JSONResponse(result)
+
+
+def _orchestrate_sse_worker(
+    run_id: str,
+    wo_id: str,
+    primary: Any,
+    message: str,
+    auto_peer: bool,
+    primary_attachments: list[str] | None,
+    q: "queue.Queue[dict[str, Any]]",
+) -> None:
+    ctr = itertools.count(1)
+
+    def sink(ev: dict[str, Any]) -> None:
+        e = dict(ev)
+        e["seq"] = next(ctr)
+        q.put(e)
+
+    try:
+        result = _orchestrate_turn_sync(
+            primary, message, auto_peer, primary_attachments, event_sink=sink, run_id=run_id
+        )
+        try:
+            game.monitor_record_orchestrate(wo_id, message, primary.id, result)
+        except Exception:
+            pass
+        sink({"type": "turn_done", "run_id": run_id})
+    except ValueError as e:
+        game.monitor_abort_work_order(wo_id, str(e))
+        sink({"type": "error", "run_id": run_id, "message": str(e), "fatal": True})
+        sink({"type": "turn_done", "run_id": run_id})
+    except LookupError:
+        game.monitor_abort_work_order(wo_id, "target_agent_not_found")
+        sink({"type": "error", "run_id": run_id, "message": "target_agent_not_found", "fatal": True})
+        sink({"type": "turn_done", "run_id": run_id})
+    except Exception as e:
+        game.monitor_abort_work_order(wo_id, str(e))
+        sink({"type": "error", "run_id": run_id, "message": str(e), "fatal": True})
+        sink({"type": "turn_done", "run_id": run_id})
+
+
+async def post_agent_chat_orchestrated_run(request: Request) -> JSONResponse:
+    """Start orchestrated turn; client opens GET …/stream?run_id= for SSE. Body same as POST …/agent-chat-orchestrated."""
+    body = read_json_body(await request.body())
+    agent_id = str(body.get("agent_id") or "").strip()
+    message = str(body.get("message") or "").strip()
+    auto_peer = bool(body.get("auto_peer", True))
+    raw_atts = body.get("attachments")
+    if isinstance(raw_atts, list):
+        primary_attachments = [str(x).strip() for x in raw_atts if str(x).strip()]
+    else:
+        primary_attachments = None
+    if not agent_id or not message:
+        return JSONResponse({"ok": False, "error": "agent_id_and_message_required"}, status_code=400)
+    primary = _resolve_game_agent_token(agent_id)
+    if not primary:
+        return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
+    wo_id = game.monitor_start_work_order(message, primary.id)
+    run_id = uuid.uuid4().hex
+    q: queue.Queue[dict[str, Any]] = queue.Queue()
+    with _ORCH_SSE_LOCK:
+        _ORCH_SSE_QUEUES[run_id] = q
+    threading.Thread(
+        target=_orchestrate_sse_worker,
+        args=(run_id, wo_id, primary, message, auto_peer, primary_attachments, q),
+        daemon=True,
+    ).start()
+    return JSONResponse({"ok": True, "run_id": run_id, "work_order_id": wo_id})
+
+
+async def get_agent_chat_orchestrated_stream(request: Request) -> StreamingResponse | JSONResponse:
+    run_id = str(request.query_params.get("run_id") or "").strip()
+    if not run_id:
+        return JSONResponse({"ok": False, "error": "run_id_required"}, status_code=400)
+    with _ORCH_SSE_LOCK:
+        q = _ORCH_SSE_QUEUES.get(run_id)
+    if q is None:
+        return JSONResponse({"ok": False, "error": "run_not_found_or_finished"}, status_code=404)
+
+    async def gen():
+        try:
+            while True:
+                item = await asyncio.to_thread(q.get)
+                line = json.dumps(item, ensure_ascii=False)
+                yield f"data: {line}\n\n"
+                if item.get("type") == "turn_done":
+                    with _ORCH_SSE_LOCK:
+                        _ORCH_SSE_QUEUES.pop(run_id, None)
+                    break
+        finally:
+            pass
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+
+
+async def post_agent_stream_cancel(request: Request) -> JSONResponse:
+    from api.streaming import cancel_stream
+
+    body = read_json_body(await request.body())
+    stream_id = str(body.get("stream_id") or "").strip()
+    if not stream_id:
+        return JSONResponse({"ok": False, "error": "stream_id_required"}, status_code=400)
+    cancelled = cancel_stream(stream_id)
+    return JSONResponse({"ok": True, "cancelled": cancelled, "stream_id": stream_id})
 
 
 async def get_monitor_work_orders(_: Request) -> JSONResponse:
@@ -733,13 +884,14 @@ async def post_game_agent_upload_attachment(request: Request) -> JSONResponse:
     raw_bytes = raw
 
     def _save() -> dict[str, Any]:
-        sid = game.ensure_hermes_session_for_agent(aid)
-        s = get_session(sid)
-        workspace = Path(s.workspace)
-        safe_name = _sanitize_upload_name(filename)
-        dest = safe_resolve_ws(workspace, safe_name)
-        dest.write_bytes(raw_bytes)
-        return {"filename": safe_name, "path": str(dest), "size": dest.stat().st_size}
+        with bungalow_session_tls_for_agent_id(game, aid):
+            sid = game.ensure_hermes_session_for_agent(aid)
+            s = get_session(sid)
+            workspace = Path(s.workspace)
+            safe_name = _sanitize_upload_name(filename)
+            dest = safe_resolve_ws(workspace, safe_name)
+            dest.write_bytes(raw_bytes)
+            return {"filename": safe_name, "path": str(dest), "size": dest.stat().st_size}
 
     loop = asyncio.get_event_loop()
     try:
@@ -857,6 +1009,9 @@ routes: list[Route | WebSocketRoute] = [
     Route("/api/game/agent/profile-files/save", post_agent_profile_files_save, methods=["POST"]),
     Route("/api/game/agent-relay", post_agent_relay_chat, methods=["POST"]),
     Route("/api/game/agent-chat-orchestrated", post_agent_chat_orchestrated, methods=["POST"]),
+    Route("/api/game/agent-chat-orchestrated/run", post_agent_chat_orchestrated_run, methods=["POST"]),
+    Route("/api/game/agent-chat-orchestrated/stream", get_agent_chat_orchestrated_stream, methods=["GET"]),
+    Route("/api/game/agent-stream/cancel", post_agent_stream_cancel, methods=["POST"]),
     Route("/api/game/monitor/work-orders", get_monitor_work_orders, methods=["GET"]),
     Route("/api/game/monitor/work-orders/{wo_id}", get_monitor_work_order_detail, methods=["GET"]),
     Route("/api/game/monitor/artifacts/{artifact_id}", get_monitor_artifact_body, methods=["GET"]),

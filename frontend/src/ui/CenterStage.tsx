@@ -1,5 +1,5 @@
 /**
- * 整页 Phaser：顶栏 / 中央游戏区 / 右侧会话 / 底栏输入与菜单（壳层绘制 + DOM textarea）。
+ * 整页 Phaser：顶栏为 React DOM；中央游戏区 + 底栏壳层在 Phaser（+ DOM textarea）。
  */
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { Agent, GameWorldSnapshot } from '../types/game';
@@ -10,6 +10,10 @@ import { syncHermesSessionsFromSnapshot } from '../chat/studioChatActions';
 import { registerStudioCollabWalk } from '../collab/studioCollabWalkBridge';
 import { C, computeBuildingLayout, getRoomGridCell } from './buildingLayout';
 import { computeFullPageLayout } from './fullPageLayout';
+import { TaskMonitorPanel } from './TaskMonitorPanel';
+import { RightPanel } from './RightPanel';
+import { TopBar } from './TopBar';
+import { colors, layoutPx, studioGlass } from './theme';
 import {
   mountStudioGame,
   type AgentSpriteVisual,
@@ -55,6 +59,8 @@ export function CenterStage(props: {
     onOpenAgentDetail,
     onRefresh,
   } = props;
+  const studioRightPanelCollapsed = useUiStore((s) => s.studioRightPanelCollapsed);
+  const toggleStudioRightPanelCollapsed = useUiStore((s) => s.toggleStudioRightPanelCollapsed);
   const wrapRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<StudioGameApi | null>(null);
 
@@ -120,7 +126,6 @@ export function CenterStage(props: {
           selectedTaskId: ui.selectedTaskId,
           centerInference,
           agentVisuals,
-          inferenceLog: ui.inferenceLog,
           gatewayStatus: gatewayRef.current,
           loading: loadingRef.current,
           bottomSheet: ui.bottomSheet,
@@ -244,7 +249,6 @@ export function CenterStage(props: {
 
   return (
     <div
-      ref={wrapRef}
       style={{
         flex: 1,
         minWidth: 0,
@@ -252,12 +256,89 @@ export function CenterStage(props: {
         width: '100%',
         height: '100%',
         position: 'relative',
-        background: C.bg,
-        overflow: 'auto',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
       }}
-    />
+    >
+      <div
+        ref={wrapRef}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: C.bg,
+          overflow: 'auto',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: 0,
+          height: layoutPx.topBar,
+          zIndex: 75,
+          pointerEvents: 'auto',
+        }}
+      >
+        <TopBar
+          snapshot={snapshot}
+          gatewayStatus={gatewayStatus}
+          loading={loading}
+          onRefresh={onRefresh}
+          selectedAgentId={selectedAgentId}
+          onOpenAgentDetail={onOpenAgentDetail}
+        />
+      </div>
+      <TaskMonitorPanel snapshot={snapshot} />
+      <div
+        aria-label="会话与过程"
+        style={{
+          position: 'absolute',
+          right: 0,
+          top: layoutPx.topBar,
+          bottom: layoutPx.bottomBar,
+          width: studioRightPanelCollapsed ? layoutPx.sidePanelCollapsed : layoutPx.sidePanel,
+          zIndex: 60,
+          pointerEvents: 'none',
+          transition: 'width 0.2s ease-out',
+          fontFamily: 'system-ui, sans-serif',
+        }}
+      >
+        <div
+          style={{
+            pointerEvents: 'auto',
+            height: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            ...studioGlass.panel,
+            borderLeft: `2px solid ${colors.border}`,
+            boxSizing: 'border-box',
+          }}
+        >
+          {studioRightPanelCollapsed ? (
+            <button
+              type="button"
+              title="展开会话与过程"
+              onClick={() => toggleStudioRightPanelCollapsed()}
+              style={{
+                flex: 1,
+                width: '100%',
+                border: 'none',
+                background: 'rgba(30,30,50,0.55)',
+                color: colors.gold,
+                cursor: 'pointer',
+                fontSize: 14,
+                padding: 0,
+              }}
+            >
+              ◀
+            </button>
+          ) : (
+            <RightPanel snapshot={snapshot} />
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

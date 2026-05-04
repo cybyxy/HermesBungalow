@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import type { Agent, GameWorldSnapshot } from '../types/game';
-import type { AgentInferenceState, BottomSheetState, InferenceEntry } from '../store/uiStore';
+import type { AgentInferenceState, BottomSheetState } from '../store/uiStore';
 import {
   AGENT_H,
   AGENT_W,
@@ -123,7 +123,6 @@ export type StudioSyncPack = {
   selectedTaskId: number | null;
   centerInference: Record<string, AgentInferenceState>;
   agentVisuals: Record<string, AgentSpriteVisual>;
-  inferenceLog: InferenceEntry[];
   gatewayStatus: string;
   loading: boolean;
   bottomSheet: BottomSheetState;
@@ -554,13 +553,11 @@ class StudioScene extends Phaser.Scene {
           return {
             layout: p.fullLayout,
             snapshot: p.snapshot,
-            inferenceLog: p.inferenceLog,
             gatewayStatus: p.gatewayStatus,
             loading: p.loading,
             bottomSheet: p.bottomSheet,
             selectedAgentId: p.selectedAgentId,
             selectedTaskId: p.selectedTaskId,
-            rightPanelCollapsed: p.rightPanelCollapsed,
           };
         },
         () => (this.game.registry.get('studioCtx') as StudioCtxBridge).handlers,

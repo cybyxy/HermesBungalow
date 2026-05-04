@@ -2,7 +2,7 @@
  * Hermes 会话发送 / 停止 — 供 React 底栏与 Phaser 全页 UI 共用。
  * 多 Agent 编排由后端 `/api/game/agent-chat-orchestrated` 执行。
  */
-import { appendOrchestratedInference } from './orchestrationUi';
+import { clearSseActiveHermesStreamId, consumeOrchestratedSse, getSseActiveHermesStreamId } from './orchestrationSse';
 import * as gameApi from '../services/gameApi';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
@@ -45,22 +45,34 @@ async function runOrchestratedAndFlushUi(
 ): Promise<void> {
   useUiStore.getState().beginCenterAgentThinking(orchestratorId);
   try {
-    const raw = await gameApi.agentChatOrchestrated({
+    const raw = await gameApi.postAgentChatOrchestratedRun({
       agent_id: orchestratorId,
       message,
       auto_peer: true,
       attachments,
     });
-    appendOrchestratedInference(snapshot, orchestratorId, raw);
+    if (!raw.ok || !raw.run_id) {
+      throw new Error(raw.error || 'orchestrate_run_failed');
+    }
     const wo = typeof raw.work_order_id === 'string' && raw.work_order_id.trim() ? raw.work_order_id.trim() : '';
     if (wo) useUiStore.getState().setMonitorFocusWorkOrderId(wo);
-    loadState_();
+    await consumeOrchestratedSse(raw.run_id, snapshot, orchestratorId, loadState_);
   } finally {
     useUiStore.getState().finishCenterAgentInference(orchestratorId, '');
   }
 }
 
 export async function stopStudioChat(): Promise<void> {
+  const sid = getSseActiveHermesStreamId();
+  if (sid) {
+    try {
+      await gameApi.cancelGameAgentStream(sid);
+    } catch {
+      /* ignore */
+    }
+    clearSseActiveHermesStreamId();
+    return;
+  }
   const aid = useUiStore.getState().selectedAgentId;
   if (!aid) return;
   if (!useUiStore.getState().agentStreamIds[aid]) return;
@@ -86,7 +98,7 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
     return;
   }
 
-  const loadState = () => void useGameStore.getState().loadState();
+  const loadState = () => void useGameStore.getState().loadState({ silent: true });
   const finalizeRound = useUiStore.getState().finalizeInferenceRound;
   const selectedAgentId = useUiStore.getState().selectedAgentId;
   const selectedAgent = snapshot?.agents.find((a) => a.id === selectedAgentId) ?? null;

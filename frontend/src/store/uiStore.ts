@@ -61,6 +61,9 @@ interface UiStore {
   /** 右侧「会话 / 过程」折叠为窄条，中央区变宽 */
   studioRightPanelCollapsed: boolean;
   toggleStudioRightPanelCollapsed: () => void;
+  /** 左侧任务监视浮层折叠（与右侧折叠条行为类似） */
+  studioLeftPanelCollapsed: boolean;
+  toggleStudioLeftPanelCollapsed: () => void;
   /** 编排返回的 monitor 工作单 id：左栏任务监视对该单高频轮询直至终态 */
   monitorFocusWorkOrderId: string | null;
   setMonitorFocusWorkOrderId: (id: string | null) => void;
@@ -98,7 +101,7 @@ const MAX_INFERENCE = 200;
 
 type PersistedInferenceSlice = Pick<
   UiStore,
-  'inferenceLog' | 'agentInferState' | 'studioRightPanelCollapsed'
+  'inferenceLog' | 'agentInferState' | 'studioRightPanelCollapsed' | 'studioLeftPanelCollapsed'
 >;
 
 function newEntryId(): string {
@@ -128,6 +131,9 @@ export const useUiStore = create<UiStore>()(
       studioRightPanelCollapsed: false,
       toggleStudioRightPanelCollapsed: () =>
         set((s) => ({ studioRightPanelCollapsed: !s.studioRightPanelCollapsed })),
+      studioLeftPanelCollapsed: false,
+      toggleStudioLeftPanelCollapsed: () =>
+        set((s) => ({ studioLeftPanelCollapsed: !s.studioLeftPanelCollapsed })),
       monitorFocusWorkOrderId: null,
       setMonitorFocusWorkOrderId: (id) => set({ monitorFocusWorkOrderId: id }),
       inferenceLog: [],
@@ -237,6 +243,7 @@ export const useUiStore = create<UiStore>()(
         inferenceLog: s.inferenceLog,
         agentInferState: s.agentInferState,
         studioRightPanelCollapsed: s.studioRightPanelCollapsed,
+        studioLeftPanelCollapsed: s.studioLeftPanelCollapsed,
       }),
       merge: (persistedState, currentState) => {
         const p = (persistedState ?? {}) as Partial<PersistedInferenceSlice>;
@@ -268,6 +275,10 @@ export const useUiStore = create<UiStore>()(
             typeof p.studioRightPanelCollapsed === 'boolean'
               ? p.studioRightPanelCollapsed
               : currentState.studioRightPanelCollapsed,
+          studioLeftPanelCollapsed:
+            typeof p.studioLeftPanelCollapsed === 'boolean'
+              ? p.studioLeftPanelCollapsed
+              : currentState.studioLeftPanelCollapsed,
         };
       },
     },

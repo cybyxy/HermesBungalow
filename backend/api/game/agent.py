@@ -13,9 +13,11 @@
 """
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -87,9 +89,34 @@ def _drain_agent_stream(
     stream_queue: "queue.Queue[tuple[str, Any]]",
     *,
     session_ref: Any | None = None,
-) -> tuple[str, str | None]:
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
+    run_id: str = "",
+    step_id: str = "",
+    agent_id: str | None = None,
+) -> tuple[str, str | None, list[dict[str, Any]]]:
+    """Drain streaming queue; collect ``trace`` rows for UI (reasoning / tool / tool_complete)."""
     final = ""
     err: str | None = None
+    trace: list[dict[str, Any]] = []
+    reasoning_buf: list[str] = []
+
+    def _flush_reasoning() -> None:
+        if not reasoning_buf:
+            return
+        chunk = "".join(reasoning_buf).strip()
+        reasoning_buf.clear()
+        if chunk:
+            trace.append({"type": "reasoning", "text": chunk})
+
+    def _args_summary(args_obj: Any) -> str:
+        if not isinstance(args_obj, dict) or not args_obj:
+            return ""
+        try:
+            s = json.dumps(args_obj, ensure_ascii=False)
+        except (TypeError, ValueError):
+            s = str(args_obj)
+        return s[:800]
+
     try:
         while True:
             try:
@@ -98,19 +125,92 @@ def _drain_agent_stream(
                 err = "relay_timeout"
                 break
             ev, data = item
+            if ev == "reasoning" and isinstance(data, dict):
+                t = data.get("text")
+                if t is not None and str(t):
+                    piece = str(t)
+                    reasoning_buf.append(piece)
+                    if event_sink and step_id:
+                        event_sink(
+                            {
+                                "type": "reasoning_delta",
+                                "run_id": run_id,
+                                "step_id": step_id,
+                                "agent_id": agent_id,
+                                "text": piece,
+                            }
+                        )
+                continue
+            if ev == "tool" and isinstance(data, dict):
+                _flush_reasoning()
+                trace.append(
+                    {
+                        "type": "tool",
+                        "name": str(data.get("name") or ""),
+                        "preview": str(data.get("preview") or "")[:4000],
+                        "event_type": str(data.get("event_type") or ""),
+                        "args": data.get("args") if isinstance(data.get("args"), dict) else {},
+                    }
+                )
+                if event_sink and step_id:
+                    event_sink(
+                        {
+                            "type": "tool_start",
+                            "run_id": run_id,
+                            "step_id": step_id,
+                            "agent_id": agent_id,
+                            "name": str(data.get("name") or "工具"),
+                            "args_summary": _args_summary(data.get("args")),
+                        }
+                    )
+                continue
+            if ev == "tool_complete" and isinstance(data, dict):
+                _flush_reasoning()
+                trace.append(
+                    {
+                        "type": "tool_complete",
+                        "name": str(data.get("name") or ""),
+                        "preview": str(data.get("preview") or "")[:4000],
+                        "event_type": str(data.get("event_type") or ""),
+                        "duration": data.get("duration"),
+                        "is_error": bool(data.get("is_error")),
+                    }
+                )
+                if event_sink and step_id:
+                    ok = not bool(data.get("is_error"))
+                    prev = str(data.get("preview") or "").strip()
+                    dur = data.get("duration")
+                    bits = [x for x in (prev, f"耗时: {dur}" if dur is not None else "") if x]
+                    event_sink(
+                        {
+                            "type": "tool_end",
+                            "run_id": run_id,
+                            "step_id": step_id,
+                            "agent_id": agent_id,
+                            "name": str(data.get("name") or "工具"),
+                            "ok": ok,
+                            "result_summary": "\n".join(bits) if bits else ("完成" if ok else "失败"),
+                            "error": None if ok else (prev or "失败"),
+                        }
+                    )
+                continue
             if ev == "done":
+                _flush_reasoning()
                 final = _extract_assistant_from_done_payload(data)
                 break
             if ev == "apperror":
+                _flush_reasoning()
                 if isinstance(data, dict):
                     err = str(data.get("message") or data.get("type") or "apperror")
                 else:
                     err = "apperror"
                 break
             if ev == "error":
+                _flush_reasoning()
                 err = str(data)
                 break
             if ev == "cancel":
+                _flush_reasoning()
                 err = "cancelled"
                 break
     finally:
@@ -118,11 +218,12 @@ def _drain_agent_stream(
     sid_for_disk = session_id
     if session_ref is not None and getattr(session_ref, "session_id", None):
         sid_for_disk = str(session_ref.session_id)
+    _flush_reasoning()
     if not final and not err:
         final = _fallback_assistant_from_session_disk(sid_for_disk)
     if not final and not err:
         err = "empty_reply"
-    return final, err
+    return final, err, trace
 
 
 def resolve_game_agent_token(token: str, game_service: Any):
@@ -158,6 +259,8 @@ def sync_session_turn(
     *,
     bungalow_agent_id: str | None = None,
     attachments: list[str] | None = None,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
+    run_id: str = "",
 ) -> dict[str, Any]:
     """Run one Hermes turn on an existing session (keeps conversation history)."""
     from api.config import _get_session_agent_lock, get_config
@@ -196,6 +299,7 @@ def sync_session_turn(
                     "internal_session_id": s.session_id,
                 }
         stream_id = uuid.uuid4().hex
+        step_id = uuid.uuid4().hex
         q: queue.Queue[tuple[str, Any]] = queue.Queue()
         with STREAMS_LOCK:
             STREAMS[stream_id] = q
@@ -211,14 +315,74 @@ def sync_session_turn(
             daemon=True,
         )
         thr.start()
-        final, err = _drain_agent_stream(stream_id, s.session_id, thr, q, session_ref=s)
+        if event_sink and run_id and step_id and bungalow_agent_id:
+            event_sink(
+                {
+                    "type": "step_begin",
+                    "run_id": run_id,
+                    "step_id": step_id,
+                    "agent_id": bungalow_agent_id,
+                    "stream_id": stream_id,
+                }
+            )
+        final, err, trace = _drain_agent_stream(
+            stream_id,
+            s.session_id,
+            thr,
+            q,
+            session_ref=s,
+            event_sink=event_sink,
+            run_id=run_id,
+            step_id=step_id,
+            agent_id=bungalow_agent_id,
+        )
         ok = bool(final) and err is None
+        if event_sink and run_id and step_id:
+            if err == "cancelled":
+                event_sink(
+                    {
+                        "type": "stopped",
+                        "run_id": run_id,
+                        "step_id": step_id,
+                        "agent_id": bungalow_agent_id,
+                    }
+                )
+            elif err:
+                event_sink(
+                    {
+                        "type": "error",
+                        "run_id": run_id,
+                        "step_id": step_id,
+                        "agent_id": bungalow_agent_id,
+                        "message": err,
+                        "fatal": False,
+                    }
+                )
+            elif final and bungalow_agent_id:
+                event_sink(
+                    {
+                        "type": "assistant_message",
+                        "run_id": run_id,
+                        "step_id": step_id,
+                        "agent_id": bungalow_agent_id,
+                        "markdown": final,
+                    }
+                )
+            event_sink(
+                {
+                    "type": "step_done",
+                    "run_id": run_id,
+                    "step_id": step_id,
+                    "agent_id": bungalow_agent_id,
+                }
+            )
         return {
             "ok": ok,
             "reply": final,
             "error": err,
             "profile": profile,
             "internal_session_id": s.session_id,
+            "trace": trace,
         }
 
 
@@ -235,10 +399,21 @@ def build_peer_hint_lines(agents: list[Any]) -> str:
         "（多 Agent：同伴无主从，可互转。Hermes 内置委派工具已关，同伴转交请在全文**最后单独一行**写："
         "`@对方的 profile、游戏 id、姓名或显示名 | 交给对方的完整说明`（全角｜可代替|）。"
         "也可用无竖线：`@对方 完整说明`；群发除自己外全体：`@所有人 | 同一说明` 或 `@所有人 同一说明`（或 `@all …`）。"
-        "勿向用户声称多 Agent 已禁用。同伴："
+        "勿向用户声称多 Agent 已禁用。"
+        "各 Agent 的 Hermes 会话由数字工作室**后端**按人绑定，**勿**向用户索取 session_id、"
+        "**勿**让用户代调浏览器独占的本地 WebUI 接口；同伴回合由服务器直接发起。"
+        "同伴："
         + list_str
         + "。无需转交时不要写以 `@` 开头的该行。）\n\n"
     )
+
+
+# 同伴 relay 专用：减轻模型误以为要用户中转带 session_id 调本地 API（全后端编排后常见误答）。
+_BUNGALOW_PEER_DELEGATION_PREFIX = (
+    "【同伴回合·后端已注入 Hermes 会话】本条由 Hermes 数字工作室服务器代你发起，"
+    "当前对话已绑定你的游戏 Agent 会话；**不要**向用户索取 session_id，"
+    "**不要**让用户替你调用本地 WebUI 的 `/api/chat/start` 等接口，直接处理下方任务即可。\n\n"
+)
 
 
 def truncate_handoff_context(text: str, max_len: int = HANDOFF_CONTEXT_MAX) -> str:
@@ -256,15 +431,16 @@ def truncate_handoff_context(text: str, max_len: int = HANDOFF_CONTEXT_MAX) -> s
 def compose_peer_handoff(peer_hint: str, invoker_full_reply: str, invoke_body: str) -> str:
     body = (invoke_body or "").strip()
     stripped = strip_bungalow_invokes(invoker_full_reply)
+    pre = _BUNGALOW_PEER_DELEGATION_PREFIX
     if not stripped:
-        return peer_hint + body
+        return pre + peer_hint + body
     ctx = (
         "\n\n──────── 同伴本轮对用户输出的正文（@ 转交行已剥离）────────\n"
         f"{truncate_handoff_context(stripped)}\n\n"
         "──────── 对方点名要你处理的任务 ────────\n"
         f"{body}"
     )
-    return peer_hint + ctx
+    return pre + peer_hint + ctx
 
 
 def _agent_self_invoke_tokens(agent: Any) -> set[str]:
@@ -284,6 +460,9 @@ def run_recursive_peer_invokes(
     invoker_full_reply: str,
     peer_hint: str,
     agents: list[Any],
+    *,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
+    run_id: str = "",
 ) -> list[dict[str, Any]]:
     if depth > MAX_INVOKE_DEPTH:
         return []
@@ -301,18 +480,38 @@ def run_recursive_peer_invokes(
             continue
         peer_prof = str(getattr(peer, "profile", "") or "default")
         peer_sid = game_service.ensure_hermes_session_for_agent(peer.id)
+        if event_sink and run_id:
+            event_sink(
+                {
+                    "type": "delegation_start",
+                    "run_id": run_id,
+                    "from_agent_id": getattr(invoker_agent, "id", None),
+                    "to_agent_id": getattr(peer, "id", None),
+                    "reason": tt,
+                }
+            )
         peer_turn = sync_session_turn(
             peer_sid,
             compose_peer_handoff(peer_hint, invoker_full_reply, submsg),
             game_service,
             bungalow_agent_id=peer.id,
+            event_sink=event_sink,
+            run_id=run_id,
         )
         nested_text = str(peer_turn.get("reply") or "")
         nested_invokes = parse_hermes_bungalow_invokes(nested_text)
         nested_list: list[dict[str, Any]] = []
         if nested_invokes:
             nested_list = run_recursive_peer_invokes(
-                game_service, peer, nested_invokes, depth + 1, nested_text, peer_hint, agents
+                game_service,
+                peer,
+                nested_invokes,
+                depth + 1,
+                nested_text,
+                peer_hint,
+                agents,
+                event_sink=event_sink,
+                run_id=run_id,
             )
         out.append(
             {
@@ -321,6 +520,7 @@ def run_recursive_peer_invokes(
                 "ok": peer_turn.get("ok"),
                 "reply": peer_turn.get("reply"),
                 "error": peer_turn.get("error"),
+                "trace": peer_turn.get("trace") or [],
                 "nested": nested_list,
             }
         )
@@ -334,6 +534,8 @@ def orchestrated_peer_turns_sync(
     game_service: Any,
     *,
     primary_attachments: list[str] | None = None,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
+    run_id: str = "",
 ) -> dict[str, Any]:
     """Primary turn (+ auto peer hint), parse @ handoffs, run peer relay turns (recursive)."""
     with game_service._lock:
@@ -347,10 +549,20 @@ def orchestrated_peer_turns_sync(
         game_service,
         bungalow_agent_id=primary_agent.id,
         attachments=primary_attachments,
+        event_sink=event_sink,
+        run_id=run_id,
     )
     primary_reply = str(prim.get("reply") or "")
     invokes = parse_hermes_bungalow_invokes(primary_reply)
     delegations = run_recursive_peer_invokes(
-        game_service, primary_agent, invokes, 0, primary_reply, peer_hint, agents
+        game_service,
+        primary_agent,
+        invokes,
+        0,
+        primary_reply,
+        peer_hint,
+        agents,
+        event_sink=event_sink,
+        run_id=run_id,
     )
     return {"ok": bool(prim.get("ok")), "primary": prim, "delegations": delegations}

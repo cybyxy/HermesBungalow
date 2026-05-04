@@ -1,9 +1,8 @@
 /**
- * 全页 Phaser 壳：顶栏、右侧会话/过程（遮罩滚动 Text）、底栏菜单。
- * 底栏会话输入仅用 DOM textarea（定位叠在画布上），不在 Phaser 里绘制输入框描边。
+ * 全页 Phaser 壳：底栏菜单；顶栏由 React DOM（CenterStage · TopBar）绘制。
+ * 右侧会话/过程由 React DOM 绘制。底栏会话输入为 DOM textarea（叠在画布上）。
  */
 import type Phaser from 'phaser';
-import type { InferenceEntry } from '../store/uiStore';
 import { useUiStore } from '../store/uiStore';
 import { submitStudioChat, stopStudioChat } from '../chat/studioChatActions';
 import { MAIN_MENUS } from '../ui/menuConfig';
@@ -11,34 +10,18 @@ import { colors, studioFontMeta, studioFontUi, studioInk } from '../ui/theme';
 import type { FullPageLayout } from '../ui/fullPageLayout';
 import type { Agent, GameWorldSnapshot } from '../types/game';
 import type { BottomSheetState } from '../store/uiStore';
-import { drawTopAgentAvatar, InferenceBubbleColumn } from './studioInferenceBubbles';
-
-/** 顶栏 / 底栏与中央区错层，数值低于中央人物（~5000） */
+/** 底栏与中央区错层，数值低于中央人物（~5000） */
 const DEPTH_SHELL = 50;
-/**
- * 右栏与中央人物（StudioScene ~5000）之间仅留小间隔；避免 depth 上万在部分 WebGL 下
- * 与 GeometryMask 合成异常导致整栏纯黑、盖住文字与气泡。
- */
-const DEPTH_RIGHT_BG = 5010;
-const DEPTH_RIGHT_G = 5012;
-const DEPTH_RIGHT_LABELS = 5014;
-const DEPTH_RIGHT_CHAT = 5018;
-const DEPTH_RIGHT_TOOL = 5022;
-const DEPTH_RIGHT_ACTS = 5032;
-const DEPTH_RIGHT_TOAST = 5045;
-/** 顶栏头像须高于右侧列里的 GeometryMask */
-const DEPTH_TOP_AGENT = 5110;
+const DEPTH_TOAST = 5045;
 
 export type ShellSyncSlice = {
   layout: FullPageLayout;
   snapshot: GameWorldSnapshot | null;
-  inferenceLog: InferenceEntry[];
   gatewayStatus: string;
   loading: boolean;
   bottomSheet: BottomSheetState;
   selectedAgentId: string | null;
   selectedTaskId: number | null;
-  rightPanelCollapsed: boolean;
 };
 
 export type ShellHandlers = {
@@ -60,47 +43,20 @@ export class StudioShellUi {
   private scene: Phaser.Scene;
   private getSlice: () => ShellSyncSlice;
   private getHandlers: () => ShellHandlers;
-  private topG: Phaser.GameObjects.Graphics;
-  /** 右栏半透明底（Rectangle 的 fillAlpha 比 Graphics 在 WebGL 上更稳定） */
-  private rightBackdrop!: Phaser.GameObjects.Rectangle;
-  private rightG: Phaser.GameObjects.Graphics;
   private bottomG: Phaser.GameObjects.Graphics;
-  private titleText: Phaser.GameObjects.Text;
-  private subTopText: Phaser.GameObjects.Text;
-  private rightTitle: Phaser.GameObjects.Text;
-  private toolTitle: Phaser.GameObjects.Text;
-  private chatBubbles: InferenceBubbleColumn;
-  private toolBubbles: InferenceBubbleColumn;
-  private topAgentG: Phaser.GameObjects.Graphics;
-  private gwText: Phaser.GameObjects.Text;
-  private lordText: Phaser.GameObjects.Text;
   private bottomMeta: Phaser.GameObjects.Text;
-  private refreshText: Phaser.GameObjects.Text;
-  private clearBtnText: Phaser.GameObjects.Text;
   private sendBtnText: Phaser.GameObjects.Text;
   private imgBtnText: Phaser.GameObjects.Text;
   private footerBtnTexts: Phaser.GameObjects.Text[] = [];
   private menuLabelTexts: Phaser.GameObjects.Text[] = [];
-  private agentLetterTexts: Phaser.GameObjects.Text[] = [];
   private pendingFiles: File[] = [];
-  private lastScrollPanelW = 0;
   private toastUntil = 0;
   private toastText: Phaser.GameObjects.Text;
-  private collapseChevron: Phaser.GameObjects.Text;
-  private agentHitZones: HitZone[] = [];
   private menuHitZones: HitZone[] = [];
   private miscHitZones: HitZone[] = [];
 
   private readonly chatInputEl: HTMLTextAreaElement;
   private inputRect = { x: 0, y: 0, w: 160, h: 34 };
-  private readonly wheelHandler: (
-    pointer: Phaser.Input.Pointer,
-    _go: Phaser.GameObjects.GameObject[],
-    _dx: number,
-    dy: number,
-    _dz: number,
-    _ev: unknown,
-  ) => void;
   private readonly textareaKeydown: (e: KeyboardEvent) => void;
   /** 与 sync 解耦：滚动/缩放后仍对齐画布上的底栏框 */
   private readonly boundLayoutChatInputDom: () => void;
@@ -110,50 +66,10 @@ export class StudioShellUi {
     this.scene = scene;
     this.getSlice = getSlice;
     this.getHandlers = getHandlers;
-    this.topG = scene.add.graphics().setDepth(DEPTH_SHELL);
-    this.rightBackdrop = scene.add
-      .rectangle(0, 0, 64, 64, 0x1a1a2e, 0.52)
-      .setOrigin(0, 0)
-      .setDepth(DEPTH_RIGHT_BG)
-      .setStrokeStyle(2, hx(colors.border), 0.85);
-    this.rightG = scene.add.graphics().setDepth(DEPTH_RIGHT_G);
     this.bottomG = scene.add.graphics().setDepth(DEPTH_SHELL);
-    this.titleText = scene.add
-      .text(0, 0, '', { fontSize: '16px', color: colors.gold, fontFamily: studioFontUi, fontStyle: 'bold' })
-      .setDepth(DEPTH_SHELL + 1);
-    this.titleText.setLetterSpacing(0.35);
-    this.subTopText = scene.add
-      .text(0, 0, '', { fontSize: '12px', color: studioInk.muted, fontFamily: studioFontUi })
-      .setDepth(DEPTH_SHELL + 1);
-    this.subTopText.setLetterSpacing(0.12);
-    this.rightTitle = scene.add
-      .text(0, 0, '💬 会话', { fontSize: '13px', color: studioInk.accentSoft, fontFamily: studioFontUi, fontStyle: 'bold' })
-      .setDepth(DEPTH_RIGHT_LABELS);
-    this.rightTitle.setLetterSpacing(0.2);
-    this.toolTitle = scene.add
-      .text(0, 0, '🔧 过程', { fontSize: '13px', color: studioInk.accentSoft, fontFamily: studioFontUi, fontStyle: 'bold' })
-      .setDepth(DEPTH_RIGHT_LABELS);
-    this.toolTitle.setLetterSpacing(0.2);
-    this.chatBubbles = new InferenceBubbleColumn(scene, DEPTH_RIGHT_CHAT, 'chat');
-    this.toolBubbles = new InferenceBubbleColumn(scene, DEPTH_RIGHT_TOOL, 'tool');
-    this.topAgentG = scene.add.graphics().setDepth(DEPTH_TOP_AGENT);
-    this.gwText = scene.add
-      .text(0, 0, '', { fontSize: '10px', color: studioInk.muted, fontFamily: studioFontMeta })
-      .setDepth(DEPTH_SHELL + 1);
-    this.lordText = scene.add
-      .text(0, 0, '', { fontSize: '11px', color: studioInk.accentSoft, fontFamily: studioFontUi, fontStyle: 'bold' })
-      .setDepth(DEPTH_SHELL + 1);
     this.bottomMeta = scene.add
       .text(0, 0, '', { fontSize: '11px', color: studioInk.muted, fontFamily: studioFontUi })
       .setDepth(DEPTH_SHELL + 1);
-    this.refreshText = scene.add
-      .text(0, 0, '刷新', { fontSize: '12px', color: colors.bright, fontFamily: studioFontUi })
-      .setDepth(DEPTH_SHELL + 2)
-      .setOrigin(0.5);
-    this.clearBtnText = scene.add
-      .text(0, 0, '清空', { fontSize: '11px', color: studioInk.muted, fontFamily: studioFontUi })
-      .setDepth(DEPTH_RIGHT_ACTS)
-      .setOrigin(0.5);
     this.sendBtnText = scene.add
       .text(0, 0, '发送', { fontSize: '12px', color: colors.bright, fontFamily: studioFontUi })
       .setDepth(DEPTH_SHELL + 2)
@@ -162,16 +78,6 @@ export class StudioShellUi {
       .text(0, 0, '🖼', { fontSize: '13px', fontFamily: studioFontUi })
       .setDepth(DEPTH_SHELL + 2)
       .setOrigin(0.5);
-    this.collapseChevron = scene.add
-      .text(0, 0, '▶', {
-        fontSize: '15px',
-        color: studioInk.accentSoft,
-        fontFamily: studioFontUi,
-        fontStyle: 'bold',
-      })
-      .setDepth(DEPTH_RIGHT_ACTS + 1)
-      .setOrigin(0.5, 0.5)
-      .setVisible(false);
     this.toastText = scene.add
       .text(0, 0, '', {
         fontSize: '12px',
@@ -180,18 +86,8 @@ export class StudioShellUi {
         backgroundColor: '#1a1a30',
         padding: { x: 10, y: 6 },
       })
-      .setDepth(DEPTH_RIGHT_TOAST)
+      .setDepth(DEPTH_TOAST)
       .setVisible(false);
-
-    this.wheelHandler = (pointer, _go, _dx, dy) => {
-      // 与 pointerDown 一致用 x/y（滚轮时 worldX/worldY 可能未与 transformPointer 同步）
-      const px = pointer.x;
-      const py = pointer.y;
-      const d = dy !== 0 ? dy : pointer.deltaY;
-      if (this.chatBubbles.tryWheel(px, py, d)) return;
-      this.toolBubbles.tryWheel(px, py, d);
-    };
-    scene.input.on('wheel', this.wheelHandler);
 
     const ta = document.createElement('textarea');
     ta.autocomplete = 'off';
@@ -289,36 +185,19 @@ export class StudioShellUi {
     window.removeEventListener('scroll', this.boundLayoutChatInputDom, true);
     this.inputLayoutObserver?.disconnect();
     this.inputLayoutObserver = null;
-    this.scene.input.off('wheel', this.wheelHandler);
     this.chatInputEl.removeEventListener('keydown', this.textareaKeydown);
     this.chatInputEl.remove();
-    this.chatBubbles.destroy();
-    this.toolBubbles.destroy();
     this.destroyShellGraphics();
   }
 
   private destroyShellGraphics(): void {
-    this.topG.destroy();
-    this.topAgentG.destroy();
-    this.rightBackdrop.destroy();
-    this.rightG.destroy();
     this.bottomG.destroy();
-    this.titleText.destroy();
-    this.subTopText.destroy();
-    this.rightTitle.destroy();
-    this.toolTitle.destroy();
-    this.gwText.destroy();
-    this.lordText.destroy();
     this.bottomMeta.destroy();
-    this.refreshText.destroy();
-    this.clearBtnText.destroy();
     this.sendBtnText.destroy();
     this.imgBtnText.destroy();
-    this.collapseChevron.destroy();
     this.toastText.destroy();
     for (const t of this.menuLabelTexts) t.destroy();
     for (const t of this.footerBtnTexts) t.destroy();
-    for (const t of this.agentLetterTexts) t.destroy();
   }
 
   private onSendClick(): void {
@@ -375,144 +254,8 @@ export class StudioShellUi {
   sync(): void {
     const s = this.getSlice();
     this.miscHitZones = [];
-    const {
-      layout,
-      snapshot,
-      inferenceLog,
-      gatewayStatus,
-      loading,
-      bottomSheet,
-      selectedAgentId,
-      selectedTaskId,
-      rightPanelCollapsed,
-    } = s;
-    const { top, right, bottom } = layout;
-    const padX = 10;
-
-    this.topG.clear();
-    this.topG.fillStyle(hx('#151525'), 1);
-    this.topG.lineStyle(2, hx(colors.border), 1);
-    this.topG.fillRect(top.x, top.y, top.w, top.h);
-    this.topG.strokeRect(top.x + 1, top.y + 1, top.w - 2, top.h - 2);
-
-    this.titleText.setPosition(top.x + 16, top.y + 10);
-    this.titleText.setText('Hermes 数字工作室');
-    this.subTopText.setPosition(top.x + 16, top.y + 32);
-    this.subTopText.setText(
-      snapshot
-        ? `第 ${snapshot.day} 天 ${snapshot.time} · 💰 ${snapshot.money} · 👥 ${snapshot.agents.length} · 📋 ${snapshot.tasks.length}`
-        : '',
-    );
-
-    this.agentHitZones = [];
-    for (const t of this.agentLetterTexts) t.destroy();
-    this.agentLetterTexts = [];
-
-    const rx = right.x;
-    const ry = right.y;
-    this.rightG.clear();
-    /** 折叠：不展示右侧半透明底板（仅保留 ◀ 与点击热区，办公室全透） */
-    if (rightPanelCollapsed) {
-      this.rightBackdrop.setVisible(false);
-    } else {
-      this.rightBackdrop.setPosition(rx, ry);
-      this.rightBackdrop.setSize(Math.max(1, right.w), Math.max(1, right.h));
-      this.rightBackdrop.setVisible(true);
-    }
-
-    if (rightPanelCollapsed) {
-      this.rightTitle.setVisible(false);
-      this.toolTitle.setVisible(false);
-      this.clearBtnText.setVisible(false);
-      this.chatBubbles.setColumnVisible(false);
-      this.toolBubbles.setColumnVisible(false);
-      this.chatBubbles.layout(rx, ry, 0, 0);
-      this.toolBubbles.layout(rx, ry, 0, 0);
-      this.collapseChevron.setVisible(true);
-      this.collapseChevron.setText('◀');
-      this.collapseChevron.setPosition(rx + right.w / 2, ry + right.h / 2);
-      this.miscHitZones.push({ x: rx, y: ry, w: right.w, h: right.h, kind: 'toggleRightPanel' });
-    } else {
-      this.chatBubbles.setColumnVisible(true);
-      this.toolBubbles.setColumnVisible(true);
-      this.rightTitle.setVisible(true);
-      this.toolTitle.setVisible(true);
-      this.clearBtnText.setVisible(true);
-      const splitY = ry + Math.floor(right.h * 0.61);
-      this.rightG.lineStyle(1, hx(colors.border), 0.45);
-      this.rightG.lineBetween(rx + 8, splitY, rx + right.w - 8, splitY);
-
-      const chatTop = ry + 32;
-      const chatMaxH = Math.max(40, splitY - chatTop - 10);
-      const toolBlockTop = splitY + 28;
-      const toolMaxH = Math.max(36, ry + right.h - toolBlockTop - 12);
-
-      const ww = Math.max(80, right.w - padX * 2);
-      if (ww !== this.lastScrollPanelW) {
-        this.lastScrollPanelW = ww;
-      }
-
-      this.rightTitle.setPosition(rx + 12, ry + 10);
-      this.chatBubbles.layout(rx + padX, chatTop, ww, chatMaxH);
-      this.chatBubbles.syncData(inferenceLog, snapshot, ww, selectedAgentId);
-
-      this.toolTitle.setPosition(rx + 12, splitY + 8);
-      this.toolBubbles.layout(rx + padX, toolBlockTop, ww, toolMaxH);
-      this.toolBubbles.syncData(inferenceLog, snapshot, ww, selectedAgentId);
-
-      const clearW = 44;
-      const clearH = 22;
-      const clearX = rx + right.w - clearW - 10;
-      const clearY = ry + 8;
-      const collapseBtnW = 28;
-      const collapseX = clearX - collapseBtnW - 6;
-      this.rightG.fillStyle(hx('#2a2a44'), 0.62);
-      this.rightG.fillRoundedRect(collapseX, clearY, collapseBtnW, clearH, 4);
-      this.collapseChevron.setVisible(true);
-      this.collapseChevron.setText('▶');
-      this.collapseChevron.setPosition(collapseX + collapseBtnW / 2, clearY + clearH / 2);
-      this.miscHitZones.push({
-        x: collapseX,
-        y: clearY,
-        w: collapseBtnW,
-        h: clearH,
-        kind: 'toggleRightPanel',
-      });
-      this.rightG.fillStyle(hx('#2a2a44'), 0.72);
-      this.rightG.fillRoundedRect(clearX, clearY, clearW, clearH, 4);
-      this.clearBtnText.setPosition(clearX + clearW / 2, clearY + clearH / 2);
-      this.miscHitZones.push({ x: clearX, y: clearY, w: clearW, h: clearH, kind: 'clear' });
-    }
-
-    const lordX = top.x + top.w - 130;
-    this.gwText.setPosition(lordX, top.y + 10);
-    this.gwText.setText(`GW:${gatewayStatus}`);
-    this.lordText.setPosition(lordX, top.y + 28);
-    this.lordText.setText(snapshot ? `👑 Lv.${snapshot.lord_level}  XP:${snapshot.lord_xp}` : '');
-
-    const refreshW = 44;
-    const refreshH = 28;
-    const refreshX = top.x + top.w - refreshW;
-    const refreshY = top.y + top.h / 2 - 14;
-    this.topG.fillStyle(hx(colors.btn), 1);
-    this.topG.fillRoundedRect(refreshX, refreshY, refreshW, refreshH, 4);
-    this.refreshText.setPosition(refreshX + refreshW / 2, refreshY + refreshH / 2);
-    this.refreshText.setText(loading ? '…' : '刷新');
-    this.miscHitZones.push({ x: refreshX, y: refreshY, w: refreshW, h: refreshH, kind: 'refresh' });
-
-    this.topAgentG.clear();
-    if (snapshot?.agents.length) {
-      const startX = top.x + top.w * 0.36;
-      const cy = top.y + top.h / 2;
-      let ax = startX;
-      for (const a of snapshot.agents) {
-        const sel = a.id === selectedAgentId;
-        this.agentHitZones.push({ x: ax - 22, y: cy - 22, w: 44, h: 44, kind: 'agent', payload: a.id });
-        const texts = drawTopAgentAvatar(this.topAgentG, this.scene, ax, cy, 20, a, sel, DEPTH_TOP_AGENT);
-        this.agentLetterTexts.push(...texts);
-        ax += 46;
-      }
-    }
+    const { layout, snapshot, bottomSheet, selectedAgentId, selectedTaskId } = s;
+    const { bottom } = layout;
 
     const bx = bottom.x;
     const by = bottom.y;
@@ -615,12 +358,6 @@ export class StudioShellUi {
     const onInput = gx >= ir.x && gy >= ir.y && gx <= ir.x + ir.w && gy <= ir.y + ir.h;
     if (!onInput) this.chatInputEl.blur();
 
-    for (const z of this.agentHitZones) {
-      if (hit(z) && z.payload) {
-        this.getHandlers().onOpenAgentDetail(z.payload);
-        return true;
-      }
-    }
     for (const z of this.menuHitZones) {
       if (hit(z) && z.payload) {
         this.getHandlers().onToggleMenu(z.payload);
@@ -630,18 +367,6 @@ export class StudioShellUi {
     for (const z of this.miscHitZones) {
       if (!hit(z)) continue;
       const h = this.getHandlers();
-      if (z.kind === 'refresh') {
-        h.onRefresh();
-        return true;
-      }
-      if (z.kind === 'toggleRightPanel') {
-        useUiStore.getState().toggleStudioRightPanelCollapsed();
-        return true;
-      }
-      if (z.kind === 'clear') {
-        useUiStore.getState().clearInferenceLog();
-        return true;
-      }
       if (z.kind === 'newTask') {
         h.onQuickNewTask();
         return true;

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { colors, layoutPx } from './theme';
+import { colors, layoutPx, studioGlass } from './theme';
 
 export function PopupSheet(props: {
   open: boolean;
@@ -187,36 +187,36 @@ export function PopupSheet(props: {
 }
 
 const sheetStyleBottom: CSSProperties = {
-  background: '#1a1a30',
-  border: `2px solid ${colors.gold}`,
+  ...studioGlass.panel,
+  border: `2px solid ${colors.border}`,
   borderRadius: '12px 12px 0 0',
   width: '100%',
   height: 'min(42vh, 100%)',
   overflow: 'hidden',
   display: 'flex',
   flexDirection: 'column',
-  boxShadow: '0 -8px 40px rgba(0,0,0,0.45)',
+  boxShadow: '0 -8px 32px rgba(0,0,0,0.35)',
 };
 
 const sheetStyleOverlay: CSSProperties = {
-  background: '#1a1a30',
-  border: `2px solid ${colors.gold}`,
+  ...studioGlass.panel,
+  border: `2px solid ${colors.border}`,
   borderRadius: 12,
   width: 'min(90vw, 520px)',
   maxHeight: 'min(85vh, 720px)',
   overflow: 'hidden',
   display: 'flex',
   flexDirection: 'column',
-  boxShadow: '0 8px 40px rgba(0,0,0,0.45)',
+  boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
 };
 
 const headerStyle: CSSProperties = {
-  background: '#252540',
+  ...studioGlass.muted,
   padding: '12px 16px',
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
-  borderBottom: '1px solid #333',
+  borderBottom: `1px solid ${colors.border}`,
   flexShrink: 0,
 };
 
@@ -235,11 +235,13 @@ const bodyStyle: CSSProperties = {
   flex: 1,
   minHeight: 0,
   overflowY: 'auto',
+  background: 'rgba(10,10,21,0.2)',
 };
 
 const footerStyle: CSSProperties = {
+  ...studioGlass.muted,
   padding: '12px 16px',
-  borderTop: '1px solid #333',
+  borderTop: `1px solid ${colors.border}`,
   display: 'flex',
   justifyContent: 'flex-end',
   gap: 10,

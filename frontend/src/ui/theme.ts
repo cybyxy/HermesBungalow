@@ -1,5 +1,27 @@
 /** Visual tokens aligned with docs/原型/prototype-complete.html */
 
+/**
+ * 与 TaskMonitorPanel / 左右浮栏一致的半透明 + backdrop-filter（任务监视同款）。
+ * 嵌套区块用 `muted` / `inset` 避免重复强 blur。
+ */
+export const studioGlass = {
+  panel: {
+    background: 'rgba(26,26,46,0.52)',
+    backdropFilter: 'blur(5px)',
+    WebkitBackdropFilter: 'blur(5px)',
+  },
+  muted: {
+    background: 'rgba(30,30,50,0.55)',
+  },
+  tabActive: {
+    background: 'rgba(42,58,90,0.6)',
+  },
+  /** 卡片、表单底，叠在已毛玻璃的面板上（不再叠一层 blur） */
+  inset: {
+    background: 'rgba(10,10,21,0.55)',
+  },
+} as const;
+
 export const colors = {
   bg: '#0a0a15',
   panel: 'rgba(26,26,48,0.95)',

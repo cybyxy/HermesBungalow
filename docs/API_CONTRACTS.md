@@ -216,3 +216,13 @@ Hermes 推理接入关键环境变量：
 ```
 
 支持 `type`：`task_progress` | `agent_mood` | `agent_move` | `money_delta` | `log`（详见 [backend/api/game/llm_events.py](../backend/api/game/llm_events.py)）。
+
+## 五、游戏编排 SSE（`server.py` 内联 Hermes）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/game/agent-chat-orchestrated/run` | Body 同 `POST /api/game/agent-chat-orchestrated`，返回 `{ ok, run_id, work_order_id }`，后台线程跑编排。 |
+| GET | `/api/game/agent-chat-orchestrated/stream?run_id=` | `text/event-stream`，`data:` 行为 JSON；`type` 含 `step_begin`、`reasoning_delta`、`tool_start`、`tool_end`、`assistant_message`、`step_done`、`delegation_start`、`error`、`stopped`、`turn_done`。 |
+| POST | `/api/game/agent-stream/cancel` | Body `{ "stream_id" }`，转发 Hermes `cancel_stream`。 |
+
+详细语义见 [docs/规划/规划-Agent编排SSE会话.md](规划/规划-Agent编排SSE会话.md)。

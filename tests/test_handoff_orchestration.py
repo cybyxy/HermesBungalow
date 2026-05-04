@@ -67,6 +67,7 @@ def test_run_recursive_peer_invokes_nested(monkeypatch: pytest.MonkeyPatch, thre
         *,
         bungalow_agent_id: str | None = None,
         attachments: list[str] | None = None,
+        **_: Any,
     ) -> dict[str, Any]:
         calls.append((bungalow_agent_id, message))
         if bungalow_agent_id == "a1":
@@ -106,6 +107,7 @@ def test_orchestrated_peer_turns_sync_happy_path(monkeypatch: pytest.MonkeyPatch
         *,
         bungalow_agent_id: str | None = None,
         attachments: list[str] | None = None,
+        **_: Any,
     ) -> dict[str, Any]:
         calls.append((bungalow_agent_id, message))
         if bungalow_agent_id == "a1":

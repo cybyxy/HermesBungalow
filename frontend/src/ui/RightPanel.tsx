@@ -5,18 +5,8 @@ import { useUiStore, type InferenceEntry } from '../store/uiStore';
 import { AgentAvatar } from './AgentAvatar';
 import { InferenceMarkdownBody, inferenceMono } from './inferenceMarkdown';
 import { MarkdownWorkspace } from './MarkdownWorkspace';
-import { colors, layoutPx } from './theme';
+import { colors } from './theme';
 import * as gameApi from '../services/gameApi';
-
-const panel: CSSProperties = {
-  width: layoutPx.sidePanel,
-  flexShrink: 0,
-  background: colors.panel,
-  borderLeft: `2px solid ${colors.border}`,
-  display: 'flex',
-  flexDirection: 'column',
-  minHeight: 0,
-};
 
 const blockTitle: CSSProperties = {
   color: colors.gold,
@@ -126,22 +116,23 @@ function entryStyle(v: InferenceEntry['variant']): { border: string; bg: string 
   return { border: '#2a4a3a', bg: 'rgba(26,58,42,0.25)' };
 }
 
-export function RightPanel(props: {
-  snapshot: GameWorldSnapshot;
-  selectedTaskId: number | null;
-  onSelectTask: (taskId: number) => void;
-  onAssignTask: (taskId: number, agentId?: string | null) => void;
-}) {
-  const { snapshot, selectedTaskId, onSelectTask, onAssignTask } = props;
+export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
+  const { snapshot } = props;
   const inferenceLog = useUiStore((s) => s.inferenceLog);
   const clearInferenceLog = useUiStore((s) => s.clearInferenceLog);
+  const toggleStudioRightPanelCollapsed = useUiStore((s) => s.toggleStudioRightPanelCollapsed);
   const scrollRef = useRef<HTMLDivElement>(null);
   const toolScrollRef = useRef<HTMLDivElement>(null);
   const visibleInferenceLog = inferenceLog.filter(
     (e) => e.variant === 'user' || e.variant === 'reply' || e.variant === 'error',
   );
   const visibleToolLog = inferenceLog.filter(
-    (e) => e.variant === 'tool_start' || e.variant === 'tool_done' || e.variant === 'tool_failed' || e.variant === 'reasoning' || e.variant === 'status',
+    (e) =>
+      e.variant === 'tool_start' ||
+      e.variant === 'tool_done' ||
+      e.variant === 'tool_failed' ||
+      e.variant === 'reasoning' ||
+      e.variant === 'status',
   );
 
   useEffect(() => {
@@ -157,8 +148,16 @@ export function RightPanel(props: {
   }, [inferenceLog]);
 
   return (
-    <aside style={panel}>
-      {/* 上半部分：推理 Trace */}
+    <div
+      style={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        minWidth: 0,
+      }}
+    >
+      {/* 上半：会话 */}
       <div
         style={{
           flex: '7 1 70%',
@@ -180,13 +179,31 @@ export function RightPanel(props: {
           }}
         >
           <div style={{ ...blockTitle, marginBottom: 0 }}>💬 会话</div>
-          <button
-            type="button"
-            onClick={() => clearInferenceLog()}
-            style={{ fontSize: 10, padding: '4px 8px', opacity: 0.85 }}
-          >
-            清空
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              type="button"
+              title="收起"
+              onClick={() => toggleStudioRightPanelCollapsed()}
+              style={{
+                padding: '2px 6px',
+                borderRadius: 4,
+                border: `1px solid ${colors.border}`,
+                background: 'rgba(42,58,90,0.6)',
+                color: colors.bright,
+                cursor: 'pointer',
+                fontSize: 11,
+              }}
+            >
+              ▶
+            </button>
+            <button
+              type="button"
+              onClick={() => clearInferenceLog()}
+              style={{ fontSize: 10, padding: '4px 8px', opacity: 0.85 }}
+            >
+              清空
+            </button>
+          </div>
         </div>
         <div
           ref={scrollRef}
@@ -211,7 +228,7 @@ export function RightPanel(props: {
                 alignSelf: 'stretch',
               }}
             >
-              推理过程（reasoning / status）和最终回复将显示在此。
+              用户消息与 Agent 回复将显示在此。
             </p>
           )}
           {visibleInferenceLog.map((e) => {
@@ -330,7 +347,7 @@ export function RightPanel(props: {
         </div>
       </div>
 
-      {/* 下半部分：Tool Log */}
+      {/* 下半：过程与工具 */}
       <div
         style={{
           flex: '3 1 30%',
@@ -349,7 +366,7 @@ export function RightPanel(props: {
             gap: 8,
           }}
         >
-          <div style={{ ...blockTitle, marginBottom: 0 }}>🔧 过程日志</div>
+          <div style={{ ...blockTitle, marginBottom: 0 }}>🔧 过程与工具</div>
         </div>
         <div
           ref={toolScrollRef}
@@ -364,13 +381,38 @@ export function RightPanel(props: {
         >
           {visibleToolLog.length === 0 && (
             <p style={{ margin: 0, fontSize: 11, color: '#555', lineHeight: 1.5 }}>
-              工具调用记录将显示在此。
+              推理过程、工具调用与状态将显示在此。
             </p>
           )}
           {visibleToolLog.map((e) => {
             const agent = e.agentId ? snapshot.agents.find((a) => a.id === e.agentId) : undefined;
             const { border, bg } = entryStyle(e.variant);
             const roleLabel = inferenceRoleLabel(e, agent);
+            const time = new Date(e.at).toLocaleTimeString('zh-CN', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            });
+            if (e.variant === 'reasoning' || e.variant === 'status') {
+              return (
+                <div
+                  key={e.id}
+                  style={{
+                    border: `1px solid ${border}`,
+                    background: bg,
+                    borderRadius: 12,
+                    padding: '8px 10px',
+                    minWidth: 0,
+                  }}
+                >
+                  <div style={{ fontSize: 9, color: '#666', marginBottom: 4 }}>{time}</div>
+                  <div style={{ fontSize: 10, fontWeight: 'bold', color: colors.gold, marginBottom: 4 }}>
+                    {roleLabel}
+                  </div>
+                  <InferenceBody variant={e.variant} body={e.body} markdownEditor={e.markdownEditor} />
+                </div>
+              );
+            }
             return (
               <div
                 key={e.id}
@@ -401,9 +443,7 @@ export function RightPanel(props: {
                     {e.variant === 'tool_start' ? '→' : e.variant === 'tool_done' ? '✓' : e.variant === 'tool_failed' ? '✗' : '•'}
                   </span>
                   <span style={{ fontSize: 10, fontWeight: 'bold', color: colors.gold }}>{roleLabel}</span>
-                  <span style={{ fontSize: 9, color: '#555', flexShrink: 0 }}>
-                    {new Date(e.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  </span>
+                  <span style={{ fontSize: 9, color: '#555', flexShrink: 0 }}>{time}</span>
                 </div>
                 <InferenceBody variant={e.variant} body={e.body} markdownEditor={e.markdownEditor} />
               </div>
@@ -411,6 +451,6 @@ export function RightPanel(props: {
           })}
         </div>
       </div>
-    </aside>
+    </div>
   );
 }

@@ -8,7 +8,7 @@ import type {
 } from '../services/gameApi';
 import type { GameWorldSnapshot } from '../types/game';
 import { InferenceMarkdownBody } from './inferenceMarkdown';
-import { colors, layoutPx } from './theme';
+import { colors, layoutPx, studioGlass } from './theme';
 import { useUiStore } from '../store/uiStore';
 
 function formatTs(t: number | string): string {
@@ -37,11 +37,13 @@ function terminalStatus(st: string): boolean {
   return st === 'completed' || st === 'partial' || st === 'failed';
 }
 
-/** 左侧常驻：编排 / relay 监视（纵向时间线 + 产物 + 全文），宽度与 layoutPx.sidePanel 一致。 */
+/** 浮于 Phaser 场景左侧：半透明任务监视（与右侧栏视觉一致），可折叠。 */
 export function TaskMonitorPanel(props: { snapshot: GameWorldSnapshot | null }) {
   const { snapshot } = props;
   const monitorFocusWorkOrderId = useUiStore((s) => s.monitorFocusWorkOrderId);
   const setMonitorFocusWorkOrderId = useUiStore((s) => s.setMonitorFocusWorkOrderId);
+  const studioLeftPanelCollapsed = useUiStore((s) => s.studioLeftPanelCollapsed);
+  const toggleStudioLeftPanelCollapsed = useUiStore((s) => s.toggleStudioLeftPanelCollapsed);
 
   const [list, setList] = useState<MonitorWorkOrderRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -164,49 +166,99 @@ export function TaskMonitorPanel(props: { snapshot: GameWorldSnapshot | null }) 
     </button>
   );
 
+  const panelW = studioLeftPanelCollapsed ? layoutPx.sidePanelCollapsed : layoutPx.sidePanel;
+
   return (
-    <aside
+    <div
       aria-label="任务监视"
       style={{
-        width: layoutPx.sidePanel,
-        flexShrink: 0,
-        minHeight: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        background: colors.panel,
-        borderRight: `2px solid ${colors.border}`,
+        position: 'absolute',
+        left: 0,
+        top: layoutPx.topBar,
+        bottom: layoutPx.bottomBar,
+        width: panelW,
+        zIndex: 60,
+        pointerEvents: 'none',
+        transition: 'width 0.2s ease-out',
         fontFamily: 'system-ui, sans-serif',
       }}
     >
       <div
         style={{
-          flexShrink: 0,
+          pointerEvents: 'auto',
+          height: '100%',
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '8px 10px',
-          borderBottom: `1px solid ${colors.border}`,
-          gap: 8,
+          flexDirection: 'column',
+          ...studioGlass.panel,
+          borderRight: `2px solid ${colors.border}`,
+          boxSizing: 'border-box',
         }}
       >
-        <div style={{ color: colors.gold, fontWeight: 'bold', fontSize: 13 }}>任务监视</div>
-        <span style={{ color: '#8a8', fontSize: 10 }}>{pipelineHint}</span>
-        <button
-          type="button"
-          onClick={() => void refreshList()}
-          style={{
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: `1px solid ${colors.border}`,
-            background: colors.btn,
-            color: colors.bright,
-            cursor: 'pointer',
-            fontSize: 10,
-          }}
-        >
-          刷新
-        </button>
-      </div>
+        {studioLeftPanelCollapsed ? (
+          <button
+            type="button"
+            title="展开任务监视"
+            onClick={() => toggleStudioLeftPanelCollapsed()}
+            style={{
+              flex: 1,
+              width: '100%',
+              border: 'none',
+              background: 'rgba(30,30,50,0.55)',
+              color: colors.gold,
+              cursor: 'pointer',
+              fontSize: 14,
+              padding: 0,
+            }}
+          >
+            ▶
+          </button>
+        ) : (
+          <>
+            <div
+              style={{
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '8px 8px',
+                borderBottom: `1px solid ${colors.border}`,
+                gap: 6,
+              }}
+            >
+              <div style={{ color: colors.gold, fontWeight: 'bold', fontSize: 13 }}>任务监视</div>
+              <span style={{ color: '#8a8', fontSize: 10, flex: 1, textAlign: 'center' }}>{pipelineHint}</span>
+              <button
+                type="button"
+                title="收起"
+                onClick={() => toggleStudioLeftPanelCollapsed()}
+                style={{
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  border: `1px solid ${colors.border}`,
+                  background: 'rgba(42,58,90,0.6)',
+                  color: colors.bright,
+                  cursor: 'pointer',
+                  fontSize: 11,
+                }}
+              >
+                ◀
+              </button>
+              <button
+                type="button"
+                onClick={() => void refreshList()}
+                style={{
+                  padding: '4px 8px',
+                  borderRadius: 4,
+                  border: `1px solid ${colors.border}`,
+                  background: colors.btn,
+                  color: colors.bright,
+                  cursor: 'pointer',
+                  fontSize: 10,
+                }}
+              >
+                刷新
+              </button>
+            </div>
 
       <div style={{ padding: '6px 10px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
         <label style={{ color: '#9aa', fontSize: 10, display: 'block', marginBottom: 4 }}>工作单</label>
@@ -351,6 +403,9 @@ export function TaskMonitorPanel(props: { snapshot: GameWorldSnapshot | null }) 
           </div>
         )}
       </div>
-    </aside>
+          </>
+        )}
+      </div>
+    </div>
   );
 }

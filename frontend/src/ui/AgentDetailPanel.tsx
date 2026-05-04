@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { Agent, GameWorldSnapshot } from '../types/game';
 import * as gameApi from '../services/gameApi';
-import { statusColor, statusLabelCn, taskStatusLabelCn } from './theme';
+import { colors, statusColor, statusLabelCn, studioGlass, taskStatusLabelCn } from './theme';
 import { AgentAvatar } from './AgentAvatar';
 
 const REASONING_MODEL_OPTIONS = [
@@ -85,7 +85,14 @@ export function AgentDetailPanel(props: {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 200px) minmax(0, 1fr)', gap: 12, minHeight: 200 }}>
-      <div style={{ background: '#252540', borderRadius: 8, padding: 12 }}>
+      <div
+        style={{
+          ...studioGlass.muted,
+          borderRadius: 8,
+          padding: 12,
+          border: `1px solid ${colors.border}`,
+        }}
+      >
         <div style={{ position: 'relative', width: 56, height: 56, margin: '0 auto 8px', flexShrink: 0 }}>
           <AgentAvatar agent={agent} size={56} />
           <span
@@ -97,7 +104,16 @@ export function AgentDetailPanel(props: {
         </div>
         <div style={{ textAlign: 'center', color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{agent.name}</div>
         <div style={{ textAlign: 'center', color: '#888', fontSize: 10, marginTop: 4 }}>👤 {agent.profession}</div>
-        <div style={{ marginTop: 8, background: '#1a1a30', borderRadius: 6, padding: 6, fontSize: 10 }}>
+        <div
+          style={{
+            marginTop: 8,
+            ...studioGlass.inset,
+            borderRadius: 6,
+            padding: 6,
+            fontSize: 10,
+            border: `1px solid ${colors.border}`,
+          }}
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span style={{ color: '#aaa' }}>状态</span>
             <span style={{ color: statusColor(agent.status) }}>{statusLabelCn(agent.status)}</span>
@@ -120,9 +136,9 @@ export function AgentDetailPanel(props: {
                 });
               }}
               style={{
-                background: '#1a1a30',
+                ...studioGlass.inset,
                 color: '#87CEEB',
-                border: '1px solid #333',
+                border: `1px solid ${colors.border}`,
                 borderRadius: 4,
                 fontSize: 9,
                 padding: '2px 2px',
@@ -140,8 +156,18 @@ export function AgentDetailPanel(props: {
         </div>
       </div>
 
-      <div style={{ background: '#1a1a30', borderRadius: 8, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-        <div style={{ display: 'flex', borderBottom: '1px solid #333', overflowX: 'auto' }}>
+      <div
+        style={{
+          ...studioGlass.muted,
+          borderRadius: 8,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          minWidth: 0,
+          border: `1px solid ${colors.border}`,
+        }}
+      >
+        <div style={{ display: 'flex', borderBottom: `1px solid ${colors.border}`, overflowX: 'auto' }}>
           {(
             [
               ['basic', '📋 基本'],
@@ -161,9 +187,9 @@ export function AgentDetailPanel(props: {
                 style={{
                   padding: '8px 8px',
                   border: 'none',
-                  background: act ? '#252540' : 'transparent',
-                  color: act ? '#FFD700' : '#888',
-                  borderBottom: act ? '2px solid #FFD700' : '2px solid transparent',
+                  background: act ? studioGlass.tabActive.background : 'transparent',
+                  color: act ? colors.gold : '#888',
+                  borderBottom: act ? `2px solid ${colors.gold}` : '2px solid transparent',
                   cursor: 'pointer',
                   fontSize: 10,
                   fontFamily: 'inherit',
@@ -179,7 +205,7 @@ export function AgentDetailPanel(props: {
         <div style={{ flex: 1, overflowY: 'auto', padding: 10 }}>
           {tab === 'basic' && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <div style={{ background: '#0a0a15', padding: 8, borderRadius: 6 }}>
+              <div style={{ ...studioGlass.inset, padding: 8, borderRadius: 6, border: `1px solid ${colors.border}` }}>
                 {[
                   { label: '能量', value: agent.energy ?? 0, color: '#228B22', icon: '⚡' },
                   { label: '情绪', value: agent.mood ?? 0, color: moodColor, icon: '😊' },
@@ -189,7 +215,17 @@ export function AgentDetailPanel(props: {
                 ].map(({ label, value, color, icon }) => (
                   <div key={label} style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
                     <span style={{ fontSize: 16, width: 24, textAlign: 'center', flexShrink: 0 }}>{icon}</span>
-                    <div style={{ flex: 1, height: 18, background: '#1a1a30', borderRadius: 9, overflow: 'hidden', margin: '0 6px' }}>
+                    <div
+                      style={{
+                        flex: 1,
+                        height: 18,
+                        ...studioGlass.inset,
+                        borderRadius: 9,
+                        overflow: 'hidden',
+                        margin: '0 6px',
+                        border: `1px solid ${colors.border}`,
+                      }}
+                    >
                       <div
                         style={{
                           width: `${Math.max(0, Math.min(100, value))}%`,
@@ -209,7 +245,16 @@ export function AgentDetailPanel(props: {
                 ))}
                 <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
                   <span style={{ fontSize: 16, width: 24, textAlign: 'center' }}>💬</span>
-                  <div style={{ flex: 1, height: 18, background: '#1a1a30', borderRadius: 9, margin: '0 6px' }}>
+                  <div
+                    style={{
+                      flex: 1,
+                      height: 18,
+                      ...studioGlass.inset,
+                      borderRadius: 9,
+                      margin: '0 6px',
+                      border: `1px solid ${colors.border}`,
+                    }}
+                  >
                     <div style={{ width: '75%', height: '100%', background: '#9932CC', borderRadius: 9, paddingLeft: 8, display: 'flex', alignItems: 'center' }}>
                       <span style={{ fontSize: 10, color: '#fff', fontWeight: 'bold' }}>社交</span>
                     </div>
@@ -224,7 +269,16 @@ export function AgentDetailPanel(props: {
                   return (
                     <div style={{ display: 'flex', alignItems: 'center' }}>
                       <span style={{ fontSize: 16, width: 24, textAlign: 'center' }}>🔥</span>
-                      <div style={{ flex: 1, height: 18, background: '#1a1a30', borderRadius: 9, margin: '0 6px' }}>
+                      <div
+                        style={{
+                          flex: 1,
+                          height: 18,
+                          ...studioGlass.inset,
+                          borderRadius: 9,
+                          margin: '0 6px',
+                          border: `1px solid ${colors.border}`,
+                        }}
+                      >
                         <div style={{ width: `${pct}%`, height: '100%', background: '#FF6347', borderRadius: 9, paddingLeft: 8, display: 'flex', alignItems: 'center' }}>
                           <span style={{ fontSize: 10, color: '#fff', fontWeight: 'bold' }}>{name}</span>
                         </div>
@@ -255,15 +309,39 @@ export function AgentDetailPanel(props: {
                 })()}
               </div>
               <div>
-                <div style={{ background: '#0a0a15', padding: 8, borderRadius: 4, marginBottom: 6 }}>
+                <div
+                  style={{
+                    ...studioGlass.inset,
+                    padding: 8,
+                    borderRadius: 4,
+                    marginBottom: 6,
+                    border: `1px solid ${colors.border}`,
+                  }}
+                >
                   <div style={{ color: '#666', fontSize: 9, marginBottom: 4 }}>💬 口头禅</div>
                   <div style={{ color: '#fff', fontSize: 11, fontStyle: 'italic' }}>&quot;{agent.catchphrase || '暂无口头禅'}&quot;</div>
                 </div>
-                <div style={{ background: '#0a0a15', padding: 8, borderRadius: 4, marginBottom: 6 }}>
+                <div
+                  style={{
+                    ...studioGlass.inset,
+                    padding: 8,
+                    borderRadius: 4,
+                    marginBottom: 6,
+                    border: `1px solid ${colors.border}`,
+                  }}
+                >
                   <div style={{ color: '#666', fontSize: 9, marginBottom: 4 }}>🧠 性格</div>
                   <div style={{ color: '#aaa', fontSize: 10, lineHeight: 1.45 }}>{agent.personality || '暂无描述'}</div>
                 </div>
-                <div style={{ background: '#0a0a15', padding: 8, borderRadius: 4, marginBottom: 6 }}>
+                <div
+                  style={{
+                    ...studioGlass.inset,
+                    padding: 8,
+                    borderRadius: 4,
+                    marginBottom: 6,
+                    border: `1px solid ${colors.border}`,
+                  }}
+                >
                   <div style={{ color: '#666', fontSize: 9, marginBottom: 4 }}>🎭 梗语</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                     {(agent.memes ?? ['暂无梗']).map((m, i) => (
@@ -273,7 +351,7 @@ export function AgentDetailPanel(props: {
                     ))}
                   </div>
                 </div>
-                <div style={{ background: '#0a0a15', padding: 8, borderRadius: 4 }}>
+                <div style={{ ...studioGlass.inset, padding: 8, borderRadius: 4, border: `1px solid ${colors.border}` }}>
                   <div style={{ color: '#666', fontSize: 9, marginBottom: 4 }}>📋 当前任务</div>
                   <div style={{ color: '#90EE90', fontSize: 11 }}>{agent.current_task_id ? `#${agent.current_task_id}` : '无'}</div>
                 </div>
@@ -386,12 +464,21 @@ export function AgentDetailPanel(props: {
               {tasks.map((t) => {
                 const st = taskStatusLabelCn(t.status);
                 return (
-                  <div key={t.id} style={{ background: '#0a0a15', borderRadius: 6, padding: 8, marginBottom: 6 }}>
+                  <div
+                    key={t.id}
+                    style={{
+                      ...studioGlass.inset,
+                      borderRadius: 6,
+                      padding: 8,
+                      marginBottom: 6,
+                      border: `1px solid ${colors.border}`,
+                    }}
+                  >
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                       <span style={{ color: '#fff', fontSize: 11 }}>{t.name}</span>
                       <span style={{ color: st.color, fontSize: 9 }}>{st.text}</span>
                     </div>
-                    <div style={{ height: 5, background: '#333', borderRadius: 3 }}>
+                    <div style={{ height: 5, background: 'rgba(26,26,46,0.85)', borderRadius: 3, border: `1px solid ${colors.border}` }}>
                       <div style={{ width: `${Math.max(0, Math.min(100, t.progress))}%`, height: '100%', background: '#FFD700', borderRadius: 3 }} />
                     </div>
                   </div>
@@ -417,9 +504,9 @@ export function AgentDetailPanel(props: {
 
 const taStyle: CSSProperties = {
   width: '100%',
-  background: '#0a0a15',
+  ...studioGlass.inset,
   color: '#fff',
-  border: '1px solid #333',
+  border: `1px solid ${colors.border}`,
   borderRadius: 6,
   padding: '6px 8px',
   boxSizing: 'border-box',
@@ -430,7 +517,7 @@ const taStyle: CSSProperties = {
 };
 
 const miniBtn: CSSProperties = {
-  background: '#333',
+  background: colors.btn,
   color: '#888',
   border: 'none',
   padding: '2px 6px',
