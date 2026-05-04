@@ -1,12 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useGameStore } from './store/gameStore';
 import { useUiStore } from './store/uiStore';
 import * as gameApi from './services/gameApi';
-import { TopBar } from './ui/TopBar';
 import { CenterStage } from './ui/CenterStage';
-import { RightPanel } from './ui/RightPanel';
-import { BottomBar } from './ui/BottomBar';
-import { AgentDetailModal } from './ui/AgentDetailModal';
+import { BottomSheetHost } from './ui/BottomSheetHost';
 import { ClarifyModal } from './ui/ClarifyModal';
 
 /** 5 秒真实时间 ≈ 1 游戏分钟 */
@@ -19,17 +16,14 @@ export function App() {
   const gatewayStatus = useGameStore((s) => s.gatewayStatus);
   const loadState = useGameStore((s) => s.loadState);
   const moveAgent = useGameStore((s) => s.moveAgent);
-  const assignTask = useGameStore((s) => s.assignTask);
   const connectGateway = useGameStore((s) => s.connectGateway);
   const disconnectGateway = useGameStore((s) => s.disconnectGateway);
 
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
-  const selectedTaskId = useUiStore((s) => s.selectedTaskId);
   const agentInferState = useUiStore((s) => s.agentInferState);
   const setSelectedAgent = useUiStore((s) => s.setSelectedAgent);
-  const setSelectedTask = useUiStore((s) => s.setSelectedTask);
   const clearSelection = useUiStore((s) => s.clearSelection);
-  const [agentDetailOpen, setAgentDetailOpen] = useState(false);
+  const openBottomSheet = useUiStore((s) => s.openBottomSheet);
 
   useEffect(() => {
     void loadState();
@@ -65,18 +59,6 @@ export function App() {
         color: '#eee',
       }}
     >
-      <TopBar
-        snapshot={snapshot}
-        gatewayStatus={gatewayStatus}
-        loading={loading}
-        onRefresh={() => void loadState()}
-        selectedAgentId={selectedAgentId}
-        onOpenAgentDetail={(id) => {
-          setSelectedAgent(id);
-          setAgentDetailOpen(true);
-        }}
-      />
-
       {error && (
         <div style={{ color: '#f66', padding: '8px 16px', fontSize: 13 }}>
           {error}（请先启动后端：<code>cd backend && PYTHONPATH=. python3 server.py</code>）
@@ -93,26 +75,19 @@ export function App() {
             snapshot={snapshot}
             selectedAgentId={selectedAgentId}
             centerInference={agentInferState}
+            gatewayStatus={gatewayStatus}
+            loading={loading}
             onSelectAgent={setSelectedAgent}
             onMoveAgent={(id, room) => void moveAgent(id, room)}
-          />
-          <RightPanel
-            snapshot={snapshot}
-            selectedTaskId={selectedTaskId}
-            onSelectTask={setSelectedTask}
-            onAssignTask={(tid, aid) => void assignTask(tid, aid)}
+            onOpenAgentDetail={(id) => {
+              setSelectedAgent(id);
+              openBottomSheet({ kind: 'agent', agentId: id });
+            }}
+            onRefresh={() => void loadState()}
           />
         </div>
       )}
-
-      <BottomBar snapshot={snapshot} gatewayStatus={gatewayStatus} />
-      <AgentDetailModal
-        open={agentDetailOpen}
-        snapshot={snapshot}
-        agentId={selectedAgentId}
-        onClose={() => setAgentDetailOpen(false)}
-        onProfileUpdated={() => void loadState()}
-      />
+      <BottomSheetHost />
       <ClarifyModal />
     </div>
   );

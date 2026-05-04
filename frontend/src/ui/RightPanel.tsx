@@ -1,11 +1,10 @@
 import { useEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
-import type { Components } from 'react-markdown';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type { GameWorldSnapshot } from '../types/game';
 import { useUiStore, type InferenceEntry } from '../store/uiStore';
 import { AgentAvatar } from './AgentAvatar';
+import { InferenceMarkdownBody, inferenceMono } from './inferenceMarkdown';
+import { MarkdownWorkspace } from './MarkdownWorkspace';
 import { colors, layoutPx } from './theme';
 
 const panel: CSSProperties = {
@@ -25,120 +24,12 @@ const blockTitle: CSSProperties = {
   marginBottom: 8,
 };
 
-const mono = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
-const tableCellBorder = `1px solid ${colors.border}`;
-
-const inferenceMdComponents: Components = {
-    p: ({ children }) => <p style={{ margin: '0.35em 0', lineHeight: 1.45 }}>{children}</p>,
-    h1: ({ children }) => <h1 style={{ fontSize: 14, margin: '0.5em 0 0.25em', fontWeight: 'bold' }}>{children}</h1>,
-    h2: ({ children }) => <h2 style={{ fontSize: 13, margin: '0.5em 0 0.25em', fontWeight: 'bold' }}>{children}</h2>,
-    h3: ({ children }) => <h3 style={{ fontSize: 12, margin: '0.4em 0 0.2em', fontWeight: 'bold' }}>{children}</h3>,
-    ul: ({ children }) => <ul style={{ margin: '0.25em 0', paddingLeft: 18, lineHeight: 1.45 }}>{children}</ul>,
-    ol: ({ children }) => <ol style={{ margin: '0.25em 0', paddingLeft: 18, lineHeight: 1.45 }}>{children}</ol>,
-    li: ({ children }) => <li style={{ margin: '0.15em 0' }}>{children}</li>,
-    blockquote: ({ children }) => (
-      <blockquote
-        style={{
-          margin: '0.35em 0',
-          paddingLeft: 10,
-          borderLeft: '3px solid #4a5a8a',
-          color: '#a8b4c8',
-        }}
-      >
-        {children}
-      </blockquote>
-    ),
-    a: ({ children, href }) => (
-      <a href={href} rel="noopener noreferrer" target="_blank" style={{ color: '#8ab4f8', textDecoration: 'underline' }}>
-        {children}
-      </a>
-    ),
-    strong: ({ children }) => <strong style={{ fontWeight: 'bold', color: colors.bright }}>{children}</strong>,
-    em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-    hr: () => <hr style={{ border: 'none', borderTop: `1px solid ${colors.border}`, margin: '0.5em 0' }} />,
-    pre: ({ children }) => (
-      <pre
-        style={{
-          margin: '0.5em 0',
-          padding: 8,
-          background: 'rgba(0,0,0,0.35)',
-          borderRadius: 4,
-          overflow: 'auto',
-          fontFamily: mono,
-          fontSize: 10,
-          lineHeight: 1.4,
-        }}
-      >
-        {children}
-      </pre>
-    ),
-    code: (props) => {
-      const { className, children, ...rest } = props;
-      const isFenced = Boolean(className && /^language-/.test(className));
-      if (isFenced) {
-        return (
-          <code
-            className={className}
-            style={{ fontFamily: mono, display: 'block', whiteSpace: 'pre', fontSize: 10 }}
-            {...rest}
-          >
-            {children}
-          </code>
-        );
-      }
-      return (
-        <code
-          style={{
-            fontFamily: mono,
-            background: 'rgba(0,0,0,0.35)',
-            padding: '1px 4px',
-            borderRadius: 3,
-            fontSize: 10,
-          }}
-          {...rest}
-        >
-          {children}
-        </code>
-      );
-    },
-    table: ({ children }) => (
-      <div style={{ margin: '0.5em 0', overflowX: 'auto', maxWidth: '100%' }}>
-        <table
-          style={{
-            borderCollapse: 'collapse',
-            width: '100%',
-            fontSize: 10,
-            lineHeight: 1.35,
-            border: tableCellBorder,
-          }}
-        >
-          {children}
-        </table>
-      </div>
-    ),
-    thead: ({ children }) => <thead style={{ background: 'rgba(0,0,0,0.28)' }}>{children}</thead>,
-    tbody: ({ children }) => <tbody>{children}</tbody>,
-    tr: ({ children }) => <tr>{children}</tr>,
-    th: ({ children }) => (
-      <th
-        style={{
-          border: tableCellBorder,
-          padding: '5px 7px',
-          textAlign: 'left',
-          fontWeight: 'bold',
-          color: colors.bright,
-        }}
-      >
-        {children}
-      </th>
-    ),
-    td: ({ children }) => (
-      <td style={{ border: tableCellBorder, padding: '5px 7px', textAlign: 'left', verticalAlign: 'top' }}>{children}</td>
-    ),
-};
-
-function InferenceBody(props: { variant: InferenceEntry['variant']; body: string }) {
-  const { variant, body } = props;
+function InferenceBody(props: {
+  variant: InferenceEntry['variant'];
+  body: string;
+  markdownEditor?: boolean;
+}) {
+  const { variant, body, markdownEditor } = props;
   if (variant === 'error') {
     return (
       <pre
@@ -149,20 +40,19 @@ function InferenceBody(props: { variant: InferenceEntry['variant']; body: string
           color: '#f88',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
-          fontFamily: mono,
+          fontFamily: inferenceMono,
         }}
       >
         {body}
       </pre>
     );
   }
-  return (
-    <div style={{ fontSize: 11, lineHeight: 1.45, color: '#c8d4e0', wordBreak: 'break-word' }}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={inferenceMdComponents}>
-        {body}
-      </ReactMarkdown>
-    </div>
-  );
+
+  if (markdownEditor && variant === 'reply') {
+    return <MarkdownWorkspace body={body} />;
+  }
+
+  return <InferenceMarkdownBody body={body} />;
 }
 
 /** 用户侧气泡头像（与 Agent 圆形风格一致，固定在消息右侧）。 */
@@ -253,10 +143,10 @@ export function RightPanel(props: {
   const scrollRef = useRef<HTMLDivElement>(null);
   const toolScrollRef = useRef<HTMLDivElement>(null);
   const visibleInferenceLog = inferenceLog.filter(
-    (e) => e.variant === 'user' || e.variant === 'reply' || e.variant === 'error' || e.variant === 'reasoning' || e.variant === 'status',
+    (e) => e.variant === 'user' || e.variant === 'reply' || e.variant === 'error',
   );
   const visibleToolLog = inferenceLog.filter(
-    (e) => e.variant === 'tool_start' || e.variant === 'tool_done' || e.variant === 'tool_failed',
+    (e) => e.variant === 'tool_start' || e.variant === 'tool_done' || e.variant === 'tool_failed' || e.variant === 'reasoning' || e.variant === 'status',
   );
 
   useEffect(() => {
@@ -276,7 +166,7 @@ export function RightPanel(props: {
       {/* 上半部分：推理 Trace */}
       <div
         style={{
-          flex: '1 1 50%',
+          flex: '7 1 70%',
           minHeight: 0,
           display: 'flex',
           flexDirection: 'column',
@@ -294,7 +184,7 @@ export function RightPanel(props: {
             gap: 8,
           }}
         >
-          <div style={{ ...blockTitle, marginBottom: 0 }}>▶ 推理 Trace</div>
+          <div style={{ ...blockTitle, marginBottom: 0 }}>💬 会话</div>
           <button
             type="button"
             onClick={() => clearInferenceLog()}
@@ -396,7 +286,7 @@ export function RightPanel(props: {
                             flexShrink: 0,
                             userSelect: 'none',
                             marginLeft: 2,
-                            fontFamily: mono,
+                            fontFamily: inferenceMono,
                           }}
                         >
                           {'<---'}
@@ -436,7 +326,7 @@ export function RightPanel(props: {
                       minWidth: 0,
                     }}
                   >
-                    <InferenceBody variant={e.variant} body={e.body} />
+                    <InferenceBody variant={e.variant} body={e.body} markdownEditor={e.markdownEditor} />
                   </div>
                 </div>
               </div>
@@ -448,7 +338,7 @@ export function RightPanel(props: {
       {/* 下半部分：Tool Log */}
       <div
         style={{
-          flex: '1 1 50%',
+          flex: '3 1 30%',
           minHeight: 0,
           display: 'flex',
           flexDirection: 'column',
@@ -464,7 +354,7 @@ export function RightPanel(props: {
             gap: 8,
           }}
         >
-          <div style={{ ...blockTitle, marginBottom: 0 }}>🔧 Tool Log</div>
+          <div style={{ ...blockTitle, marginBottom: 0 }}>🔧 过程日志</div>
         </div>
         <div
           ref={toolScrollRef}
@@ -520,7 +410,7 @@ export function RightPanel(props: {
                     {new Date(e.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                   </span>
                 </div>
-                <InferenceBody variant={e.variant} body={e.body} />
+                <InferenceBody variant={e.variant} body={e.body} markdownEditor={e.markdownEditor} />
               </div>
             );
           })}

@@ -357,9 +357,13 @@ class AgentManager:
             try:
                 resp = httpx.get(f"{agent.base_url}/health", timeout=1.0)
                 if resp.status_code == 200:
+                    pid = agent._proc.pid if agent._proc else None
                     logger.info(
-                        "[AgentMgr] ✓ Agent '%s' ready — port=%d",
-                        agent.profile, agent.port,
+                        "[AgentMgr] ✓ Agent '%s' ready — port=%d  pid=%s  %s/health",
+                        agent.profile,
+                        agent.port,
+                        pid,
+                        agent.base_url,
                     )
                     return
             except httpx.ConnectError:
@@ -377,6 +381,22 @@ class AgentManager:
                 logger.info("[AgentMgr] Stopping profile='%s'", profile)
                 self._agents[profile].stop()
         logger.info("[AgentMgr] stop_all complete")
+
+    def startup_status_rows(self) -> list[tuple[str, int, int | None, str]]:
+        """(profile, port, pid or None, status) for post-startup logging."""
+        with self._lock:
+            out: list[tuple[str, int, int | None, str]] = []
+            for profile in sorted(self._agents):
+                ap = self._agents[profile]
+                pid = ap._proc.pid if ap._proc else None
+                if ap.is_alive():
+                    status = "running"
+                elif ap._started:
+                    status = "exited"
+                else:
+                    status = "not_started"
+                out.append((profile, ap.port, pid, status))
+            return out
 
 
 MANAGER = AgentManager()
@@ -657,13 +677,42 @@ def start_all_agents() -> None:
     Synchronously start all discovered agent processes and wait for each to be ready.
     Call from server startup (lifespan startup).
     """
-    logger.info("[Gateway] start_all_agents — discovered %d profile(s): %s",
-                len(PROFILE_CONFIG), list(PROFILE_CONFIG.keys()))
+    logger.info(
+        "[Gateway] ═══ Hermes agent 子进程启动 ═══  gateway_main_pid=%s  profile 数=%d  %s",
+        os.getpid(),
+        len(PROFILE_CONFIG),
+        list(PROFILE_CONFIG.keys()),
+    )
     for profile in PROFILE_CONFIG:
         try:
-            MANAGER.ensure_running(profile)
+            agent = MANAGER.ensure_running(profile)
+            pid = agent._proc.pid if agent._proc else None
+            logger.info(
+                "[Gateway] ✓ agent 就绪  profile=%r  port=%d  pid=%s  base_url=%s",
+                profile,
+                agent.port,
+                pid,
+                agent.base_url,
+            )
         except Exception as e:
-            logger.error("[Gateway] Failed to start agent for profile '%s': %s", profile, e)
+            logger.error(
+                "[Gateway] ✗ agent 启动失败  profile=%r  err=%s",
+                profile,
+                e,
+            )
+    rows = MANAGER.startup_status_rows()
+    if rows:
+        body = "\n".join(
+            f"  {p:<22}  port={port:5d}  pid={pid!s:>6}  {st}"
+            for p, port, pid, st in rows
+        )
+        logger.info(
+            "[Gateway] ═══ 当前 agent 子进程一览（%d）═══\n%s",
+            len(rows),
+            body,
+        )
+    else:
+        logger.info("[Gateway] ═══ 当前 agent 子进程一览 ═══  （无已登记子进程；可能未扫描到 ~/.hermes）")
 
 
 def stop_all_agents() -> None:

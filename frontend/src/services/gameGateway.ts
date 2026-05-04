@@ -59,7 +59,7 @@ export class HermesGameGateway {
       this.setStatus('connected');
       ws.send(JSON.stringify({ type: 'game_event_sub', channels: ['task', 'agent_status', 'competition', 'social'] }));
     };
-    ws.onerror = () => this.setStatus('error');
+    ws.onerror = () => { /* let onclose handle final status */ };
     ws.onclose = () => {
       this.setStatus('disconnected');
       this.ws = null;

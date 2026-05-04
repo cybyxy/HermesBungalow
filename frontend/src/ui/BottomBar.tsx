@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import {
+  clearCollabWalkFootOverride,
+  runApproachWalkBeforePeerInvoke,
+  runCollabWalkReturnToSpawn,
+} from '../collab/studioCollabWalkBridge';
 import * as gameApi from '../services/gameApi';
 import type { ClarifySsePayload } from '../services/gameApi';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
 import type { Agent, GameWorldSnapshot } from '../types/game';
 import { MAIN_MENUS } from './menuConfig';
-import { AddAgentModal } from './AddAgentModal';
-import { MenuPopup } from './MenuPopup';
-import { Modal } from './Modal';
 import { colors, layoutPx } from './theme';
 
 const MENU_BTN_W = 70;
@@ -31,6 +33,17 @@ const footerBarBtn: CSSProperties = {
   fontFamily: 'inherit',
   cursor: 'pointer',
 };
+
+/** 将 SSE event_type 映射为中文气泡文案（末尾不接 "..."，调用方自行追加） */
+function _eventTypeToChinese(eventType: string): string {
+  if (eventType === 'tool.started') return '工具使用中';
+  if (eventType === 'tool.completed') return '工具已完成';
+  if (eventType === 'approval.required') return '等待确认';
+  if (eventType === 'reasoning.available') return '推理中';
+  if (eventType === '_thinking') return '思考中';
+  if (eventType === 'error') return '出错了';
+  return '工具使用中';
+}
 
 function resolveAgent(snapshot: GameWorldSnapshot | null, token: string): Agent | undefined {
   if (!snapshot) return undefined;
@@ -69,6 +82,120 @@ function buildHandoffPeerUserMessage(
   return withPeerHintForMessage(snapshot, ctx);
 }
 
+function clipboardFileKey(f: File): string {
+  return `${f.size}\0${f.lastModified}\0${f.name}`;
+}
+
+function hasImageMime(type: string): boolean {
+  const t = (type || '').toLowerCase();
+  if (t.startsWith('image/')) return true;
+  return (
+    t.includes('png') ||
+    t.includes('jpeg') ||
+    t.includes('jpg') ||
+    t.includes('gif') ||
+    t.includes('webp') ||
+    t.includes('tiff') ||
+    t.includes('heic') ||
+    t === 'image/x-png' ||
+    t === 'image/pjpeg'
+  );
+}
+
+function fileLooksLikeImageByMeta(f: File): boolean {
+  if (hasImageMime(f.type)) return true;
+  if (f.name && /\.(png|jpe?g|gif|webp|bmp|tif|tiff|heic|heif)$/i.test(f.name)) return true;
+  return false;
+}
+
+async function sniffImageFormat(blob: Blob): Promise<'png' | 'jpeg' | 'gif' | 'webp' | null> {
+  const buf = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+  if (buf.length < 4) return null;
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'jpeg';
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'gif';
+  if (buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50)
+    return 'webp';
+  return null;
+}
+
+/** 剪贴板未带 image/* MIME 时，按魔数补全类型，便于 /api/upload 与模型识别。 */
+async function normalizePastedImageFile(f: File): Promise<File | null> {
+  if (f.type.startsWith('image/')) return f;
+  const sig = await sniffImageFormat(f);
+  if (!sig) return null;
+  const mime = sig === 'jpeg' ? 'image/jpeg' : `image/${sig}`;
+  const ext = sig === 'jpeg' ? 'jpg' : sig;
+  const base = (f.name && /\.[a-z0-9]+$/i.test(f.name) ? f.name.replace(/\.[^/.]+$/, '') : f.name) || 'paste';
+  return new File([f], `${base}.${ext}`, { type: mime, lastModified: f.lastModified });
+}
+
+/** 同步可判定的图片：item / files 上已有 image/* 或扩展名。 */
+function syncCollectPastedImages(dt: DataTransfer): File[] {
+  const out: File[] = [];
+  const seen = new Set<string>();
+  const add = (f: File | null) => {
+    if (!f || f.size < 16) return;
+    if (!fileLooksLikeImageByMeta(f)) return;
+    const k = clipboardFileKey(f);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(f);
+  };
+
+  for (const item of Array.from(dt.items)) {
+    if (item.kind !== 'file') continue;
+    const f = item.getAsFile();
+    if (!f) continue;
+    if (!hasImageMime(item.type || '') && !fileLooksLikeImageByMeta(f)) continue;
+    add(f);
+  }
+  for (const f of Array.from(dt.files ?? [])) {
+    add(f);
+  }
+  return out;
+}
+
+/** 疑似截图：无 MIME/无文件名，需异步读魔数（避免误把非图文件当图）。 */
+function ambiguousPastedImageBlobs(dt: DataTransfer): File[] {
+  const out: File[] = [];
+  const seen = new Set<string>();
+  const add = (f: File | null) => {
+    if (!f || f.size < 32) return;
+    if (fileLooksLikeImageByMeta(f)) return;
+    const t = (f.type || '').trim();
+    const name = (f.name || '').trim();
+    if (t !== '' && t !== 'application/octet-stream') return;
+    if (name && !/^image\.(png|jpe?g|gif|webp)$/i.test(name) && name.includes('.')) return;
+    const k = clipboardFileKey(f);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(f);
+  };
+
+  for (const item of Array.from(dt.items)) {
+    if (item.kind !== 'file') continue;
+    const it = item.type || '';
+    if (hasImageMime(it)) continue;
+    add(item.getAsFile());
+  }
+  for (const f of Array.from(dt.files ?? [])) {
+    add(f);
+  }
+  return out.slice(0, 4);
+}
+
+/** Phaser 画布等会抢走焦点，paste 到不到底栏 textarea；焦点不在其它表单控件时由全局捕获把图片交给会话输入。 */
+function shouldDelegatePasteToFocusedField(target: EventTarget | null, chatTextarea: HTMLTextAreaElement | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (chatTextarea && (target === chatTextarea || chatTextarea.contains(target))) return true;
+  const field = target.closest(
+    'textarea, select, [contenteditable="true"], input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="password"], input[type="tel"], input[type="number"], input:not([type])',
+  );
+  if (field) return true;
+  return Boolean(target.closest('input[type="file"]'));
+}
+
 const bar: CSSProperties = {
   minHeight: layoutPx.bottomBar,
   flexShrink: 0,
@@ -90,10 +217,15 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
   const assignTask = useGameStore((s) => s.assignTask);
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
   const selectedTaskId = useUiStore((s) => s.selectedTaskId);
+  const bottomSheet = useUiStore((s) => s.bottomSheet);
+  const openBottomSheet = useUiStore((s) => s.openBottomSheet);
+  const closeBottomSheet = useUiStore((s) => s.closeBottomSheet);
 
   const agentStreamIds = useUiStore((s) => s.agentStreamIds);
   const [input, setInput] = useState('');
   const [pendingImages, setPendingImages] = useState<File[]>([]);
+  /** 与 pendingImages 同步的 object URL，发送清空 pending 时一并 revoke，避免缩略图残留。 */
+  const [thumbUrls, setThumbUrls] = useState<string[]>([]);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sessionsRef = useRef<Record<string, string>>({});
@@ -133,13 +265,6 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
       useUiStore.getState().clearAgentStream(aid);
     }
   }, []);
-  const [openMenuKey, setOpenMenuKey] = useState<string | null>(null);
-  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
-  const [newTaskOpen, setNewTaskOpen] = useState(false);
-  const [addAgentOpen, setAddAgentOpen] = useState(false);
-  const [skillOpen, setSkillOpen] = useState(false);
-  const [newTaskName, setNewTaskName] = useState('新任务');
-  const [newTaskProf, setNewTaskProf] = useState('程序员');
   const [toast, setToast] = useState<string | null>(null);
 
   const selectedAgent = snapshot?.agents.find((a) => a.id === selectedAgentId) ?? null;
@@ -160,6 +285,82 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
     const t = window.setTimeout(() => setToast(null), 2500);
     return () => window.clearTimeout(t);
   }, [toast]);
+
+  useLayoutEffect(() => {
+    const urls = pendingImages.map((f) => URL.createObjectURL(f));
+    setThumbUrls(urls);
+    return () => {
+      for (const u of urls) URL.revokeObjectURL(u);
+    };
+  }, [pendingImages]);
+
+  /** 焦点在游戏区等时，把剪贴板/拖放里的图片并入底栏待发送列表（与 textarea onPaste 逻辑对齐）。 */
+  useEffect(() => {
+    const chatStreaming = () => {
+      const aid = useUiStore.getState().selectedAgentId;
+      return Boolean(aid && useUiStore.getState().agentStreamIds[aid]);
+    };
+
+    const onPasteCapture = (e: ClipboardEvent) => {
+      if (chatStreaming()) return;
+      if (shouldDelegatePasteToFocusedField(e.target, textareaRef.current)) return;
+      const dt = e.clipboardData;
+      if (!dt) return;
+      const sync = syncCollectPastedImages(dt);
+      if (sync.length) {
+        e.preventDefault();
+        e.stopPropagation();
+        setPendingImages((prev) => [...prev, ...sync].slice(0, 4));
+        queueMicrotask(() => textareaRef.current?.focus());
+        return;
+      }
+      const amb = ambiguousPastedImageBlobs(dt);
+      if (!amb.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void (async () => {
+        const ok: File[] = [];
+        for (const f of amb) {
+          const n = await normalizePastedImageFile(f);
+          if (n) ok.push(n);
+        }
+        if (ok.length) {
+          setPendingImages((prev) => [...prev, ...ok].slice(0, 4));
+          queueMicrotask(() => textareaRef.current?.focus());
+        }
+      })();
+    };
+
+    const onDragOverCapture = (e: DragEvent) => {
+      if (chatStreaming()) return;
+      if (shouldDelegatePasteToFocusedField(e.target, textareaRef.current)) return;
+      const types = e.dataTransfer?.types ?? [];
+      if (![...types].includes('Files')) return;
+      e.preventDefault();
+    };
+
+    const onDropCapture = (e: DragEvent) => {
+      if (chatStreaming()) return;
+      if (shouldDelegatePasteToFocusedField(e.target, textareaRef.current)) return;
+      const fl = e.dataTransfer?.files;
+      if (!fl?.length) return;
+      const imgs = Array.from(fl).filter((f) => hasImageMime(f.type) || fileLooksLikeImageByMeta(f));
+      if (!imgs.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setPendingImages((prev) => [...prev, ...imgs].slice(0, 4));
+      queueMicrotask(() => textareaRef.current?.focus());
+    };
+
+    document.addEventListener('paste', onPasteCapture, true);
+    document.addEventListener('dragover', onDragOverCapture, true);
+    document.addEventListener('drop', onDropCapture, true);
+    return () => {
+      document.removeEventListener('paste', onPasteCapture, true);
+      document.removeEventListener('dragover', onDragOverCapture, true);
+      document.removeEventListener('drop', onDropCapture, true);
+    };
+  }, []);
 
   const runSseForAgent = useCallback(async (agent: Agent, headline: string, messageToModel: string, attachments?: string[]) => {
     const append = useUiStore.getState().appendInference;
@@ -185,12 +386,13 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
     let acc = '';
     let latestSid = sid;
     let streamError: Error | null = null;
+    let mergeReasoningId: string | null = null;
     useUiStore.getState().beginCenterAgentThinking(agent.id);
     try {
       await gameApi.streamChatSse(
         messageToModel,
         sid,
-        (chunk, done, fullText) => {
+        (chunk, done, fullText, doneMeta) => {
           if (done) {
             const fromDone = fullText != null && fullText !== '' ? fullText : '';
             // Hermes `done` 里持久化的 assistant 常会去掉 @/invoke 转交，不能用来覆盖流式 acc，否则无法解析同伴转交
@@ -198,9 +400,12 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
             const finalized = acc;
             if (finalized) {
               const id = replyEntryId ?? ensureReplyEntry();
-              const cur = useUiStore.getState().inferenceLog.find((e) => e.id === id);
-              if (cur && cur.body.length === 0) {
-                appendTo(id, finalized);
+              appendTo(id, finalized);
+            }
+            if (doneMeta?.display?.markdown_editor === true) {
+              const id = replyEntryId ?? ensureReplyEntry();
+              if (id) {
+                useUiStore.getState().patchInference(id, { markdownEditor: true });
               }
             }
             return;
@@ -210,7 +415,37 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
             acc += chunk;
           }
         },
-        undefined,
+        (meta) => {
+          if (meta.type === 'reasoning') {
+            const t = meta.text;
+            if (!t) return;
+            if (mergeReasoningId) {
+              appendTo(mergeReasoningId, t);
+            } else {
+              mergeReasoningId = append({ variant: 'reasoning', headline: '推理', body: t, agentId: agent.id });
+            }
+          } else if (meta.type === 'tool') {
+            mergeReasoningId = null;
+            const p = meta.payload as { name?: string; preview?: string; args?: Record<string, string>; event_type?: string };
+            const toolName = p.name ?? '未知工具';
+            const eventType = p.event_type ?? 'tool.started';
+            const eventLabel = _eventTypeToChinese(eventType);
+            const argsLines = p.args
+              ? Object.entries(p.args).map(([k, v]) => `  ${k}: ${v}`).join('\n')
+              : '';
+            const body = argsLines ? `调用工具: ${toolName}\n${argsLines}` : `调用工具: ${toolName}`;
+            useUiStore.getState().setCenterAgentTool(agent.id, eventLabel);
+            append({ variant: 'tool_start', headline: '工具', body, agentId: agent.id });
+          } else if (meta.type === 'tool_complete') {
+            mergeReasoningId = null;
+            const p = meta.payload as { name?: string };
+            const toolName = p.name ?? '';
+            const doneText = toolName ? `${toolName} 完成` : '工具完成';
+            append({ variant: 'tool_done', headline: '工具', body: doneText, agentId: agent.id });
+            // tool_complete 后保持 tool 状态，气泡显示 "xxx 完成..."，等下一个事件（thinking/tool）再更新
+            useUiStore.getState().setCenterAgentTool(agent.id, doneText);
+          }
+        },
         {
           bungalowAgentId: agent.id,
           onHermesSessionId: (id) => {
@@ -244,7 +479,10 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text && pendingImages.length === 0) {
+      setToast('请输入内容或添加图片');
+      return;
+    }
     const finalizeRound = useUiStore.getState().finalizeInferenceRound;
 
     const dispatchInvokes = async (
@@ -260,6 +498,8 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
       const selfSet = new Set(
         [fromAgent.id, fromAgent.profile ?? '', fromAgent.name].filter(Boolean) as string[],
       );
+      type TargetRow = { peer: Agent; message: string };
+      const targets: TargetRow[] = [];
       for (const iv of invokeList) {
         if (selfSet.has(iv.target)) {
           continue;
@@ -274,8 +514,17 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
           });
           continue;
         }
-        const msg = buildHandoffPeerUserMessage(snapshot, invokerFullReply, iv.message);
+        targets.push({ peer, message: iv.message });
+      }
+
+      clearCollabWalkFootOverride(fromAgent.id);
+      for (let i = 0; i < targets.length; i++) {
+        const { peer, message } = targets[i]!;
+        const msg = buildHandoffPeerUserMessage(snapshot, invokerFullReply, message);
         try {
+          await runApproachWalkBeforePeerInvoke(fromAgent.id, peer.id, {
+            chainFromCurrent: i > 0,
+          });
           const { text: reply } = await runSseForAgent(peer, agentReplyHeadline(peer), msg);
           const nested = gameApi.parseHermesBungalowInvokes(reply);
           if (nested.length > 0) {
@@ -290,6 +539,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
           });
         }
       }
+      await runCollabWalkReturnToSpawn(fromAgent.id);
     };
 
     const relayM = text.match(/^\/relay\s+(\S+)\s*\|\s*([\s\S]+)$/i);
@@ -299,12 +549,14 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
       const sub = String(relayM?.[2] ?? atRelayM?.[2] ?? '').trim();
       if (!sub) {
         setToast('转发内容不能为空（`/relay 目标 | 消息` 或 `@目标 | 消息`）');
+        setPendingImages([]);
         return;
       }
       const append = useUiStore.getState().appendInference;
       const peer = resolveAgent(snapshot, token);
       if (peer && useUiStore.getState().agentStreamIds[peer.id]) {
         setToast(`${peer.name} 正在推理中，请稍后再试或切换到其他 Agent`);
+        setPendingImages([]);
         return;
       }
       const relayRoundUserIdx = useUiStore.getState().inferenceLog.length;
@@ -323,6 +575,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
         });
         finalizeRound(relayRoundUserIdx);
         setInput('');
+        setPendingImages([]);
         return;
       }
       try {
@@ -346,6 +599,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
       } finally {
         finalizeRound(relayRoundUserIdx);
         setInput('');
+        setPendingImages([]);
       }
       return;
     }
@@ -354,30 +608,40 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
       setToast(
         '请先在顶部选一个 Agent 作为本轮对话入口（各 Agent 独立会话、地位对等）；点名另一名请用 `/relay id或profile或姓名 | 消息` 或 `@id或profile或姓名 | 消息`',
       );
+      setPendingImages([]);
       return;
     }
     const append = useUiStore.getState().appendInference;
 
     if (useUiStore.getState().agentStreamIds[selectedAgent.id]) {
       setToast(`${selectedAgent.name} 正在推理中，请稍候或点击「停止」`);
+      setPendingImages([]);
       return;
     }
 
     const mainRoundUserIdx = useUiStore.getState().inferenceLog.length;
-    append({ variant: 'user', headline: '你', body: text, agentId: selectedAgent.id });
+    const pendingCount = pendingImages.length;
+    const pendingFilesSnapshot = [...pendingImages];
+    setPendingImages([]);
+    append({
+      variant: 'user',
+      headline: '你',
+      body: text || `（已附加 ${pendingCount} 张图片）`,
+      agentId: selectedAgent.id,
+    });
     try {
       // Ensure session exists before uploading images
       let sid = sessionsRef.current[selectedAgent.id] ?? '';
-      if (!sid && pendingImages.length > 0) {
+      if (!sid && pendingFilesSnapshot.length > 0) {
         sid = (await gameApi.createHermesSession(selectedAgent.profile)).session_id;
         sessionsRef.current[selectedAgent.id] = sid;
       }
 
       // Upload pending images
       let attachments: string[] = [];
-      if (pendingImages.length > 0) {
+      if (pendingFilesSnapshot.length > 0) {
         const uploadResults = await Promise.all(
-          pendingImages.map((f) =>
+          pendingFilesSnapshot.map((f) =>
             gameApi.uploadImage(f, sid).catch((err) => {
               setToast(`图片上传失败: ${(err as Error).message}`);
               return null;
@@ -386,8 +650,8 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
         );
         const succeeded = uploadResults.filter((r): r is { filename: string; path: string; size: number } => r !== null);
         attachments = succeeded.map((r) => r.path);
-        if (succeeded.length < pendingImages.length) {
-          setToast(`图片上传部分失败（${succeeded.length}/${pendingImages.length}）`);
+        if (succeeded.length < pendingFilesSnapshot.length) {
+          setToast(`图片上传部分失败（${succeeded.length}/${pendingFilesSnapshot.length}）`);
         }
       }
 
@@ -397,7 +661,8 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
               snapshot.agents.map((a) => ({ name: a.name, profile: a.profile, id: a.id })),
             )
           : '';
-      const messageToModel = peerHint + text;
+      const attachHint = attachments.length > 0 ? `\n\n[Attached files: ${attachments.join('\n')}]` : '';
+      const messageToModel = peerHint + (text || '（请结合上传的图片回答。）') + attachHint;
 
       const { text: acc } = await runSseForAgent(selectedAgent, agentReplyHeadline(selectedAgent), messageToModel, attachments);
 
@@ -417,30 +682,15 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
     } finally {
       finalizeRound(mainRoundUserIdx);
       setInput('');
-      setPendingImages([]);
     }
   }, [input, loadState, pendingImages, runSseForAgent, selectedAgent, snapshot]);
 
-  const openMenu = (key: string, el: HTMLElement) => {
-    if (openMenuKey === key) {
-      setOpenMenuKey(null);
-      setMenuAnchor(null);
+  const toggleMenuSheet = (key: string) => {
+    if (bottomSheet.kind === 'menu' && bottomSheet.menuKey === key) {
+      closeBottomSheet();
     } else {
-      setOpenMenuKey(key);
-      setMenuAnchor(el.getBoundingClientRect());
+      openBottomSheet({ kind: 'menu', menuKey: key });
     }
-  };
-
-  const activeMenu = MAIN_MENUS.find((m) => m.key === openMenuKey) ?? null;
-
-  const onMenuItemClick = (menuKey: string, itemId: string) => {
-    if (itemId === 'showNewTask') setNewTaskOpen(true);
-    else if (itemId === 'showAddAgent') setAddAgentOpen(true);
-    else if (itemId === 'showAbout') window.alert('Hermes 数字工作室 — 原型对齐版');
-    else if (itemId === 'showDevGateway') setToast(`Gateway: ${gatewayStatus}`);
-    else if (itemId === 'showEventLog') setToast('事件日志在右侧面板');
-    else if (itemId === 'showAgentList' || itemId === 'showTaskList') setToast('请在左/右栏查看列表');
-    else window.alert(`占位: ${menuKey} / ${itemId}`);
   };
 
   const onQuickAssign = () => {
@@ -451,21 +701,6 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
     void assignTask(selectedTaskId, selectedAgentId).then(() => loadState());
   };
 
-  const onCreateTask = async () => {
-    try {
-      await gameApi.postCreateTask({
-        name: newTaskName.trim() || '新任务',
-        required_profession: newTaskProf,
-        difficulty: 2,
-        reward: 100,
-      });
-      setNewTaskOpen(false);
-      void loadState();
-    } catch (e) {
-      setToast((e as Error).message);
-    }
-  };
-
   const selectedName = selectedAgent?.name;
 
   return (
@@ -473,12 +708,12 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
       <footer style={bar}>
         <div style={{ display: 'flex', alignItems: 'center', alignSelf: 'flex-end', gap: 5, flexShrink: 0 }}>
           {MAIN_MENUS.map((m) => {
-            const isOpen = openMenuKey === m.key;
+            const isOpen = bottomSheet.kind === 'menu' && bottomSheet.menuKey === m.key;
             return (
               <button
                 key={m.key}
                 type="button"
-                onClick={(e) => openMenu(m.key, e.currentTarget)}
+                onClick={() => toggleMenuSheet(m.key)}
                 style={{
                   width: MENU_BTN_W,
                   height: 34,
@@ -611,14 +846,41 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
                   }
                 }}
                 onPaste={(e) => {
-                  const items = Array.from(e.clipboardData.items);
-                  const imageItems = items.filter((item) => item.kind === 'file' && item.type.startsWith('image/'));
-                  if (!imageItems.length) return;
+                  const dt = e.clipboardData;
+                  if (!dt) return;
+                  const el = e.currentTarget;
+
+                  const sync = syncCollectPastedImages(dt);
+                  if (sync.length) {
+                    e.preventDefault();
+                    setPendingImages((prev) => [...prev, ...sync].slice(0, 4));
+                    return;
+                  }
+
+                  const amb = ambiguousPastedImageBlobs(dt);
+                  if (!amb.length) return;
+
                   e.preventDefault();
-                  imageItems.forEach((item) => {
-                    const file = item.getAsFile();
-                    if (file) setPendingImages((prev) => [...prev, file].slice(0, 4));
-                  });
+                  const start = el.selectionStart ?? 0;
+                  const end = el.selectionEnd ?? start;
+
+                  void (async () => {
+                    const ok: File[] = [];
+                    for (const f of amb) {
+                      const n = await normalizePastedImageFile(f);
+                      if (n) ok.push(n);
+                    }
+                    if (ok.length) {
+                      setPendingImages((prev) => [...prev, ...ok].slice(0, 4));
+                      return;
+                    }
+                    const t = dt.getData('text/plain');
+                    if (!t) return;
+                    setInput((prev) => prev.slice(0, start) + t + prev.slice(end));
+                    queueMicrotask(() => {
+                      el.setSelectionRange(start + t.length, start + t.length);
+                    });
+                  })();
                 }}
                 disabled={selectedAgentStreaming}
                 rows={1}
@@ -638,13 +900,13 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
             </button>
           </div>
 
-          {pendingImages.length > 0 && (
+          {thumbUrls.length > 0 && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '2px 0 0' }}>
-              {pendingImages.map((f, i) => (
-                <div key={i} style={{ position: 'relative', width: 48, height: 48 }}>
+              {thumbUrls.map((url, i) => (
+                <div key={url} style={{ position: 'relative', width: 48, height: 48 }}>
                   <img
-                    src={URL.createObjectURL(f)}
-                    alt={f.name}
+                    src={url}
+                    alt=""
                     style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4, border: `1px solid ${colors.border}` }}
                   />
                   <button
@@ -675,62 +937,17 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', alignSelf: 'flex-end', gap: 4, flexShrink: 0 }}>
-          <button type="button" style={footerBarBtn} onClick={() => setNewTaskOpen(true)}>
+          <button type="button" style={footerBarBtn} onClick={() => openBottomSheet({ kind: 'newTask' })}>
             新建
           </button>
           <button type="button" style={footerBarBtn} onClick={onQuickAssign}>
             分配
           </button>
-          <button type="button" style={footerBarBtn} onClick={() => setSkillOpen(true)}>
+          <button type="button" style={footerBarBtn} onClick={() => openBottomSheet({ kind: 'skills' })}>
             技能
           </button>
         </div>
       </footer>
-
-      <MenuPopup
-        menu={activeMenu}
-        anchor={menuAnchor}
-        onClose={() => {
-          setOpenMenuKey(null);
-          setMenuAnchor(null);
-        }}
-        onItemClick={onMenuItemClick}
-      />
-
-      <Modal title="新建任务" open={newTaskOpen} onClose={() => setNewTaskOpen(false)}>
-        <label style={{ display: 'block', color: colors.text, fontSize: 12, marginBottom: 6 }}>名称</label>
-        <input
-          value={newTaskName}
-          onChange={(e) => setNewTaskName(e.target.value)}
-          style={{ width: '100%', marginBottom: 12, padding: 8, background: '#0a0a15', color: '#fff', border: `1px solid ${colors.border}`, borderRadius: 4 }}
-        />
-        <label style={{ display: 'block', color: colors.text, fontSize: 12, marginBottom: 6 }}>职业要求</label>
-        <select
-          value={newTaskProf}
-          onChange={(e) => setNewTaskProf(e.target.value)}
-          style={{ width: '100%', marginBottom: 16, padding: 8, background: '#0a0a15', color: '#fff', border: `1px solid ${colors.border}`, borderRadius: 4 }}
-        >
-          {['程序员', '设计师', '测试员', '分析师'].map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-        <button type="button" onClick={() => void onCreateTask()}>
-          创建
-        </button>
-      </Modal>
-
-      <AddAgentModal
-        open={addAgentOpen}
-        snapshot={snapshot}
-        onClose={() => setAddAgentOpen(false)}
-        onCreated={() => void loadState()}
-      />
-
-      <Modal title="城主技能" open={skillOpen} onClose={() => setSkillOpen(false)}>
-        <p style={{ color: colors.text, fontSize: 13, margin: 0 }}>占位：激励演说、灵感赐予等后续接入。</p>
-      </Modal>
 
       {toast && (
         <div

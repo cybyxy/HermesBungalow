@@ -4,8 +4,16 @@
  */
 
 import type { Agent } from '../types/game';
+import { layoutPx } from './theme';
 
 export const LAYOUT = { top: 44, bottom: 56, left: 260, right: 260 } as const;
+
+/**
+ * Phaser 中央舞台固定逻辑分辨率：宽同 PRD（1920 − 左右各 260）；
+ * 高从 1000 稿面高度扣除 theme 顶栏/底栏，与 App 一致；画布在 flex 容器内整区等比缩放、保持比例。
+ */
+export const STUDIO_LOGIC_W = 1920 - LAYOUT.left - LAYOUT.right;
+export const STUDIO_LOGIC_H = 1000 - layoutPx.topBar - layoutPx.bottomBar;
 
 export const WALL = 6;
 export const DOOR = 24;
@@ -14,8 +22,12 @@ export const MID_CORRIDOR_H = 32;
 export const BOTTOM_CORRIDOR_H = 32;
 export const KING_H_RATIO = 1.2;
 export const V_CORR_H = 14;
-export const AGENT_W = 23;
-export const AGENT_H = 43;
+/**
+ * 中央画布人物占位：与雪碧单格 **32×48** 一致（`sprites/sheets/*.png` 3×4 网格）。
+ * 仍用散图的角色若较窄，绘制时用 naturalWidth/Height，点击区可略大于身形。
+ */
+export const AGENT_W = 32;
+export const AGENT_H = 48;
 
 export const C = {
   bg: '#0a0a15',
@@ -36,6 +48,22 @@ export const C = {
 const ROOM_LABELS_ROW2 = ['休息室', '资料室', '会议室', '机房'] as const;
 const ROOM_LABELS_ROW3 = ['办公室1', '办公室2', '办公室3', '办公室4'] as const;
 const ROOM_LABELS_ROW4 = ['办公室5', '办公室6', '办公室7', '办公室8'] as const;
+
+const ROOM_GRID: Record<string, { row: number; col: number }> = {};
+ROOM_LABELS_ROW2.forEach((name, col) => {
+  ROOM_GRID[name] = { row: 0, col };
+});
+ROOM_LABELS_ROW3.forEach((name, col) => {
+  ROOM_GRID[name] = { row: 1, col };
+});
+ROOM_LABELS_ROW4.forEach((name, col) => {
+  ROOM_GRID[name] = { row: 2, col };
+});
+
+/** 用于移动朝向：row 增大 = 建筑内更靠下（屏幕 y 增大）。 */
+export function getRoomGridCell(roomName: string): { row: number; col: number } | null {
+  return ROOM_GRID[roomName] ?? null;
+}
 
 export type RoomSlot = {
   name: string;
@@ -92,8 +120,16 @@ export type HitRegion =
   | { kind: 'room'; name: string; x: number; y: number; w: number; h: number }
   | { kind: 'agent'; id: string; x: number; y: number; w: number; h: number };
 
-/** Rooms first, then agents — hitTest iterates reverse so agents take priority over overlapping rooms. */
-export function computeHitRegions(canvasW: number, canvasH: number, agents: Agent[]): HitRegion[] {
+/** 与 office_layer.json 中 objectgroup（class 为 sp）的对象对齐的点击覆盖（脚底像素相对 office 根容器） */
+export type OfficeSpawnHit = { agentAttr: string; px: number; py: number };
+
+/** Rooms first, then agents — hitTest iterates reverse so agents take priority over overlapping rooms。 */
+export function computeHitRegions(
+  canvasW: number,
+  canvasH: number,
+  agents: Agent[],
+  officeHit?: { rootX: number; rootY: number; spawns: OfficeSpawnHit[] } | null,
+): HitRegion[] {
   const L = computeBuildingLayout(canvasW, canvasH);
   const { ROOM_W, ROOM_H, buildingOffsetX, buildingOffsetY, roomSlots } = L;
   const roomRegions: HitRegion[] = [];
@@ -111,10 +147,27 @@ export function computeHitRegions(canvasW: number, canvasH: number, agents: Agen
   const agentRegions: HitRegion[] = [];
   for (const agent of agents) {
     const pos = roomSlots[agent.location];
-    if (!pos) continue;
-    const roomX = pos.col * (ROOM_W + WALL);
-    const ax = buildingOffsetX + roomX + pos.offsetX;
-    const ay = buildingOffsetY + pos.rowY + ROOM_H - 30;
+    const spawn =
+      officeHit?.spawns?.find((s) => {
+        const a = s.agentAttr.trim();
+        const p = (agent.profile?.trim() ?? '').toLowerCase();
+        return p === a.toLowerCase() || agent.id.trim() === a || agent.name.trim() === a;
+      }) ?? undefined;
+
+    if (!spawn && !pos) continue;
+
+    let ax: number;
+    let ay: number;
+    if (spawn && officeHit) {
+      ax = officeHit.rootX + spawn.px;
+      ay = officeHit.rootY + spawn.py;
+    } else if (pos) {
+      const roomX = pos.col * (ROOM_W + WALL);
+      ax = buildingOffsetX + roomX + pos.offsetX;
+      ay = buildingOffsetY + pos.rowY + ROOM_H - 30;
+    } else {
+      continue;
+    }
     agentRegions.push({
       kind: 'agent',
       id: agent.id,

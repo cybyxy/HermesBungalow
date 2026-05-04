@@ -20,6 +20,28 @@ export const layoutPx = {
   bottomBar: 76,
   /** Right column: tasks + inference timeline */
   sidePanel: 340,
+  /** Collapsed right strip (chevron hit area) */
+  sidePanelCollapsed: 32,
+} as const;
+
+/** Phaser 工作室壳层 / 会话气泡：中文与西文混排更易读，避免正文用等宽体 */
+export const studioFontUi =
+  'system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Noto Sans SC", "Segoe UI", sans-serif';
+
+/** 时间、GW 等次要信息 */
+export const studioFontMeta =
+  'ui-monospace, "SF Mono", Menlo, "Cascadia Code", "Microsoft YaHei UI", monospace';
+
+/** 工作室文案色阶（略提亮、减轻纯灰「糊」感） */
+export const studioInk = {
+  muted: '#9494ae',
+  body: '#eceef6',
+  userBody: '#e4e9ff',
+  replyBody: '#dff5ea',
+  toolBody: '#cfd6e8',
+  /** 小标题用柔金，避免与正文对比过硬 */
+  accentSoft: '#ebd896',
+  errorSoft: '#ffb4b4',
 } as const;
 
 const professionMap: Record<string, string> = {

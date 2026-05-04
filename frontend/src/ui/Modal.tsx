@@ -8,10 +8,22 @@ export function Modal(props: {
   children: ReactNode;
   zIndex?: number;
   variant?: 'overlay' | 'bottom-sheet';
+  insetRightPx?: number;
+  nonBlocking?: boolean;
+  dismissible?: boolean;
 }) {
-  const { title, open, onClose, children, zIndex, variant } = props;
+  const { title, open, onClose, children, zIndex, variant, insetRightPx, nonBlocking, dismissible } = props;
   return (
-    <PopupSheet open={open} title={title} onClose={onClose} zIndex={zIndex} variant={variant}>
+    <PopupSheet
+      open={open}
+      title={title}
+      onClose={onClose}
+      zIndex={zIndex}
+      variant={variant}
+      insetRightPx={insetRightPx}
+      nonBlocking={nonBlocking}
+      dismissible={dismissible}
+    >
       {children}
     </PopupSheet>
   );

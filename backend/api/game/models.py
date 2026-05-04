@@ -29,6 +29,7 @@ class Agent:
     reasoning_model: str = "auto"
     current_task_id: int | None = None
     hermes_session_id: str | None = None
+    skills: list[dict[str, Any]] = field(default_factory=list)  # [{name, level}]
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

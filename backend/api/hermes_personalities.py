@@ -117,7 +117,7 @@ def _read_profession_from_soul_text(soul: str) -> str:
 _MEMES_HEADERS = frozenset({"梗语", "memes", "梗", "meme"})
 _PERSONALITY_HEADERS = frozenset({"性格", "性格特点", "性格描述", "personality"})
 _CATCHPHRASE_HEADERS = frozenset({"口头禅", "catchphrase", "口癖"})
-_AVATAR_HEADERS = frozenset({"avatar", "头像", "头像路径"})
+_AVATAR_HEADERS = frozenset({"avatar", "头像", "头像路径", "形象", "外观", "sprite", "sprites"})
 
 
 def _extract_section_body(soul: str, headers: frozenset[str]) -> str | None:
@@ -235,9 +235,15 @@ def _read_catchphrase_from_soul_text(soul: str) -> list[str]:
 
 
 def _read_avatar_from_soul_text(soul: str) -> str:
-    """Extract avatar path from SOUL.md inline **avatar**: or **头像**: field."""
+    """Extract sprite base or path from SOUL.md: ``## 头像`` section first, then inline **头像** / **avatar**."""
     if not soul:
         return ""
+    body = _extract_section_body(soul, _AVATAR_HEADERS)
+    if body:
+        for line in body.splitlines():
+            stripped = line.strip().lstrip("-*·").strip().strip('"').strip("'")
+            if stripped:
+                return stripped
     val = _extract_inline_field(soul, _AVATAR_HEADERS)
     return val if val else ""
 

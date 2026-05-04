@@ -2748,9 +2748,21 @@ def _handle_chat_start(handler, body):
     except KeyError:
         return bad(handler, "Session not found", 404)
     msg = str(body.get("message", "")).strip()
-    if not msg:
-        return bad(handler, "message is required")
     attachments = [str(a) for a in (body.get("attachments") or [])][:20]
+    # 兼容 [Attached files: /path/to/file] 文本格式：从前端嵌入消息文本中提取路径（逗号或换行分隔）
+    if not attachments:
+        _found = _re.findall(r'\[Attached files:\s*([^\]]+)\]', msg)
+        for _path in _found:
+            for _p in _re.split(r'[,\n\r]+', _path):
+                _p = _p.strip()
+                if _p.startswith('/') and _p not in attachments:
+                    attachments.append(_p)
+    # 从消息文本中剔除 [Attached files: ...] 标签，避免混入 LLM prompt
+    msg = _re.sub(r'\[Attached files:\s*[^\]]*\]', '', msg).strip()
+    if not msg and not attachments:
+        return bad(handler, "message is required")
+    if not msg and attachments:
+        msg = "（用户上传了图片，请结合图片回答。）"
     try:
         workspace = str(resolve_trusted_workspace(body.get("workspace") or s.workspace))
     except ValueError as e:

@@ -21,8 +21,12 @@ export interface Agent {
   memes?: string[];
   reasoning_model?: string;
   current_task_id?: number | null;
+  /** Agent skills [{name, level}] */
+  skills?: { name: string; level: number }[];
   /** Server-pooled Hermes chat session for this game agent (see GET /api/game/agents). */
   hermes_session_id?: string;
+  /** Direct sprite base name override (e.g. 'badboy', 'student_03'). If set, takes priority over gender/personality matching. */
+  avatar?: string;
 }
 
 export interface GameTask {

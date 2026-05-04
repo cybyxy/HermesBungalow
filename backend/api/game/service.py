@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import random
@@ -36,6 +37,14 @@ class GameService:
             self.sync_room_occupancy()
         try:
             self.refresh_hermes_sessions_after_agent_list_change()
+        except Exception:
+            pass
+        # 进程退出时自动存档
+        atexit.register(self._auto_persist)
+
+    def _auto_persist(self) -> None:
+        try:
+            self.persist()
         except Exception:
             pass
 
@@ -230,6 +239,19 @@ class GameService:
                 "scriptorium": "苏砚书",
                 "keystone": "江定策",
             }
+            # 职业能力默认值，按 profile 映射
+            SKILLS_MAP: dict[str, list[dict[str, Any]]] = {
+                "pymaster": [{"name": "代码", "level": 5}, {"name": "沟通", "level": 3}],
+                "uiwizard": [{"name": "代码", "level": 4}, {"name": "沟通", "level": 3}],
+                "ui": [{"name": "设计", "level": 5}, {"name": "沟通", "level": 4}],
+                "libra": [{"name": "测试", "level": 5}, {"name": "分析", "level": 3}],
+                "compass": [{"name": "分析", "level": 5}, {"name": "沟通", "level": 4}],
+                "apex": [{"name": "架构", "level": 5}, {"name": "分析", "level": 4}],
+                "scriptorium": [{"name": "写作", "level": 5}, {"name": "沟通", "level": 3}],
+                "keystone": [{"name": "策略", "level": 5}, {"name": "沟通", "level": 4}],
+                "崽崽": [{"name": "管理", "level": 5}, {"name": "沟通", "level": 5}],
+            }
+            skills = payload.get("skills") or SKILLS_MAP.get(profile_key, [{"name": "通用", "level": 3}])
             agent = Agent(
                 id=aid,
                 name=str(payload.get("name") or "新Agent"),
@@ -240,6 +262,7 @@ class GameService:
                 location=str(payload.get("location") or "休息室"),
                 catchphrase=str(payload.get("catchphrase") or ""),
                 personality=str(payload.get("personality") or ""),
+                skills=skills,
             )
             self._world.agents.append(agent)
             self.sync_room_occupancy()

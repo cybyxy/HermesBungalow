@@ -3,7 +3,6 @@ import type { CSSProperties, ReactNode } from 'react';
 import * as gameApi from '../services/gameApi';
 import type { GameWorldSnapshot } from '../types/game';
 import { colors } from './theme';
-import { Modal } from './Modal';
 
 type AddAgentTab = 'basic' | 'config';
 
@@ -22,13 +21,12 @@ const DEFAULT_MEMORY = `## 重要经历
 
 const professionSuggestions = ['程序员', '设计师', '测试员', '分析师', '产品经理', '运维工程师'];
 
-export function AddAgentModal(props: {
-  open: boolean;
+export function AddAgentPanel(props: {
   snapshot: GameWorldSnapshot | null;
-  onClose: () => void;
+  onCancel: () => void;
   onCreated: () => void;
 }) {
-  const { open, snapshot, onClose, onCreated } = props;
+  const { snapshot, onCancel, onCreated } = props;
   const [tab, setTab] = useState<AddAgentTab>('basic');
   const [name, setName] = useState('');
   const [profession, setProfession] = useState('程序员');
@@ -76,10 +74,11 @@ export function AddAgentModal(props: {
       await gameApi.postCreateHermesProfileAgent({
         name: n,
         profile_name: profileName,
+        gender: gender,
         soul: [soul.trim(), catchphrase.trim() ? `\n\n口头禅：${catchphrase.trim()}` : ''].join(''),
         memory: memory.trim(),
       });
-      onClose();
+      onCancel();
       onCreated();
     } catch (e) {
       setError((e as Error).message);
@@ -89,20 +88,20 @@ export function AddAgentModal(props: {
   };
 
   return (
-    <Modal title="➕ 添加Agent" open={open} onClose={onClose}>
+    <div>
       <div style={{ color: '#666', fontSize: 11, marginBottom: 10 }}>通过配置 Agent 基础信息与核心文件进行创建</div>
 
       <div style={{ display: 'flex', borderBottom: '1px solid #333', marginBottom: 12 }}>
         {[
-          { k: 'basic', label: '📋 基本信息' },
-          { k: 'config', label: '📄 核心文件' },
+          { k: 'basic' as const, label: '📋 基本信息' },
+          { k: 'config' as const, label: '📄 核心文件' },
         ].map((it) => {
           const active = tab === it.k;
           return (
             <button
               key={it.k}
               type="button"
-              onClick={() => setTab(it.k as AddAgentTab)}
+              onClick={() => setTab(it.k)}
               style={{
                 padding: '8px 12px',
                 border: 'none',
@@ -127,8 +126,8 @@ export function AddAgentModal(props: {
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="输入Agent名称" style={inputStyle} />
             </Field>
             <Field label="职业类型 *">
-              <input value={profession} onChange={(e) => setProfession(e.target.value)} list="profession-list" placeholder="输入或选择职业" style={inputStyle} />
-              <datalist id="profession-list">
+              <input value={profession} onChange={(e) => setProfession(e.target.value)} list="profession-list-add" placeholder="输入或选择职业" style={inputStyle} />
+              <datalist id="profession-list-add">
                 {professionSuggestions.map((p) => (
                   <option key={p} value={p} />
                 ))}
@@ -172,14 +171,14 @@ export function AddAgentModal(props: {
       {error && <div style={{ color: '#ff6b6b', marginTop: 10, fontSize: 12 }}>{error}</div>}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 14 }}>
-        <button type="button" onClick={onClose} style={ghostBtn} disabled={busy}>
+        <button type="button" onClick={onCancel} style={ghostBtn} disabled={busy}>
           取消
         </button>
         <button type="button" onClick={() => void submit()} style={primaryBtn} disabled={busy}>
           {busy ? '添加中…' : '添加'}
         </button>
       </div>
-    </Modal>
+    </div>
   );
 }
 

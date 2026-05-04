@@ -2,16 +2,18 @@
 Hermes Web UI -- SSE streaming engine and agent thread runner.
 Includes Sprint 10 cancel support via CANCEL_FLAGS.
 """
+import base64
 import contextlib
+import copy
 import json
 import logging
+import mimetypes
 import os
 import queue
 import re
 import threading
 import time
 import traceback
-import copy
 from pathlib import Path
 from typing import Optional
 
@@ -89,6 +91,64 @@ def _get_ai_agent():
     return AIAgent
 from api.models import get_session, title_from
 from api.workspace import set_last_workspace
+
+# Import image routing helpers lazily (hermes-agent may not be on sys.path
+# in all deployments; gracefully skip if not available)
+try:
+    from agent.image_routing import build_native_content_parts
+    _HAS_IMAGE_ROUTING = True
+except ImportError:
+    _HAS_IMAGE_ROUTING = False
+    def build_native_content_parts(user_text, image_paths):
+        # Fallback: return text-only content
+        return ([{"type": "text", "text": user_text}] if user_text else []), []
+
+
+def _bungalow_mime_for_image_path(p: Path) -> str:
+    ext = p.suffix.lower()
+    if ext == ".png":
+        return "image/png"
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if ext == ".gif":
+        return "image/gif"
+    if ext == ".webp":
+        return "image/webp"
+    guess, _ = mimetypes.guess_type(str(p))
+    if guess and guess.startswith("image/"):
+        return guess
+    return "application/octet-stream"
+
+
+def _bungalow_build_multimodal_from_paths(workspace_ctx: str, msg_text: str, attachment_paths: list) -> tuple[list, list]:
+    """OpenAI-style multimodal parts when ``agent.image_routing`` is unavailable (Bungalow / slim installs)."""
+    text_body = (msg_text or "").strip() or "（用户上传了图片，请结合图片回答。）"
+    parts: list = [{"type": "text", "text": workspace_ctx + text_body}]
+    skipped: list = []
+    for raw in attachment_paths or []:
+        try:
+            p = Path(str(raw)).expanduser()
+            try:
+                p = p.resolve()
+            except OSError:
+                pass
+            if not p.is_file():
+                skipped.append(str(raw))
+                continue
+            data = p.read_bytes()
+            if len(data) > 20 * 1024 * 1024:
+                skipped.append(str(raw))
+                continue
+            mime = _bungalow_mime_for_image_path(p)
+            if not mime.startswith("image/"):
+                skipped.append(str(raw))
+                continue
+            b64 = base64.b64encode(data).decode("ascii")
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        except Exception:
+            skipped.append(str(raw))
+    return parts, skipped
+
 
 # Fields that are safe to send to LLM provider APIs.
 # Everything else (attachments, timestamp, _ts, etc.) is display-only
@@ -204,6 +264,30 @@ def _message_text(value) -> str:
                 parts.append(str(p.get('text') or p.get('content') or ''))
         return _strip_thinking_markup('\n'.join(parts).strip())
     return _strip_thinking_markup(str(value or '').strip())
+
+
+def _infer_markdown_editor_for_ui(assistant_text: str) -> bool:
+    """Heuristic: assistant reply looks rich enough for Bungalow split Markdown editor."""
+    t = (assistant_text or '').strip()
+    if len(t) < 12:
+        return False
+    if '```' in t:
+        return True
+    if re.search(r'^#{1,6}\s+\S', t, re.MULTILINE):
+        return True
+    if t.count('\n') >= 1 and re.search(r'\*\*[^*]{2,180}\*\*', t):
+        return True
+    lines = [ln for ln in t.splitlines() if ln.strip()]
+    if sum(1 for ln in lines if re.match(r'^\s*[-*+]\s+\S', ln)) >= 2:
+        return True
+    pipe_lines = [ln for ln in t.splitlines() if ln.count('|') >= 2]
+    return len(pipe_lines) >= 2
+
+
+def _bungalow_sse_display(messages) -> dict:
+    """UI hints for Hermes Bungalow WebUI (SSE ``event: done`` ``display`` field)."""
+    # 分栏 Markdown 编辑器默认关闭；前端通过 patchInference(..., {markdownEditor:true}) 显式开启。
+    return {'markdown_editor': False}
 
 
 def _first_exchange_snippets(messages):
@@ -1756,8 +1840,28 @@ def _run_agent_streaming(
             )
             _ckpt_thread.start()
 
+            # Build multimodal user content if images are attached
+            _has_images = attachments and len(attachments) > 0
+            if _has_images and _HAS_IMAGE_ROUTING:
+                _content_parts, _skipped = build_native_content_parts(
+                    workspace_ctx + msg_text,
+                    attachments,
+                )
+                if _skipped:
+                    logger.warning("Image attachments skipped (not found): %s", _skipped)
+                _user_message_for_llm = _content_parts  # list of content parts for multimodal
+            elif _has_images:
+                _content_parts, _skipped = _bungalow_build_multimodal_from_paths(
+                    workspace_ctx, msg_text, attachments,
+                )
+                if _skipped:
+                    logger.warning("Image attachments skipped (fallback reader): %s", _skipped)
+                _user_message_for_llm = _content_parts
+            else:
+                _user_message_for_llm = workspace_ctx + msg_text
+
             result = agent.run_conversation(
-                user_message=workspace_ctx + msg_text,
+                user_message=_user_message_for_llm,
                 system_message=workspace_system_msg,
                 conversation_history=_sanitize_messages_for_api(s.messages),
                 task_id=session_id,
@@ -1775,6 +1879,7 @@ def _run_agent_streaming(
                     'usage': {'input_tokens': 0, 'output_tokens': 0},
                     'ephemeral': True,
                     'answer': _answer,
+                    'display': _bungalow_sse_display(result.get('messages') or []),
                 })
                 if _checkpoint_stop is not None:
                     _checkpoint_stop.set()
@@ -2043,14 +2148,19 @@ def _run_agent_streaming(
             except Exception:
                 logger.debug("Failed to drain pending steer for session %s", session_id)
             raw_session = s.compact() | {'messages': s.messages, 'tool_calls': tool_calls}
+            _bungalow_done_display = _bungalow_sse_display(s.messages)
             # NOTE: done/stream_end are NOT sent here. They are sent in the `finally`
             # block below AFTER all events (including clarify resolutions) have been
             # queued. This ensures SSE consumers receive everything before the stream closes.
             _finalize_session = lambda: (
-                put('done', {'session': redact_session_data(raw_session), 'usage': usage}),
-                (lambda ms: (ms.__setitem__('session_id', session_id), put('metering', ms))(
+                put('done', {
+                    'session': redact_session_data(raw_session),
+                    'usage': usage,
+                    'display': _bungalow_done_display,
+                }),
+                (lambda ms: (ms.__setitem__('session_id', session_id), put('metering', ms)))(
                     meter().get_stats()
-                )),
+                ),
             )
             if _should_bg_title and _u0 and _a0:
                 threading.Thread(

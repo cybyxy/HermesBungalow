@@ -109,6 +109,7 @@ export async function postCreateAgent(payload: {
 export async function postCreateHermesProfileAgent(payload: {
   name: string;
   profile_name?: string;
+  gender?: string;
   soul?: string;
   memory?: string;
 }): Promise<{ profile_name: string; agent_count: number }> {
@@ -137,6 +138,18 @@ export async function saveAgentProfileFiles(payload: {
     body: JSON.stringify(payload),
   });
   await parseJson(res);
+}
+
+export async function updateAgentConfig(payload: {
+  id: string;
+  reasoning_model?: string;
+}): Promise<{ ok: boolean; agent?: Record<string, unknown> }> {
+  const res = await fetch('/api/game/agent/update', {
+    method: 'POST',
+    headers: JSON_HDR,
+    body: JSON.stringify(payload),
+  });
+  return parseJson<{ ok: boolean; agent?: Record<string, unknown> }>(res);
 }
 
 export async function postCreateTask(payload: {
@@ -278,6 +291,15 @@ export type SseStreamMeta =
   | { type: 'tool'; payload: Record<string, unknown> }
   | { type: 'tool_complete'; payload: Record<string, unknown> };
 
+/** Optional fields on SSE terminal events (e.g. ``event: done``) for UI routing. */
+export type StreamDoneDisplay = {
+  markdown_editor?: boolean;
+};
+
+export type StreamDoneMeta = {
+  display?: StreamDoneDisplay;
+};
+
 export type StreamChatSseOptions = {
   /** Hermes Bungalow: links this stream to a game agent so server can persist session id after compression rotation. */
   bungalowAgentId?: string | null;
@@ -301,6 +323,15 @@ function normalizeSseChunks(buf: string): string {
 function looksLikeClarifyPayload(d: Record<string, unknown>): boolean {
   if (d.kind === 'clarify') return true;
   return typeof d.question === 'string' && Array.isArray(d.choices_offered);
+}
+
+/** SSE ``reasoning`` / 嵌套 ``message`` 块里可能出现的正文字段名（网关或模型层不一致） */
+function extractReasoningPayload(d: Record<string, unknown>): string {
+  for (const key of ['text', 'content', 'reasoning', 'delta'] as const) {
+    const x = d[key];
+    if (typeof x === 'string' && x.length > 0) return x;
+  }
+  return '';
 }
 
 /** One SSE block: optional ``event:`` plus one or more ``data:`` lines (joined per SSE spec). */
@@ -332,7 +363,7 @@ function parseSseEventBlock(block: string): { eventName: string; data: Record<st
 export async function streamChatSse(
   message: string,
   sessionId: string | null,
-  onChunk: (token: string, done: boolean, fullText?: string) => void,
+  onChunk: (token: string, done: boolean, fullText?: string, doneMeta?: StreamDoneMeta) => void,
   onMeta?: (meta: SseStreamMeta) => void,
   options?: StreamChatSseOptions | null,
 ): Promise<void> {
@@ -374,10 +405,10 @@ export async function streamChatSse(
   const dec = new TextDecoder();
   let buffer = '';
   let finalized = false;
-  const finish = (fullText?: string) => {
+  const finish = (fullText?: string, doneMeta?: StreamDoneMeta) => {
     if (finalized) return;
     finalized = true;
-    onChunk('', true, fullText);
+    onChunk('', true, fullText, doneMeta);
   };
   for (;;) {
     const { done, value } = await reader.read();
@@ -414,12 +445,16 @@ export async function streamChatSse(
         if (canon && options?.onHermesSessionId) {
           options.onHermesSessionId(canon);
         }
+        const doneMeta: StreamDoneMeta | undefined =
+          data.display != null && typeof data.display === 'object'
+            ? { display: data.display as StreamDoneDisplay }
+            : undefined;
         const msgs = sess?.messages;
         const last = msgs?.length ? msgs[msgs.length - 1] : undefined;
         if (last?.role === 'assistant' && typeof last.content === 'string') {
-          finish(last.content);
+          finish(last.content, doneMeta);
         } else {
-          finish();
+          finish(undefined, doneMeta);
         }
         continue;
       }
@@ -446,9 +481,21 @@ export async function streamChatSse(
         await submitClarifyResponse(payload.session_id, trimmed);
         continue;
       }
-      if (eventName === 'reasoning' && typeof data.text === 'string' && data.text.length > 0) {
-        onMeta?.({ type: 'reasoning', text: data.text });
+      if (eventName === 'reasoning') {
+        const chunk = extractReasoningPayload(data);
+        if (chunk.length > 0) onMeta?.({ type: 'reasoning', text: chunk });
         continue;
+      }
+      if ((!eventName || eventName === 'message') && !looksLikeClarifyPayload(data)) {
+        const etRaw = data.type ?? data.event;
+        const et = typeof etRaw === 'string' ? etRaw : '';
+        if (et === 'reasoning' || et === 'reasoning_delta' || et === 'thinking') {
+          const chunk = extractReasoningPayload(data);
+          if (chunk.length > 0) {
+            onMeta?.({ type: 'reasoning', text: chunk });
+            continue;
+          }
+        }
       }
       if (eventName === 'tool') {
         onMeta?.({ type: 'tool', payload: data });
@@ -459,12 +506,17 @@ export async function streamChatSse(
         continue;
       }
       if (data.done === true) {
+        const doneMeta: StreamDoneMeta | undefined =
+          data.display != null && typeof data.display === 'object'
+            ? { display: data.display as StreamDoneDisplay }
+            : undefined;
         finish(
           typeof data.full_text === 'string'
             ? data.full_text
             : typeof data.text === 'string'
               ? data.text
               : undefined,
+          doneMeta,
         );
         continue;
       }

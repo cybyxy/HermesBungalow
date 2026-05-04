@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 import type { Agent, GameRoom, GameWorldSnapshot } from '../types/game';
 import { colors, layoutPx, professionColor, statusColor, statusLabelCn } from './theme';
+import { AgentAvatar } from './AgentAvatar';
 
 const panel: CSSProperties = {
   width: layoutPx.sidePanel,
@@ -34,7 +35,6 @@ export function LeftPanel(props: {
         {snapshot.agents.map((a: Agent) => {
           const isSel = a.id === selectedAgentId;
           const pc = professionColor(a.profession);
-          const initial = (a.name && a.name[0]) || '?';
           return (
             <button
               key={a.id}
@@ -54,25 +54,10 @@ export function LeftPanel(props: {
                 cursor: 'pointer',
                 textAlign: 'left',
                 fontFamily: 'inherit',
+                alignItems: 'center',
               }}
             >
-              <div
-                style={{
-                  width: 40,
-                  height: 40,
-                  flexShrink: 0,
-                  background: isSel ? '#5a7a9a' : colors.agent,
-                  border: `1px solid ${isSel ? colors.gold : colors.border}`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: colors.bright,
-                  fontSize: 10,
-                  fontWeight: 'bold',
-                }}
-              >
-                {initial}
-              </div>
+              <AgentAvatar agent={a} size={40} title={`${a.name} · ${a.profession}`} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ color: colors.bright, fontWeight: 'bold', fontSize: 11 }}>{a.name || a.id}</div>
                 <div style={{ color: pc, fontSize: 9, marginTop: 2 }}>{a.profession}</div>

@@ -47,8 +47,11 @@ os.environ.setdefault(
 )
 
 import asyncio
+import copy
 import io
 import json
+import logging
+import random
 import re
 import queue
 import threading
@@ -60,6 +63,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import uvicorn
+from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -618,6 +622,17 @@ async def get_competition_history(_: Request) -> JSONResponse:
     return JSONResponse({"history": game.world.competition_history})
 
 
+async def post_announcement(request: Request) -> JSONResponse:
+    """Broadcast a system announcement to all WebSocket clients via the gateway hub."""
+    body = read_json_body(await request.body())
+    message = str(body.get("message", ""))
+    if not message:
+        return JSONResponse({"ok": False, "error": "message is required"}, status_code=400)
+    # Publish as a special "announce" channel; all WS clients subscribed to "*" receive it
+    await hub.publish("announce", {"message": message})
+    return JSONResponse({"ok": True})
+
+
 async def get_save(_: Request) -> JSONResponse:
     from api.game.persistence import get_save_meta
 
@@ -678,6 +693,13 @@ async def post_create_hermes_profile_agent(request: Request) -> JSONResponse:
         profile_name = _slug_profile_name(display_name)
     soul = str(body.get("soul") or "").strip()
     memory = str(body.get("memory") or "").strip()
+    gender_raw = str(body.get("gender") or "random").strip().lower()
+    if gender_raw == "random":
+        gender_resolved = random.choice(("male", "female"))
+    elif gender_raw in ("male", "female"):
+        gender_resolved = gender_raw
+    else:
+        gender_resolved = "male"
 
     try:
         from api.profiles import create_profile_api, switch_profile, get_hermes_home_for_profile, _validate_profile_name
@@ -695,6 +717,11 @@ async def post_create_hermes_profile_agent(request: Request) -> JSONResponse:
         # Switch process-wide so game sync reads this new profile immediately.
         switch_profile(profile_name, process_wide=True)
         game.sync_agents_from_hermes()
+        # sync 重建「无旧档」的 Agent 时未带 gender，dataclass 默认 male；此处写回创建向导里选的性别。
+        for a in game.world.agents:
+            if str(getattr(a, "profile", "") or "").strip() == profile_name:
+                game.update_agent({"id": a.id, "gender": gender_resolved})
+                break
         game.persist()
         return JSONResponse(
             {
@@ -890,6 +917,7 @@ async def gateway_ws(ws: WebSocket) -> None:
 async def lifespan(_: Starlette):
     # Startup: begin hub pump before yielding so it's ready when connections arrive
     if gateway_enabled():
+        ensure_multi_agent_gateway_logging()
         await hub.start_pump()
         # Start all discovered agent processes in a thread pool (they are blocking/sync)
         # This avoids holding up the async event loop while agents spawn and /health polls
@@ -917,6 +945,7 @@ routes: list[Route | WebSocketRoute] = [
     Route("/api/game/greeting", post_greeting, methods=["POST"]),
     Route("/api/game/collaboration", post_collaboration, methods=["POST"]),
     Route("/api/game/competition/history", get_competition_history, methods=["GET"]),
+    Route("/api/game/announcement", post_announcement, methods=["POST"]),
     Route("/api/game/save", get_save, methods=["GET"]),
     Route("/api/game/save", put_save, methods=["PUT"]),
     Route("/api/game/llm/apply-tags", post_llm_apply_tags, methods=["POST"]),
@@ -941,10 +970,40 @@ routes: list[Route | WebSocketRoute] = [
 app = Starlette(debug=False, routes=routes, lifespan=lifespan)
 
 
+def ensure_multi_agent_gateway_logging() -> None:
+    """`uvicorn server:app` 不会走 server.main()，需在此处保证 gateway 的 INFO 能输出到 stderr（含 start-dev.sh 重定向的日志文件）。"""
+    if getattr(ensure_multi_agent_gateway_logging, "_done", False):
+        return
+    log = logging.getLogger("api.multi_agent_gateway")
+    if log.handlers:
+        setattr(ensure_multi_agent_gateway_logging, "_done", True)
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s [%(name)s] %(message)s"))
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    setattr(ensure_multi_agent_gateway_logging, "_done", True)
+
+
+def _uvicorn_log_config() -> dict[str, Any]:
+    """Include app loggers that default logging would otherwise drop (root stays quiet)."""
+    cfg = copy.deepcopy(UVICORN_LOGGING_CONFIG)
+    gw_handler = {"handlers": ["default"], "level": "INFO", "propagate": False}
+    cfg["loggers"]["api.multi_agent_gateway"] = gw_handler
+    return cfg
+
+
 def main() -> None:
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "8000"))
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        log_config=_uvicorn_log_config(),
+    )
 
 
 if __name__ == "__main__":

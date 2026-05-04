@@ -1,16 +1,7 @@
-import { PopupSheet } from './PopupSheet';
 import type { MenuDef, MenuItemDef } from './menuConfig';
-import { colors } from './theme';
 
-export function MenuPopup(props: {
-  menu: MenuDef | null;
-  anchor: DOMRect | null;
-  onClose: () => void;
-  onItemClick: (menuKey: string, itemId: string) => void;
-}) {
-  const { menu, anchor: _anchor, onClose, onItemClick } = props;
-
-  if (!menu) return null;
+export function MenuPanel(props: { menu: MenuDef; onItemClick: (menuKey: string, itemId: string) => void }) {
+  const { menu, onItemClick } = props;
 
   const renderItem = (item: MenuItemDef, idx: number) => {
     if (item.type === 'separator') {
@@ -25,7 +16,6 @@ export function MenuPopup(props: {
         title={tip}
         onClick={() => {
           if (!item.disabled) onItemClick(menu.key, item.id);
-          onClose();
         }}
         style={{
           display: 'flex',
@@ -49,18 +39,14 @@ export function MenuPopup(props: {
         }}
       >
         <span>{item.label}</span>
-        {item.hotkey && (
-          <span style={{ marginLeft: 'auto', color: '#666', fontSize: 10 }}>{item.hotkey}</span>
-        )}
+        {item.hotkey && <span style={{ marginLeft: 'auto', color: '#666', fontSize: 10 }}>{item.hotkey}</span>}
       </button>
     );
   };
 
   return (
-    <PopupSheet open={Boolean(menu)} title={menu.label} onClose={onClose}>
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {menu.items.map((it, i) => renderItem(it, i))}
-      </div>
-    </PopupSheet>
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {menu.items.map((it, i) => renderItem(it, i))}
+    </div>
   );
 }
