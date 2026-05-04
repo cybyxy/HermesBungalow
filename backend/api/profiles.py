@@ -139,6 +139,19 @@ def get_active_hermes_home() -> Path:
 
 
 
+def game_session_dir_for_profile(profile: str | None) -> Path:
+    """Directory for Hermes chat JSON files for a game agent profile.
+
+    ``default`` → ``<~/.hermes>/sessions``; named profiles →
+    ``~/.hermes/profiles/<name>/sessions``. Used by Bungalow so game sessions
+    are not stored under ``~/.hermes/webui/sessions`` (Web UI state dir).
+    """
+    home = get_hermes_home_for_profile(profile or "default")
+    d = (home / "sessions").resolve()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def get_hermes_home_for_profile(name: str) -> Path:
     """Return the HERMES_HOME Path for *name* without mutating any process state.
 

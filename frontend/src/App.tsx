@@ -5,6 +5,7 @@ import * as gameApi from './services/gameApi';
 import { CenterStage } from './ui/CenterStage';
 import { BottomSheetHost } from './ui/BottomSheetHost';
 import { ClarifyModal } from './ui/ClarifyModal';
+import { TaskMonitorPanel } from './ui/TaskMonitorPanel';
 
 /** 5 秒真实时间 ≈ 1 游戏分钟 */
 const GAME_TICK_MS = 5000;
@@ -71,20 +72,23 @@ export function App() {
 
       {snapshot && (
         <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0 }}>
-          <CenterStage
-            snapshot={snapshot}
-            selectedAgentId={selectedAgentId}
-            centerInference={agentInferState}
-            gatewayStatus={gatewayStatus}
-            loading={loading}
-            onSelectAgent={setSelectedAgent}
-            onMoveAgent={(id, room) => void moveAgent(id, room)}
-            onOpenAgentDetail={(id) => {
-              setSelectedAgent(id);
-              openBottomSheet({ kind: 'agent', agentId: id });
-            }}
-            onRefresh={() => void loadState()}
-          />
+          <TaskMonitorPanel snapshot={snapshot} />
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex' }}>
+            <CenterStage
+              snapshot={snapshot}
+              selectedAgentId={selectedAgentId}
+              centerInference={agentInferState}
+              gatewayStatus={gatewayStatus}
+              loading={loading}
+              onSelectAgent={setSelectedAgent}
+              onMoveAgent={(id, room) => void moveAgent(id, room)}
+              onOpenAgentDetail={(id) => {
+                setSelectedAgent(id);
+                openBottomSheet({ kind: 'agent', agentId: id });
+              }}
+              onRefresh={() => void loadState()}
+            />
+          </div>
         </div>
       )}
       <BottomSheetHost />

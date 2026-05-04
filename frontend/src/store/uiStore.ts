@@ -61,6 +61,9 @@ interface UiStore {
   /** 右侧「会话 / 过程」折叠为窄条，中央区变宽 */
   studioRightPanelCollapsed: boolean;
   toggleStudioRightPanelCollapsed: () => void;
+  /** 编排返回的 monitor 工作单 id：左栏任务监视对该单高频轮询直至终态 */
+  monitorFocusWorkOrderId: string | null;
+  setMonitorFocusWorkOrderId: (id: string | null) => void;
   inferenceLog: InferenceEntry[];
   /** 支持多 Agent 并行推理：key = agentId */
   agentInferState: Record<string, AgentInferenceState>;
@@ -125,6 +128,8 @@ export const useUiStore = create<UiStore>()(
       studioRightPanelCollapsed: false,
       toggleStudioRightPanelCollapsed: () =>
         set((s) => ({ studioRightPanelCollapsed: !s.studioRightPanelCollapsed })),
+      monitorFocusWorkOrderId: null,
+      setMonitorFocusWorkOrderId: (id) => set({ monitorFocusWorkOrderId: id }),
       inferenceLog: [],
       agentInferState: {},
       agentStreamIds: {},

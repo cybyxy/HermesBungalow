@@ -59,12 +59,14 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from functools import partial
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import uvicorn
 from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 from starlette.applications import Starlette
+from starlette.datastructures import UploadFile
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
@@ -72,7 +74,12 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from api.game.gateway_hub import GatewayHub, gateway_enabled
 from api.multi_agent_gateway import start_all_agents, stop_all_agents
-from api.game.service import GameService, read_json_body
+from api.game.handoff_parser import is_broadcast_all_handoff_token, parse_user_handoff_prefix
+from api.config import MAX_UPLOAD_BYTES
+from api.game.service import GameService, bungalow_session_tls_for_agent_id, read_json_body
+from api.models import get_session
+from api.upload import _sanitize_upload_name
+from api.workspace import safe_resolve_ws
 from api.routes import handle_get as hermes_handle_get
 from api.routes import handle_post as hermes_handle_post
 
@@ -84,315 +91,44 @@ from api.streaming import register_bungalow_game_service
 register_bungalow_game_service(game)
 WS_INCOMING_MAX_BYTES = 65536
 
-
-def _extract_assistant_from_done_payload(data: Any) -> str:
-    if not isinstance(data, dict):
-        return ""
-    sess = data.get("session")
-    if not isinstance(sess, dict):
-        return ""
-    msgs = sess.get("messages") or []
-    if not isinstance(msgs, list):
-        return ""
-    for m in reversed(msgs):
-        if not isinstance(m, dict) or m.get("role") != "assistant":
-            continue
-        if m.get("_error"):
-            continue
-        c = m.get("content")
-        if isinstance(c, str) and c.strip():
-            return c.strip()
-        if isinstance(c, list):
-            for part in c:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") in ("text", "output_text"):
-                    t = str(part.get("text", "")).strip()
-                    if t:
-                        return t
-    return ""
-
-
-_AT_PIPE_LINE = re.compile(r"^\s*@([^\s|@]+)\s*[|\uff5c]\s*(.+)\s*$")
-_AT_SPACE_LINE = re.compile(r"^\s*@([^\s|@]+)\s+(.+)\s*$")
-
-
-def _build_peer_hint_lines(agents: list[Any]) -> str:
-    if len(agents) < 2:
-        return ""
-    parts: list[str] = []
-    for a in agents:
-        prof = str(getattr(a, "profile", None) or "") or getattr(a, "id", "")
-        name = str(getattr(a, "name", None) or prof)
-        parts.append(f"{name}（@{prof}）")
-    list_str = "，".join(parts)
-    return (
-        "（多 Agent：同伴无主从，可互转。Hermes 内置委派工具已关，同伴转交请在全文**最后单独一行**写："
-        "`@对方的 profile、游戏 id、姓名或显示名 | 交给对方的完整说明`（全角｜可代替|）。"
-        "也可用无竖线：`@对方 完整说明`；群发除自己外全体：`@所有人 | 同一说明` 或 `@所有人 同一说明`（或 `@all …`）。"
-        "勿向用户声称多 Agent 已禁用。同伴："
-        + list_str
-        + "。无需转交时不要写以 `@` 开头的该行。）\n\n"
-    )
-
-
-def _parse_at_handoffs(text: str) -> list[tuple[str, str]]:
-    out: list[tuple[str, str]] = []
-    for raw_line in (text or "").splitlines():
-        line = raw_line.replace("\uff5c", "|").strip()
-        if not line.startswith("@"):
-            continue
-        mp = _AT_PIPE_LINE.match(line)
-        if mp:
-            t, msg = mp.group(1).strip(), mp.group(2).strip()
-            if t and msg:
-                out.append((t, msg))
-            continue
-        ms = _AT_SPACE_LINE.match(line)
-        if ms:
-            t, msg = ms.group(1).strip(), ms.group(2).strip()
-            if t and msg:
-                out.append((t, msg))
-    return out
-
-
-def _parse_hermes_bungalow_invokes(text: str) -> list[tuple[str, str]]:
-    seen: set[tuple[str, str]] = set()
-    out: list[tuple[str, str]] = []
-    for t, msg in _parse_at_handoffs(text):
-        key = (t, msg)
-        if key not in seen:
-            seen.add(key)
-            out.append((t, msg))
-    return out
-
-
-def _expand_broadcast_invokes(primary_agent: Any, agents: list[Any], invokes: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """`@所有人 | msg` / `@all | msg` → 除 primary 外每名同伴一条 (profile_token, msg)。"""
-    pid = getattr(primary_agent, "id", None)
-    out: list[tuple[str, str]] = []
-    for tt, msg in invokes:
-        t = str(tt).strip()
-        if t == "所有人" or t.lower() == "all":
-            for a in agents:
-                if getattr(a, "id", None) == pid:
-                    continue
-                prof = str(getattr(a, "profile", "") or "").strip() or str(getattr(a, "id", ""))
-                out.append((prof, msg))
-        else:
-            out.append((t, msg))
-    return out
-
-
-HANDOFF_CONTEXT_MAX = 28000
-
-
-def _strip_bungalow_invokes(text: str) -> str:
-    lines: list[str] = []
-    for raw_line in (text or "").splitlines():
-        line = raw_line.replace("\uff5c", "|").strip()
-        if line.startswith("@") and (_AT_PIPE_LINE.match(line) or _AT_SPACE_LINE.match(line)):
-            continue
-        lines.append(raw_line)
-    out = "\n".join(lines)
-    return re.sub(r"\n{3,}", "\n\n", out).strip()
-
-
-def _truncate_handoff_context(text: str, max_len: int = HANDOFF_CONTEXT_MAX) -> str:
-    u = text.strip()
-    if len(u) <= max_len:
-        return u
-    head = int(max_len * 0.35)
-    tail = max_len - head - 80
-    if tail < 500:
-        return u[:max_len] + "\n…[truncated]"
-    omitted = len(u) - head - tail
-    return f"{u[:head]}\n\n…[省略 {omitted} 字]…\n\n{u[-tail:]}"
-
-
-def _compose_peer_handoff(peer_hint: str, invoker_full_reply: str, invoke_body: str) -> str:
-    body = (invoke_body or "").strip()
-    stripped = _strip_bungalow_invokes(invoker_full_reply)
-    if not stripped:
-        return peer_hint + body
-    ctx = (
-        "\n\n──────── 同伴本轮对用户输出的正文（@ 转交行已剥离）────────\n"
-        f"{_truncate_handoff_context(stripped)}\n\n"
-        "──────── 对方点名要你处理的任务 ────────\n"
-        f"{body}"
-    )
-    return peer_hint + ctx
-
-
-def _drain_agent_stream(
-    stream_id: str,
-    session_id: str,
-    stream_thread: threading.Thread,
-    stream_queue: "queue.Queue[tuple[str, Any]]",
-    *,
-    session_ref: Any | None = None,
-) -> tuple[str, str | None]:
-    final = ""
-    err: str | None = None
-    try:
-        while True:
-            try:
-                item = stream_queue.get(timeout=600)
-            except queue.Empty:
-                err = "relay_timeout"
-                break
-            ev, data = item
-            if ev == "done":
-                final = _extract_assistant_from_done_payload(data)
-                break
-            if ev == "apperror":
-                if isinstance(data, dict):
-                    err = str(data.get("message") or data.get("type") or "apperror")
-                else:
-                    err = "apperror"
-                break
-            if ev == "error":
-                err = str(data)
-                break
-            if ev == "cancel":
-                err = "cancelled"
-                break
-    finally:
-        stream_thread.join(timeout=180)
-    sid_for_disk = session_id
-    if session_ref is not None and getattr(session_ref, "session_id", None):
-        sid_for_disk = str(session_ref.session_id)
-    if not final and not err:
-        final = _fallback_assistant_from_session_disk(sid_for_disk)
-    if not final and not err:
-        err = "empty_reply"
-    return final, err
-
-
-def _fallback_assistant_from_session_disk(session_id: str) -> str:
-    from api.models import Session as SessionModel
-
-    reloaded = SessionModel.load(session_id)
-    if not reloaded:
-        return ""
-    for m in reversed(reloaded.messages or []):
-        if not isinstance(m, dict) or m.get("role") != "assistant":
-            continue
-        if m.get("_error"):
-            continue
-        c = m.get("content")
-        if isinstance(c, str) and c.strip():
-            return c.strip()
-    return ""
+from api.game import agent as bung_agent
 
 
 def _sync_session_turn(session_id: str, message: str, *, bungalow_agent_id: str | None = None) -> dict[str, Any]:
     """Run one Hermes turn on an existing session (keeps conversation history)."""
-    from api.config import _get_session_agent_lock, get_config
-    from api.models import get_session
-    from api.streaming import STREAMS, STREAMS_LOCK, _run_agent_streaming
-
-    s = get_session(session_id)
-    profile = str(getattr(s, "profile", None) or "default")
-    default_ws = str((Path.home() / "ai_projects" / "HermesBungalow").resolve())
-    workspace = str(Path(s.workspace or default_ws).expanduser().resolve())
-    model = s.model
-    if not model:
-        try:
-            cfg = get_config()
-            model = str(cfg.get("model") or "").strip()
-        except Exception:
-            model = ""
-        if not model:
-            model = "mini-max-4-official"
-    current_stream_id = getattr(s, "active_stream_id", None)
-    if current_stream_id:
-        with STREAMS_LOCK:
-            stale = current_stream_id not in STREAMS
-        if stale:
-            with _get_session_agent_lock(s.session_id):
-                s.active_stream_id = None
-                s.save()
-        else:
-            return {
-                "ok": False,
-                "reply": "",
-                "error": "session_already_streaming",
-                "profile": profile,
-                "internal_session_id": s.session_id,
-            }
-    stream_id = uuid.uuid4().hex
-    q: queue.Queue[tuple[str, Any]] = queue.Queue()
-    with STREAMS_LOCK:
-        STREAMS[stream_id] = q
-    with _get_session_agent_lock(s.session_id):
-        s.workspace = workspace
-        s.model = model
-        s.active_stream_id = stream_id
-        s.save()
-    thr = threading.Thread(
-        target=_run_agent_streaming,
-        args=(s.session_id, message, model, workspace, stream_id, None),
-        kwargs={"bungalow_agent_id": bungalow_agent_id},
-        daemon=True,
-    )
-    thr.start()
-    final, err = _drain_agent_stream(stream_id, s.session_id, thr, q, session_ref=s)
-    ok = bool(final) and err is None
-    return {
-        "ok": ok,
-        "reply": final,
-        "error": err,
-        "profile": profile,
-        "internal_session_id": s.session_id,
-    }
+    return bung_agent.sync_session_turn(session_id, message, game, bungalow_agent_id=bungalow_agent_id)
 
 
 def _orchestrated_peer_turns_sync(
     primary_agent: Any,
     user_message: str,
     auto_peer: bool,
+    primary_attachments: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Primary turn (+ auto peer hint), parse @ handoffs, run peer relay turns."""
-    with game._lock:
-        agents = list(game.world.agents)
-    peer_hint = _build_peer_hint_lines(agents) if auto_peer and len(agents) > 1 else ""
-    full_message = peer_hint + user_message
-    sid0 = game.ensure_hermes_session_for_agent(primary_agent.id)
-    prim = _sync_session_turn(sid0, full_message, bungalow_agent_id=primary_agent.id)
-    primary_reply = str(prim.get("reply") or "")
-    invokes = _expand_broadcast_invokes(primary_agent, agents, _parse_hermes_bungalow_invokes(primary_reply))
-    primary_prof = str(getattr(primary_agent, "profile", "") or "default")
-    self_tokens = {primary_agent.id, primary_prof, primary_agent.name}
-    _dn = str(getattr(primary_agent, "display_name", "") or "").strip()
-    if _dn:
-        self_tokens.add(_dn)
-    delegations: list[dict[str, Any]] = []
-    for target_token, submsg in invokes:
-        if target_token in self_tokens:
-            delegations.append({"target": target_token, "ok": False, "error": "self_invoke_skipped"})
-            continue
-        peer = _resolve_game_agent_token(target_token)
-        if not peer:
-            delegations.append({"target": target_token, "ok": False, "error": "target_not_found"})
-            continue
-        peer_prof = str(getattr(peer, "profile", "") or "default")
-        peer_sid = game.ensure_hermes_session_for_agent(peer.id)
-        peer_turn = _sync_session_turn(
-            peer_sid,
-            _compose_peer_handoff(peer_hint, primary_reply, submsg),
-            bungalow_agent_id=peer.id,
-        )
-        delegations.append(
-            {
-                "target": target_token,
-                "profile": peer_prof,
-                "ok": peer_turn.get("ok"),
-                "reply": peer_turn.get("reply"),
-                "error": peer_turn.get("error"),
-            }
-        )
-    return {"ok": bool(prim.get("ok")), "primary": prim, "delegations": delegations}
+    return bung_agent.orchestrated_peer_turns_sync(
+        primary_agent,
+        user_message,
+        auto_peer,
+        game,
+        primary_attachments=primary_attachments,
+    )
+
+
+def _run_recursive_peer_invokes(
+    invoker_agent: Any,
+    invoke_rows: list[tuple[str, str]],
+    depth: int,
+    invoker_full_reply: str,
+    peer_hint: str,
+    agents: list[Any],
+) -> list[dict[str, Any]]:
+    return bung_agent.run_recursive_peer_invokes(
+        game, invoker_agent, invoke_rows, depth, invoker_full_reply, peer_hint, agents
+    )
+
+
+def _build_peer_hint_lines(agents: list[Any]) -> str:
+    return bung_agent.build_peer_hint_lines(agents)
 
 
 def _resolve_game_agent_token(token: str):
@@ -825,6 +561,7 @@ async def post_agent_relay_chat(request: Request) -> JSONResponse:
     agent = _resolve_game_agent_token(token)
     if not agent:
         return JSONResponse({"ok": False, "error": "target_agent_not_found", "token": token}, status_code=404)
+    wo_id = game.monitor_start_work_order(f"relay → {token}: {message}", agent.id)
     loop = asyncio.get_event_loop()
     try:
         sid = game.ensure_hermes_session_for_agent(agent.id)
@@ -833,7 +570,14 @@ async def post_agent_relay_chat(request: Request) -> JSONResponse:
             partial(_sync_session_turn, sid, message, bungalow_agent_id=agent.id),
         )
     except Exception as e:
+        game.monitor_abort_work_order(wo_id, str(e))
         return JSONResponse({"ok": False, "error": "relay_failed", "detail": str(e)}, status_code=500)
+    try:
+        game.monitor_record_relay(wo_id, agent.id, message, result)
+    except Exception:
+        pass
+    result = dict(result)
+    result["work_order_id"] = wo_id
     return JSONResponse(result)
 
 
@@ -843,28 +587,170 @@ async def post_agent_chat_orchestrated(request: Request) -> JSONResponse:
     Uses the server-side Hermes session pool (``ensure_hermes_session_for_agent``) for
     the primary and each peer so conversations accumulate. Body: ``agent_id``,
     ``message``, optional ``auto_peer`` (default True).
+
+    If ``message`` starts with a user handoff prefix (``@对方|…`` / ``@所有人 …``),
+    skips the primary model turn and relays directly (with nested @ handling).
     """
     body = read_json_body(await request.body())
     agent_id = str(body.get("agent_id") or "").strip()
     message = str(body.get("message") or "").strip()
     auto_peer = bool(body.get("auto_peer", True))
+    raw_atts = body.get("attachments")
+    if isinstance(raw_atts, list):
+        primary_attachments = [str(x).strip() for x in raw_atts if str(x).strip()]
+    else:
+        primary_attachments = None
     if not agent_id or not message:
         return JSONResponse({"ok": False, "error": "agent_id_and_message_required"}, status_code=400)
     primary = _resolve_game_agent_token(agent_id)
     if not primary:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
+    wo_id = game.monitor_start_work_order(message, primary.id)
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(
-            None,
-            _orchestrated_peer_turns_sync,
-            primary,
-            message,
-            auto_peer,
-        )
+        uh = parse_user_handoff_prefix(message)
+        if uh:
+            with game._lock:
+                agents = list(game.world.agents)
+            peer_hint = _build_peer_hint_lines(agents) if auto_peer and len(agents) > 1 else ""
+            token = str(uh.get("token") or "").strip()
+            sub = str(uh.get("message") or "").strip()
+            if not sub:
+                game.monitor_abort_work_order(wo_id, "empty_handoff_body")
+                return JSONResponse({"ok": False, "error": "empty_handoff_body"}, status_code=400)
+            if is_broadcast_all_handoff_token(token):
+                if len(agents) < 2:
+                    game.monitor_abort_work_order(wo_id, "need_two_agents_for_broadcast")
+                    return JSONResponse({"ok": False, "error": "need_two_agents_for_broadcast"}, status_code=400)
+                delegations = _run_recursive_peer_invokes(
+                    primary, [(token, sub)], 0, "", peer_hint, agents
+                )
+                result = {
+                    "ok": True,
+                    "primary": {"ok": True, "reply": "", "error": None, "user_handoff": "broadcast"},
+                    "delegations": delegations,
+                }
+            else:
+                peer = _resolve_game_agent_token(token)
+                if not peer:
+                    game.monitor_abort_work_order(wo_id, "target_agent_not_found")
+                    return JSONResponse(
+                        {"ok": False, "error": "target_agent_not_found", "token": token},
+                        status_code=404,
+                    )
+                delegations = _run_recursive_peer_invokes(
+                    primary, [(token, sub)], 0, "", peer_hint, agents
+                )
+                result = {
+                    "ok": True,
+                    "primary": {"ok": True, "reply": "", "error": None, "user_handoff": "relay"},
+                    "delegations": delegations,
+                }
+        else:
+            result = await loop.run_in_executor(
+                None,
+                partial(
+                    _orchestrated_peer_turns_sync,
+                    primary,
+                    message,
+                    auto_peer,
+                    primary_attachments,
+                ),
+            )
     except Exception as e:
+        game.monitor_abort_work_order(wo_id, str(e))
         return JSONResponse({"ok": False, "error": "orchestrate_failed", "detail": str(e)}, status_code=500)
+    try:
+        game.monitor_record_orchestrate(wo_id, message, primary.id, result)
+    except Exception:
+        pass
+    result = dict(result)
+    result["work_order_id"] = wo_id
     return JSONResponse(result)
+
+
+async def get_monitor_work_orders(_: Request) -> JSONResponse:
+    return JSONResponse({"ok": True, "work_orders": game.monitor_list_work_orders(80)})
+
+
+async def get_monitor_work_order_detail(request: Request) -> JSONResponse:
+    wo_id = str(request.path_params.get("wo_id") or "").strip()
+    if not wo_id:
+        return JSONResponse({"ok": False, "error": "missing_id"}, status_code=400)
+    d = game.monitor_get_work_order_detail(wo_id)
+    if not d:
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    return JSONResponse({"ok": True, "work_order": d})
+
+
+async def get_monitor_artifact_body(request: Request) -> JSONResponse:
+    aid = str(request.path_params.get("artifact_id") or "").strip()
+    if not aid:
+        return JSONResponse({"ok": False, "error": "missing_id"}, status_code=400)
+    row = game.monitor_get_artifact_body(aid)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    return JSONResponse({"ok": True, "artifact": row})
+
+
+async def post_game_hermes_session(request: Request) -> JSONResponse:
+    """BFF: ensure Hermes chat session for a game agent (browser must not call /api/session/new)."""
+    body = read_json_body(await request.body())
+    agent_id = str(body.get("agent_id") or "").strip()
+    if not agent_id:
+        return JSONResponse({"ok": False, "error": "agent_id_required"}, status_code=400)
+    agent = _resolve_game_agent_token(agent_id)
+    if not agent:
+        return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
+    loop = asyncio.get_event_loop()
+    try:
+        sid = await loop.run_in_executor(None, game.ensure_hermes_session_for_agent, agent.id)
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
+    return JSONResponse({"ok": True, "session_id": sid})
+
+
+async def post_game_agent_upload_attachment(request: Request) -> JSONResponse:
+    """BFF: multipart agent_id + file → same on-disk layout as Hermes /api/upload (browser must not call that)."""
+    ct = (request.headers.get("content-type") or "").lower()
+    if "multipart/form-data" not in ct:
+        return JSONResponse({"ok": False, "error": "multipart_required"}, status_code=400)
+    form = await request.form()
+    agent_id = str(form.get("agent_id") or "").strip()
+    up = form.get("file")
+    if not agent_id or up is None:
+        return JSONResponse({"ok": False, "error": "agent_id_and_file_required"}, status_code=400)
+    if not isinstance(up, UploadFile):
+        return JSONResponse({"ok": False, "error": "invalid_file_field"}, status_code=400)
+    agent = _resolve_game_agent_token(agent_id)
+    if not agent:
+        return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
+    raw = await up.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return JSONResponse({"ok": False, "error": "file_too_large"}, status_code=413)
+    filename = (up.filename or "upload").strip() or "upload"
+    aid = agent.id
+    raw_bytes = raw
+
+    def _save() -> dict[str, Any]:
+        sid = game.ensure_hermes_session_for_agent(aid)
+        s = get_session(sid)
+        workspace = Path(s.workspace)
+        safe_name = _sanitize_upload_name(filename)
+        dest = safe_resolve_ws(workspace, safe_name)
+        dest.write_bytes(raw_bytes)
+        return {"filename": safe_name, "path": str(dest), "size": dest.stat().st_size}
+
+    loop = asyncio.get_event_loop()
+    try:
+        out = await loop.run_in_executor(None, _save)
+    except KeyError as e:
+        return JSONResponse({"ok": False, "error": "session_not_found", "detail": str(e)}, status_code=500)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "upload_failed", "detail": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, **out})
 
 
 async def hermes_api_get(request: Request) -> Response:
@@ -971,6 +857,11 @@ routes: list[Route | WebSocketRoute] = [
     Route("/api/game/agent/profile-files/save", post_agent_profile_files_save, methods=["POST"]),
     Route("/api/game/agent-relay", post_agent_relay_chat, methods=["POST"]),
     Route("/api/game/agent-chat-orchestrated", post_agent_chat_orchestrated, methods=["POST"]),
+    Route("/api/game/monitor/work-orders", get_monitor_work_orders, methods=["GET"]),
+    Route("/api/game/monitor/work-orders/{wo_id}", get_monitor_work_order_detail, methods=["GET"]),
+    Route("/api/game/monitor/artifacts/{artifact_id}", get_monitor_artifact_body, methods=["GET"]),
+    Route("/api/game/hermes/session", post_game_hermes_session, methods=["POST"]),
+    Route("/api/game/agent/upload-attachment", post_game_agent_upload_attachment, methods=["POST"]),
     Route("/api/session/new", hermes_api_post, methods=["POST"]),
     Route("/api/chat/start", hermes_api_post, methods=["POST"]),
     Route("/api/chat/stream", hermes_api_get, methods=["GET"]),

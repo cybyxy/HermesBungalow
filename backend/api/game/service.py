@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import os
 import random
@@ -17,9 +18,32 @@ GAME_TICK_MINUTES = 1
 from .competition import resolve_task_competition
 from .llm_events import apply_parsed_events, extract_game_event_tags
 from .models import Agent, GameWorld, Task, default_world
+from .monitor_store import MonitorRecorder, record_orchestration_result, record_relay_result
 from .persistence import get_save_meta, init_db, load_world_from_db, save_world_to_db, _connect
 
 EmitFn = Callable[[str, dict[str, Any]], None]
+
+
+@contextlib.contextmanager
+def bungalow_session_tls_for_agent_id(game_service: Any, bungalow_agent_id: str | None):
+    """Set thread-local Hermes session JSON root to the agent's profile ``sessions/``."""
+    if not bungalow_agent_id:
+        yield
+        return
+    from api.models import clear_bungalow_game_session_root, set_bungalow_game_session_root
+    from api.profiles import game_session_dir_for_profile
+
+    with game_service._lock:
+        ag = next((x for x in game_service.world.agents if x.id == bungalow_agent_id), None)
+    if ag is None:
+        yield
+        return
+    prof = str(getattr(ag, "profile", None) or "default")
+    set_bungalow_game_session_root(game_session_dir_for_profile(prof))
+    try:
+        yield
+    finally:
+        clear_bungalow_game_session_root()
 
 
 class GameService:
@@ -136,6 +160,7 @@ class GameService:
                     snippet = (desc[:80] + "…") if len(desc) > 80 else desc
                 memes = list(one.get("memes") or [])
                 avatar_val = str(one.get("avatar") or "")
+                gender_val = str(one.get("gender") or "male")
                 if old:
                     new_agents.append(
                         Agent(
@@ -144,7 +169,7 @@ class GameService:
                             display_name=dis_name,
                             profession=prof,
                             profile=str(one.get("profile") or "default"),
-                            gender=old.gender,
+                            gender=gender_val or old.gender,
                             status=old.status,
                             location=old.location,
                             energy=old.energy,
@@ -180,6 +205,7 @@ class GameService:
                             personality=pers,
                             memes=memes,
                             avatar=avatar_val,
+                            gender=gender_val,
                         )
                     )
             self._world.agents = new_agents
@@ -532,39 +558,74 @@ class GameService:
 
     def _create_hermes_session_sync(self, profile: str) -> str:
         from api.config import get_config
-        from api.models import new_session
+        from api.models import clear_bungalow_game_session_root, new_session, set_bungalow_game_session_root
+        from api.profiles import game_session_dir_for_profile
 
         ws = self._default_hermes_workspace()
-        s = new_session(workspace=ws, model=None, profile=profile)
-        model = s.model
-        if not model:
-            try:
-                cfg = get_config()
-                model = str(cfg.get("model") or "").strip()
-            except Exception:
-                model = ""
+        root = game_session_dir_for_profile(profile)
+        try:
+            set_bungalow_game_session_root(root)
+            s = new_session(workspace=ws, model=None, profile=profile)
+            model = s.model
             if not model:
-                model = "mini-max-4-official"
-        s.workspace = ws
-        s.model = model
-        s.save()
-        return s.session_id
+                try:
+                    cfg = get_config()
+                    model = str(cfg.get("model") or "").strip()
+                except Exception:
+                    model = ""
+                if not model:
+                    model = "mini-max-4-official"
+            s.workspace = ws
+            s.model = model
+            s.save()
+            return s.session_id
+        finally:
+            clear_bungalow_game_session_root()
 
     def _warm_hermes_session_from_disk(self, sid: str, expected_profile: str) -> bool:
         """Load session JSON into process LRU if file exists and profile matches agent."""
-        from api.models import Session, get_session
+        import shutil
 
-        s = Session.load(sid)
-        if not s:
+        from api.config import SESSION_DIR as web_session_dir
+        from api.models import (
+            Session,
+            clear_bungalow_game_session_root,
+            get_session,
+            set_bungalow_game_session_root,
+        )
+        from api.profiles import game_session_dir_for_profile
+
+        prof_dir = game_session_dir_for_profile(expected_profile)
+        prof_p = prof_dir / f"{sid}.json"
+        web_p = web_session_dir / f"{sid}.json"
+        if not prof_p.exists() and web_p.exists() and prof_dir.resolve() != web_session_dir.resolve():
+            try:
+                shutil.copy2(web_p, prof_p)
+                web_p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if prof_p.exists():
+            resolved = prof_dir
+        elif web_p.exists():
+            resolved = web_session_dir
+        else:
             return False
-        sp = str(getattr(s, "profile", None) or "default")
-        if sp != (expected_profile or "default"):
-            return False
+
+        set_bungalow_game_session_root(resolved)
         try:
-            get_session(sid)
-        except KeyError:
-            return False
-        return True
+            s = Session.load(sid)
+            if not s:
+                return False
+            sp = str(getattr(s, "profile", None) or "default")
+            if sp != (expected_profile or "default"):
+                return False
+            try:
+                get_session(sid)
+            except KeyError:
+                return False
+            return True
+        finally:
+            clear_bungalow_game_session_root()
 
     def get_hermes_session_id(self, agent_id: str) -> str | None:
         with self._lock:
@@ -599,6 +660,12 @@ class GameService:
             self.persist()
 
     def ensure_hermes_session_for_agent(self, agent_id: str) -> str:
+        """Return a Hermes chat session id for the agent.
+
+        Reuses the process map or persisted ``Agent.hermes_session_id`` only when
+        ``_warm_hermes_session_from_disk`` succeeds (session JSON exists and profile
+        matches). Otherwise creates a new session and saves it on the agent.
+        """
         if os.environ.get("HERMES_BUNGALOW_SKIP_HERMES_SESSION_INIT", "").strip().lower() in (
             "1",
             "true",
@@ -608,24 +675,34 @@ class GameService:
                 self._hermes_session_by_agent.setdefault(agent_id, f"test-session-{agent_id}")
                 return self._hermes_session_by_agent[agent_id]
         with self._lock:
-            existing = self._hermes_session_by_agent.get(agent_id)
-            if existing:
-                return existing
             agent = next((x for x in self._world.agents if x.id == agent_id), None)
             if not agent:
                 raise KeyError(agent_id)
             profile = str(getattr(agent, "profile", None) or "default")
-            persisted = getattr(agent, "hermes_session_id", None) or None
-        if persisted and self._warm_hermes_session_from_disk(persisted, profile):
+            persisted = str(getattr(agent, "hermes_session_id", None) or "").strip() or None
+            mapped = str(self._hermes_session_by_agent.get(agent_id) or "").strip() or None
+
+        candidates: list[str] = []
+        if mapped:
+            candidates.append(mapped)
+        if persisted and persisted not in candidates:
+            candidates.append(persisted)
+
+        chosen: str | None = None
+        for cand in candidates:
+            if self._warm_hermes_session_from_disk(cand, profile):
+                chosen = cand
+                break
+
+        if chosen:
             with self._lock:
-                if agent_id in self._hermes_session_by_agent:
-                    return self._hermes_session_by_agent[agent_id]
                 ag = next((x for x in self._world.agents if x.id == agent_id), None)
                 if not ag:
                     raise KeyError(agent_id)
-                self._hermes_session_by_agent[agent_id] = persisted
-                ag.hermes_session_id = persisted
-                return persisted
+                self._hermes_session_by_agent[agent_id] = chosen
+                ag.hermes_session_id = chosen
+            return chosen
+
         sid = self._create_hermes_session_sync(profile)
         with self._lock:
             if agent_id in self._hermes_session_by_agent:
@@ -662,6 +739,113 @@ class GameService:
                 self.ensure_hermes_session_for_agent(a.id)
             except Exception:
                 pass
+
+    # ── Agent 工作单监视（orchestrate / relay 落库）──────────────────────────
+
+    def _monitor_resolve_agent_id(self, token: str) -> str | None:
+        from api.game.agent import resolve_game_agent_token
+
+        t = (token or "").strip()
+        if not t:
+            return None
+        with self._lock:
+            a = resolve_game_agent_token(t, self)
+        return str(a.id) if a else None
+
+    def monitor_start_work_order(self, user_prompt: str, primary_agent_id: str) -> str:
+        with self._lock:
+            rec = MonitorRecorder(self._conn)
+            wid = rec.create_work_order(user_prompt, primary_agent_id)
+            self._conn.commit()
+            return wid
+
+    def monitor_abort_work_order(self, work_order_id: str, reason: str) -> None:
+        with self._lock:
+            rec = MonitorRecorder(self._conn)
+            rec.add_event(
+                work_order_id,
+                kind="aborted",
+                agent_id=None,
+                label="已中止",
+                snippet=(reason or "")[:4000],
+            )
+            rec.finalize(work_order_id, "failed")
+            self._conn.commit()
+
+    def monitor_record_orchestrate(self, work_order_id: str, user_prompt: str, primary_agent_id: str, result: dict[str, Any]) -> None:
+        with self._lock:
+            record_orchestration_result(
+                self._conn,
+                work_order_id=work_order_id,
+                user_prompt=user_prompt,
+                primary_agent_id=primary_agent_id,
+                result=result,
+                resolve_agent_id_for_token=self._monitor_resolve_agent_id,
+            )
+            self._conn.commit()
+
+    def monitor_record_relay(self, work_order_id: str, agent_id: str, user_message: str, result: dict[str, Any]) -> None:
+        with self._lock:
+            record_relay_result(
+                self._conn,
+                work_order_id=work_order_id,
+                agent_id=agent_id,
+                user_message=user_message,
+                result=result,
+            )
+            self._conn.commit()
+
+    def monitor_list_work_orders(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id, user_prompt, primary_agent_id, status, created_at, updated_at
+                FROM monitor_work_orders ORDER BY created_at DESC LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def monitor_get_work_order_detail(self, wo_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, user_prompt, primary_agent_id, status, created_at, updated_at
+                FROM monitor_work_orders WHERE id = ?
+                """,
+                (wo_id,),
+            ).fetchone()
+            if not row:
+                return None
+            base: dict[str, Any] = dict(row)
+            tl = self._conn.execute(
+                """
+                SELECT id, seq, kind, agent_id, label, snippet, artifact_id, created_at
+                FROM monitor_timeline_events WHERE work_order_id = ? ORDER BY seq ASC
+                """,
+                (wo_id,),
+            ).fetchall()
+            arts = self._conn.execute(
+                """
+                SELECT id, agent_id, kind, title, created_at
+                FROM monitor_artifacts WHERE work_order_id = ? ORDER BY created_at ASC
+                """,
+                (wo_id,),
+            ).fetchall()
+            base["timeline"] = [dict(r) for r in tl]
+            base["artifacts_index"] = [dict(r) for r in arts]
+            return base
+
+    def monitor_get_artifact_body(self, artifact_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, work_order_id, agent_id, kind, title, content, created_at
+                FROM monitor_artifacts WHERE id = ?
+                """,
+                (artifact_id,),
+            ).fetchone()
+            return dict(row) if row else None
 
 
 def read_json_body(body: bytes) -> dict[str, Any]:

@@ -490,13 +490,15 @@ export class StudioShellUi {
     this.lordText.setPosition(lordX, top.y + 28);
     this.lordText.setText(snapshot ? `👑 Lv.${snapshot.lord_level}  XP:${snapshot.lord_xp}` : '');
 
-    const refreshX = top.x + top.w - 52;
+    const refreshW = 44;
+    const refreshH = 28;
+    const refreshX = top.x + top.w - refreshW;
     const refreshY = top.y + top.h / 2 - 14;
     this.topG.fillStyle(hx(colors.btn), 1);
-    this.topG.fillRoundedRect(refreshX, refreshY, 44, 28, 4);
-    this.refreshText.setPosition(refreshX + 22, refreshY + 14);
+    this.topG.fillRoundedRect(refreshX, refreshY, refreshW, refreshH, 4);
+    this.refreshText.setPosition(refreshX + refreshW / 2, refreshY + refreshH / 2);
     this.refreshText.setText(loading ? '…' : '刷新');
-    this.miscHitZones.push({ x: refreshX, y: refreshY, w: 44, h: 28, kind: 'refresh' });
+    this.miscHitZones.push({ x: refreshX, y: refreshY, w: refreshW, h: refreshH, kind: 'refresh' });
 
     this.topAgentG.clear();
     if (snapshot?.agents.length) {

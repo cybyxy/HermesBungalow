@@ -203,334 +203,44 @@ export async function postGameTick(minutes?: number): Promise<{ day: number; tim
   return parseJson(res);
 }
 
-export async function createHermesSession(profile?: string): Promise<{ session_id: string; mode?: string }> {
-  const res = await fetch('/api/session/new', {
+/** BFF：为游戏 Agent 确保 Hermes 会话（浏览器禁止调用 /api/session/new）。 */
+export async function ensureGameAgentSession(agentId: string): Promise<{ session_id: string }> {
+  const res = await fetch('/api/game/hermes/session', {
     method: 'POST',
     headers: JSON_HDR,
-    body: JSON.stringify(profile ? { profile } : {}),
+    body: JSON.stringify({ agent_id: agentId }),
   });
-  const data = (await parseJson(res)) as Record<string, unknown>;
-  const sid =
-    (typeof data.session_id === 'string' ? data.session_id : null) ??
-    (typeof data.session === 'object' &&
-    data.session !== null &&
-    typeof (data.session as Record<string, unknown>).session_id === 'string'
-      ? ((data.session as Record<string, unknown>).session_id as string)
-      : null);
-  if (!sid) throw new Error('session_id missing from /api/session/new');
-  return { session_id: sid, mode: typeof data.mode === 'string' ? data.mode : undefined };
+  const data = (await parseJson(res)) as { ok?: boolean; session_id?: string; error?: string };
+  if (!data.ok || typeof data.session_id !== 'string' || !data.session_id) {
+    throw new Error(data.error ?? 'ensure_session_failed');
+  }
+  return { session_id: data.session_id };
 }
 
-/** Cancel an in-flight SSE stream by stream_id (calls POST /api/chat/cancel?stream_id=xxx). */
-export async function cancelStream(streamId: string): Promise<{ ok: boolean; cancelled: boolean }> {
-  const res = await fetch(`/api/chat/cancel?stream_id=${encodeURIComponent(streamId)}`, {
-    method: 'POST',
-  });
-  return parseJson(res);
-}
-
-/** Hermes clarify card: unblock the agent thread waiting on user choice. */
-export async function submitClarifyResponse(sessionId: string, response: string): Promise<void> {
-  await parseJson(
-    await fetch('/api/clarify/respond', {
-      method: 'POST',
-      headers: JSON_HDR,
-      body: JSON.stringify({ session_id: sessionId, response }),
-    }),
-  );
-}
-
-/**
- * Hermes clarify card — field names match SSE ``event: clarify`` and
- * ``GET /api/clarify/pending`` JSON (snake_case).
- */
-export type ClarifySsePayload = {
-  session_id: string;
-  question: string;
-  choices_offered: string[];
-  kind?: string;
-  requested_at?: number;
-};
-
-/** Normalize raw SSE ``data`` into ``ClarifySsePayload`` for UI / callbacks. */
-export function clarifyPayloadFromSseData(
-  data: Record<string, unknown>,
-  fallbackSessionId: string,
-): ClarifySsePayload {
-  const session_id =
-    typeof data.session_id === 'string' && data.session_id.trim() !== ''
-      ? String(data.session_id).trim()
-      : fallbackSessionId;
-  const question =
-    typeof data.question === 'string' && data.question.trim() !== ''
-      ? data.question
-      : '请确认一项后继续。';
-  const raw = data.choices_offered;
-  const choices_offered = Array.isArray(raw)
-    ? raw.map((c) => String(c)).filter((t) => t.length > 0)
-    : [];
-  const out: ClarifySsePayload = { session_id, question, choices_offered };
-  if (typeof data.kind === 'string' && data.kind) out.kind = data.kind;
-  const ra = data.requested_at;
-  if (typeof ra === 'number' && Number.isFinite(ra)) out.requested_at = ra;
-  return out;
-}
-
-/** Upload a single image file, returns the server path. */
-export async function uploadImage(file: File, sessionId: string): Promise<{ filename: string; path: string; size: number }> {
+/** BFF：上传附件到该 Agent 的 Hermes workspace（浏览器禁止调用 /api/upload）。 */
+export async function uploadGameAgentAttachment(
+  agentId: string,
+  file: File,
+): Promise<{ filename: string; path: string; size: number }> {
   const form = new FormData();
-  form.append('session_id', sessionId);
+  form.append('agent_id', agentId);
   form.append('file', file);
-  const res = await fetch('/api/upload', { method: 'POST', body: form });
-  return parseJson(res);
-}
-
-/** Side-channel events from Hermes SSE (reasoning trace, tool lifecycle). */
-export type SseStreamMeta =
-  | { type: 'reasoning'; text: string }
-  | { type: 'tool'; payload: Record<string, unknown> }
-  | { type: 'tool_complete'; payload: Record<string, unknown> };
-
-/** Optional fields on SSE terminal events (e.g. ``event: done``) for UI routing. */
-export type StreamDoneDisplay = {
-  markdown_editor?: boolean;
-};
-
-export type StreamDoneMeta = {
-  display?: StreamDoneDisplay;
-};
-
-export type StreamChatSseOptions = {
-  /** Hermes Bungalow: links this stream to a game agent so server can persist session id after compression rotation. */
-  bungalowAgentId?: string | null;
-  /** Called with the canonical ``session_id`` from the ``done`` payload (may differ after context compression). */
-  onHermesSessionId?: (sessionId: string) => void;
-  /** Called with the stream_id as soon as it is obtained from /api/chat/start. */
-  onStreamId?: (streamId: string) => void;
-  /** Attachment paths to include in the chat message (uploaded via /api/upload). */
-  attachments?: string[];
-  /**
-   * Model sent a clarify card. Payload uses Hermes wire keys (``session_id``, ``choices_offered``).
-   * Return the exact string for ``POST /api/clarify/respond``. Blocks the SSE reader until resolved.
-   */
-  onClarifyRequest?: (payload: ClarifySsePayload) => Promise<string>;
-};
-
-function normalizeSseChunks(buf: string): string {
-  return buf.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-}
-
-function looksLikeClarifyPayload(d: Record<string, unknown>): boolean {
-  if (d.kind === 'clarify') return true;
-  return typeof d.question === 'string' && Array.isArray(d.choices_offered);
-}
-
-/** SSE ``reasoning`` / 嵌套 ``message`` 块里可能出现的正文字段名（网关或模型层不一致） */
-function extractReasoningPayload(d: Record<string, unknown>): string {
-  for (const key of ['text', 'content', 'reasoning', 'delta'] as const) {
-    const x = d[key];
-    if (typeof x === 'string' && x.length > 0) return x;
-  }
-  return '';
-}
-
-/** One SSE block: optional ``event:`` plus one or more ``data:`` lines (joined per SSE spec). */
-function parseSseEventBlock(block: string): { eventName: string; data: Record<string, unknown> | null } {
-  const lines = block.split('\n');
-  let eventName = '';
-  const dataLines: string[] = [];
-  for (const raw of lines) {
-    const line = raw.trimEnd();
-    if (!line || line.startsWith(':')) continue;
-    if (line.startsWith('event:')) {
-      eventName = line.slice(6).trim();
-      continue;
-    }
-    if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  }
-  if (!dataLines.length) return { eventName, data: null };
-  const joined = dataLines.join('\n');
-  try {
-    return { eventName, data: JSON.parse(joined) as Record<string, unknown> };
-  } catch {
-    return { eventName, data: null };
-  }
-}
-
-/** Consume SSE from POST /api/chat/stream (local Hermes mock). */
-export async function streamChatSse(
-  message: string,
-  sessionId: string | null,
-  onChunk: (token: string, done: boolean, fullText?: string, doneMeta?: StreamDoneMeta) => void,
-  onMeta?: (meta: SseStreamMeta) => void,
-  options?: StreamChatSseOptions | null,
-): Promise<void> {
-  const sid = sessionId ?? (await createHermesSession()).session_id;
-  const bungalowAgentId =
-    options?.bungalowAgentId != null && String(options.bungalowAgentId).trim() !== ''
-      ? String(options.bungalowAgentId).trim()
-      : undefined;
-
-  const startBody: Record<string, unknown> = { session_id: sid, message };
-  if (bungalowAgentId) startBody.bungalow_agent_id = bungalowAgentId;
-  if (options?.attachments?.length) startBody.attachments = options.attachments;
-
-  const startRes = await fetch('/api/chat/start', {
-    method: 'POST',
-    headers: JSON_HDR,
-    body: JSON.stringify(startBody),
-  });
-  if (!startRes.ok) {
-    const text = await startRes.text();
-    throw new Error(`${startRes.status}: ${text}`);
-  }
-  const started = (await startRes.json()) as { stream_id?: string };
-  if (!started.stream_id) {
-    throw new Error('stream_id missing from /api/chat/start');
-  }
-  options?.onStreamId?.(started.stream_id);
-
-  const res = await fetch(`/api/chat/stream?stream_id=${encodeURIComponent(started.stream_id)}`, {
-    method: 'GET',
-    headers: { Accept: 'text/event-stream' },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
-  }
-  const reader = res.body?.getReader();
-  if (!reader) throw new Error('No response body');
-  const dec = new TextDecoder();
-  let buffer = '';
-  let finalized = false;
-  const finish = (fullText?: string, doneMeta?: StreamDoneMeta) => {
-    if (finalized) return;
-    finalized = true;
-    onChunk('', true, fullText, doneMeta);
+  const res = await fetch('/api/game/agent/upload-attachment', { method: 'POST', body: form });
+  const data = (await parseJson(res)) as {
+    ok?: boolean;
+    filename?: string;
+    path?: string;
+    size?: number;
+    error?: string;
   };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += dec.decode(value, { stream: true });
-    buffer = normalizeSseChunks(buffer);
-    const parts = buffer.split('\n\n');
-    buffer = parts.pop() ?? '';
-    for (const block of parts) {
-      const { eventName: rawName, data } = parseSseEventBlock(block);
-      if (!data) continue;
-      let eventName = rawName.trim();
-      if ((!eventName || eventName === 'message') && looksLikeClarifyPayload(data)) {
-        eventName = 'clarify';
-      }
-      if (eventName === 'apperror') {
-        const msg =
-          typeof data.message === 'string'
-            ? data.message
-            : typeof data.detail === 'string'
-              ? data.detail
-              : JSON.stringify(data);
-        throw new Error(msg);
-      }
-      if (eventName === 'error' || typeof data.error === 'string') {
-        throw new Error((data.error as string) || 'stream error');
-      }
-      if (eventName === 'done') {
-        const sess = data.session as {
-          session_id?: string;
-          messages?: { role?: string; content?: string }[];
-        } | undefined;
-        const canon = typeof sess?.session_id === 'string' ? sess.session_id.trim() : '';
-        if (canon && options?.onHermesSessionId) {
-          options.onHermesSessionId(canon);
-        }
-        const doneMeta: StreamDoneMeta | undefined =
-          data.display != null && typeof data.display === 'object'
-            ? { display: data.display as StreamDoneDisplay }
-            : undefined;
-        const msgs = sess?.messages;
-        const last = msgs?.length ? msgs[msgs.length - 1] : undefined;
-        if (last?.role === 'assistant' && typeof last.content === 'string') {
-          finish(last.content, doneMeta);
-        } else {
-          finish(undefined, doneMeta);
-        }
-        continue;
-      }
-      if (eventName === 'stream_end') {
-        finish();
-        continue;
-      }
-      if (eventName === 'clarify') {
-        const payload = clarifyPayloadFromSseData(data, sid);
-        const fallback =
-          payload.choices_offered[0] ||
-          '请在不向用户追加提问的前提下，根据上下文做出合理选择并继续执行任务。';
-        let responseText: string;
-        try {
-          if (options?.onClarifyRequest) {
-            responseText = await options.onClarifyRequest(payload);
-          } else {
-            responseText = fallback;
-          }
-        } catch {
-          responseText = fallback;
-        }
-        const trimmed = String(responseText ?? '').trim() || fallback;
-        await submitClarifyResponse(payload.session_id, trimmed);
-        continue;
-      }
-      if (eventName === 'reasoning') {
-        const chunk = extractReasoningPayload(data);
-        if (chunk.length > 0) onMeta?.({ type: 'reasoning', text: chunk });
-        continue;
-      }
-      if ((!eventName || eventName === 'message') && !looksLikeClarifyPayload(data)) {
-        const etRaw = data.type ?? data.event;
-        const et = typeof etRaw === 'string' ? etRaw : '';
-        if (et === 'reasoning' || et === 'reasoning_delta' || et === 'thinking') {
-          const chunk = extractReasoningPayload(data);
-          if (chunk.length > 0) {
-            onMeta?.({ type: 'reasoning', text: chunk });
-            continue;
-          }
-        }
-      }
-      if (eventName === 'tool') {
-        onMeta?.({ type: 'tool', payload: data });
-        continue;
-      }
-      if (eventName === 'tool_complete') {
-        onMeta?.({ type: 'tool_complete', payload: data });
-        continue;
-      }
-      if (data.done === true) {
-        const doneMeta: StreamDoneMeta | undefined =
-          data.display != null && typeof data.display === 'object'
-            ? { display: data.display as StreamDoneDisplay }
-            : undefined;
-        finish(
-          typeof data.full_text === 'string'
-            ? data.full_text
-            : typeof data.text === 'string'
-              ? data.text
-              : undefined,
-          doneMeta,
-        );
-        continue;
-      }
-      if (eventName === 'delta' || data.delta != null) {
-        const d = data.delta;
-        onChunk(typeof d === 'string' ? d : '', false);
-      } else if (eventName === 'token' && typeof data.text === 'string') {
-        onChunk(data.text, false);
-      } else if (data.token != null) {
-        onChunk(String(data.token), false);
-      }
-    }
+  if (!data.ok || typeof data.path !== 'string') {
+    throw new Error(data.error ?? 'upload_failed');
   }
-  if (!finalized) finish();
+  return {
+    filename: String(data.filename ?? ''),
+    path: data.path,
+    size: typeof data.size === 'number' ? data.size : 0,
+  };
 }
 
 /** 根据 id / profile / name / display_name 解析转交目标（ASCII token 不区分大小写）。 */
@@ -735,29 +445,37 @@ export function buildPeerInvokeHint(agentLines: { name: string; profile?: string
  * Backend-orchestrated chat: injects peer hint (if ≥2 agents), runs primary turn,
  * parses @ handoff lines, runs peer relays. Sessions come from the server pool.
  */
-export async function agentChatOrchestrated(payload: {
-  agent_id: string;
-  message: string;
-  auto_peer?: boolean;
-}): Promise<{
+export type OrchestrationDelegationRow = {
+  target: string;
+  profile?: string;
+  ok?: boolean;
+  reply?: string;
+  error?: string | null;
+  nested?: OrchestrationDelegationRow[];
+};
+
+export type AgentChatOrchestratedResult = {
   ok: boolean;
+  work_order_id?: string;
   primary?: {
     ok: boolean;
     reply?: string;
     error?: string | null;
     profile?: string;
     internal_session_id?: string;
+    user_handoff?: string;
   };
-  delegations?: Array<{
-    target: string;
-    profile?: string;
-    ok?: boolean;
-    reply?: string;
-    error?: string | null;
-  }>;
+  delegations?: OrchestrationDelegationRow[];
   error?: string;
   detail?: string;
-}> {
+};
+
+export async function agentChatOrchestrated(payload: {
+  agent_id: string;
+  message: string;
+  auto_peer?: boolean;
+  attachments?: string[];
+}): Promise<AgentChatOrchestratedResult> {
   const res = await fetch('/api/game/agent-chat-orchestrated', {
     method: 'POST',
     headers: JSON_HDR,
@@ -765,8 +483,59 @@ export async function agentChatOrchestrated(payload: {
       agent_id: payload.agent_id,
       message: payload.message,
       auto_peer: payload.auto_peer !== false,
+      attachments: payload.attachments?.length ? payload.attachments : undefined,
     }),
   });
+  return parseJson(res);
+}
+
+export type MonitorWorkOrderRow = {
+  id: string;
+  user_prompt: string;
+  primary_agent_id: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+};
+
+export type MonitorTimelineRow = {
+  id: string;
+  seq: number;
+  kind: string;
+  agent_id: string | null;
+  label: string;
+  snippet: string | null;
+  artifact_id: string | null;
+  created_at: number;
+};
+
+export type MonitorArtifactIndexRow = {
+  id: string;
+  agent_id: string | null;
+  kind: string;
+  title: string;
+  created_at: number;
+};
+
+export type MonitorWorkOrderDetail = MonitorWorkOrderRow & {
+  timeline: MonitorTimelineRow[];
+  artifacts_index: MonitorArtifactIndexRow[];
+};
+
+export async function fetchMonitorWorkOrders(): Promise<{ ok: boolean; work_orders: MonitorWorkOrderRow[] }> {
+  const res = await fetch('/api/game/monitor/work-orders');
+  return parseJson(res);
+}
+
+export async function fetchMonitorWorkOrder(woId: string): Promise<{ ok: boolean; work_order: MonitorWorkOrderDetail }> {
+  const res = await fetch(`/api/game/monitor/work-orders/${encodeURIComponent(woId)}`);
+  return parseJson(res);
+}
+
+export async function fetchMonitorArtifact(
+  artifactId: string,
+): Promise<{ ok: boolean; artifact: { id: string; content: string; title: string; kind: string; agent_id: string | null } }> {
+  const res = await fetch(`/api/game/monitor/artifacts/${encodeURIComponent(artifactId)}`);
   return parseJson(res);
 }
 
@@ -781,6 +550,7 @@ export async function relayChatToAgent(
   profile?: string;
   detail?: string;
   token?: string;
+  work_order_id?: string;
 }> {
   const res = await fetch('/api/game/agent-relay', {
     method: 'POST',

@@ -30,6 +30,37 @@ def register_bungalow_game_service(svc) -> None:
     _BUNGALOW_GAME_SERVICE = svc
 
 
+def _bungalow_set_streaming_session_tls(bungalow_agent_id: str | None) -> bool:
+    """Return True if thread-local session root was set (caller must clear in ``finally``)."""
+    if not bungalow_agent_id or _BUNGALOW_GAME_SERVICE is None:
+        return False
+    try:
+        with _BUNGALOW_GAME_SERVICE._lock:
+            ag = next((x for x in _BUNGALOW_GAME_SERVICE.world.agents if x.id == bungalow_agent_id), None)
+        if ag is None:
+            return False
+        from api.models import set_bungalow_game_session_root
+        from api.profiles import game_session_dir_for_profile
+
+        prof = str(getattr(ag, "profile", None) or "default")
+        set_bungalow_game_session_root(game_session_dir_for_profile(prof))
+        return True
+    except Exception:
+        logger.debug("bungalow streaming TLS failed", exc_info=True)
+        return False
+
+
+def _bungalow_clear_streaming_session_tls(was_set: bool) -> None:
+    if not was_set:
+        return
+    try:
+        from api.models import clear_bungalow_game_session_root
+
+        clear_bungalow_game_session_root()
+    except Exception:
+        pass
+
+
 def _sync_bungalow_agent_hermes_session(agent_id: str | None, started_sid: str, s) -> None:
     if not agent_id or _BUNGALOW_GAME_SERVICE is None:
         return
@@ -1233,6 +1264,7 @@ def _run_agent_streaming(
     When ephemeral=True, session mutations are skipped — used by /btw to get
     a streaming answer without persisting to the parent session.
     """
+    _bungalow_tls_here = _bungalow_set_streaming_session_tls(bungalow_agent_id)
     q = STREAMS.get(stream_id)
     if q is None:
         # STREAMS entry was popped before this worker read it (tight cancel race).
@@ -1253,6 +1285,8 @@ def _run_agent_streaming(
                 session_id[:8],
                 exc_info=True,
             )
+        finally:
+            _bungalow_clear_streaming_session_tls(_bungalow_tls_here)
         return
     s = None
     _rt = {}
@@ -2303,6 +2337,7 @@ def _run_agent_streaming(
         if _ckpt_thread is not None:
             _ckpt_thread.join(timeout=15)
         _clear_thread_env()  # TD1: always clear thread-local context
+        _bungalow_clear_streaming_session_tls(_bungalow_tls_here)
         with STREAMS_LOCK:
             STREAMS.pop(stream_id, None)
             CANCEL_FLAGS.pop(stream_id, None)

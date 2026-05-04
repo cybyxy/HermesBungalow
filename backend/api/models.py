@@ -19,6 +19,46 @@ from api.agent_sessions import read_importable_agent_session_rows
 
 logger = logging.getLogger(__name__)
 
+# Bungalow game agents: session JSON lives under each profile's ``…/sessions``
+# (see ``profiles.game_session_dir_for_profile``), not only ``SESSION_DIR``.
+_BUNGALOW_GAME_SESSION_ROOT = threading.local()
+
+
+def set_bungalow_game_session_root(root: Path | None) -> None:
+    """Thread-local: read/write ``<sid>.json`` under *root* (a ``…/sessions`` dir)."""
+    if root is None:
+        if hasattr(_BUNGALOW_GAME_SESSION_ROOT, "value"):
+            delattr(_BUNGALOW_GAME_SESSION_ROOT, "value")
+    else:
+        _BUNGALOW_GAME_SESSION_ROOT.value = root.resolve()
+
+
+def clear_bungalow_game_session_root() -> None:
+    if hasattr(_BUNGALOW_GAME_SESSION_ROOT, "value"):
+        delattr(_BUNGALOW_GAME_SESSION_ROOT, "value")
+
+
+def get_bungalow_game_session_root() -> Path | None:
+    return getattr(_BUNGALOW_GAME_SESSION_ROOT, "value", None)
+
+
+def _effective_session_fs_dir() -> Path:
+    r = get_bungalow_game_session_root()
+    return r if r is not None else SESSION_DIR
+
+
+def _session_json_paths_for_sid(sid: str) -> list[Path]:
+    """Candidate ``<sid>.json`` paths: TLS profile root first, then global Web UI dir."""
+    out: list[Path] = []
+    r = get_bungalow_game_session_root()
+    if r is not None:
+        out.append(r / f"{sid}.json")
+    p2 = SESSION_DIR / f"{sid}.json"
+    if r is None or r.resolve() != SESSION_DIR.resolve():
+        out.append(p2)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Stale temp-file cleanup
 # ---------------------------------------------------------------------------
@@ -344,9 +384,14 @@ class Session:
 
     @property
     def path(self):
-        return SESSION_DIR / f'{self.session_id}.json'
+        br = getattr(self, "_bungalow_session_root", None)
+        if br:
+            return Path(br) / f"{self.session_id}.json"
+        return _effective_session_fs_dir() / f"{self.session_id}.json"
 
     def save(self, touch_updated_at: bool = True, skip_index: bool = False) -> None:
+        if getattr(self, "_bungalow_session_root", None) and not skip_index:
+            skip_index = True
         if touch_updated_at:
             self.updated_at = time.time()
         # Write metadata fields first so load_metadata_only() can read them
@@ -389,10 +434,16 @@ class Session:
         # Validate session ID format to prevent path traversal
         if not sid or not all(c in '0123456789abcdefghijklmnopqrstuvwxyz_' for c in sid):
             return None
-        p = SESSION_DIR / f'{sid}.json'
-        if not p.exists():
-            return None
-        return cls(**json.loads(p.read_text(encoding='utf-8')))
+        for p in _session_json_paths_for_sid(sid):
+            if not p.exists():
+                continue
+            try:
+                s = cls(**json.loads(p.read_text(encoding="utf-8")))
+                object.__setattr__(s, "_bungalow_session_root", str(p.parent.resolve()))
+                return s
+            except Exception:
+                logger.debug("Session.load failed for %s", p, exc_info=True)
+        return None
 
     @classmethod
     def load_metadata_only(cls, sid):
@@ -405,25 +456,26 @@ class Session:
         """
         if not sid or not all(c in '0123456789abcdefghijklmnopqrstuvwxyz_' for c in sid):
             return None
-        p = SESSION_DIR / f'{sid}.json'
-        if not p.exists():
-            return None
-        try:
-            prefix = _read_metadata_json_prefix(p)
-            if not prefix:
-                return cls.load(sid)
-            parsed = json.loads(prefix)
-            needed = {'session_id', 'title', 'created_at', 'updated_at'}
-            if not needed.issubset(parsed.keys()):
-                return cls.load(sid)
-            parsed['messages'] = []
-            parsed['tool_calls'] = []
-            session = cls(**parsed)
-            session._metadata_message_count = _lookup_index_message_count(sid)
-            return session
-        except Exception:
-            # Corrupt prefix or decode error — fall back to full load
-            return cls.load(sid)
+        for p in _session_json_paths_for_sid(sid):
+            if not p.exists():
+                continue
+            try:
+                prefix = _read_metadata_json_prefix(p)
+                if not prefix:
+                    return cls.load(sid)
+                parsed = json.loads(prefix)
+                needed = {'session_id', 'title', 'created_at', 'updated_at'}
+                if not needed.issubset(parsed.keys()):
+                    return cls.load(sid)
+                parsed['messages'] = []
+                parsed['tool_calls'] = []
+                session = cls(**parsed)
+                object.__setattr__(session, "_bungalow_session_root", str(p.parent.resolve()))
+                session._metadata_message_count = _lookup_index_message_count(sid)
+                return session
+            except Exception:
+                logger.debug("Session.load_metadata_only failed for %s", p, exc_info=True)
+        return None
 
     def compact(self, include_runtime=False, active_stream_ids=None) -> dict:
         active_stream_ids = active_stream_ids if active_stream_ids is not None else set()
@@ -510,6 +562,9 @@ def new_session(workspace=None, model=None, profile=None):
         SESSIONS.move_to_end(s.session_id)
         while len(SESSIONS) > SESSIONS_MAX:
             SESSIONS.popitem(last=False)
+    rr = get_bungalow_game_session_root()
+    if rr is not None:
+        object.__setattr__(s, "_bungalow_session_root", str(rr.resolve()))
     s.save()
     return s
 

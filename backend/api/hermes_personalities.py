@@ -117,6 +117,7 @@ def _read_profession_from_soul_text(soul: str) -> str:
 _MEMES_HEADERS = frozenset({"梗语", "memes", "梗", "meme"})
 _PERSONALITY_HEADERS = frozenset({"性格", "性格特点", "性格描述", "personality"})
 _CATCHPHRASE_HEADERS = frozenset({"口头禅", "catchphrase", "口癖"})
+_GENDER_HEADERS = frozenset({"性别", "gender", "sex"})
 _AVATAR_HEADERS = frozenset({"avatar", "头像", "头像路径", "形象", "外观", "sprite", "sprites"})
 
 
@@ -248,6 +249,32 @@ def _read_avatar_from_soul_text(soul: str) -> str:
     return val if val else ""
 
 
+def _read_gender_from_soul_text(soul: str) -> str:
+    """Extract gender from SOUL.md: ``## 性别`` section or inline **性别** field. Returns 'male', 'female', or 'male' as fallback."""
+    if not soul:
+        return "male"
+    body = _extract_section_body(soul, _GENDER_HEADERS)
+    if body:
+        for line in body.splitlines():
+            stripped = line.strip().lstrip("-*·").strip().strip('"').strip("'")
+            if stripped:
+                return _normalize_gender(stripped)
+    val = _extract_inline_field(soul, _GENDER_HEADERS)
+    if val:
+        return _normalize_gender(val)
+    return "male"
+
+
+def _normalize_gender(raw: str) -> str:
+    """Normalize gender string to 'male' or 'female'."""
+    if not raw:
+        return "male"
+    low = raw.lower()
+    if low in ("女", "female", "f", "woman"):
+        return "female"
+    return "male"
+
+
 def list_hermes_profile_agents() -> list[dict[str, str]]:
     """Return one display agent per Hermes profile.
 
@@ -275,6 +302,7 @@ def list_hermes_profile_agents() -> list[dict[str, str]]:
         catchphrase_list = _read_catchphrase_from_soul_text(soul)
         memes = _read_memes_from_soul_text(soul)
         avatar = _read_avatar_from_soul_text(soul)
+        gender = _read_gender_from_soul_text(soul)
         # description kept as full soul text for backwards compat
         desc = soul.strip() if soul.strip() else f"Hermes profile: {pname}"
         agents.append(
@@ -288,6 +316,7 @@ def list_hermes_profile_agents() -> list[dict[str, str]]:
                 "catchphrase": catchphrase_list,
                 "memes": memes,
                 "avatar": avatar,
+                "gender": gender,
             }
         )
     return agents

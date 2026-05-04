@@ -25,7 +25,7 @@ export function registerStudioCollabWalk(
   clearImpl = clearOverride;
 }
 
-/** 多协作转交前：发起人先走到同伴邻格（仅办公室 Tiled 站位时有效）。 */
+/** 一对一转交前：发起人先走到同伴邻格（仅办公室 Tiled 站位时有效）。多目标（如 @所有人 展开）时不调用。 */
 export async function runApproachWalkBeforePeerInvoke(
   fromAgentId: string,
   peerAgentId: string,
@@ -39,7 +39,7 @@ export async function runApproachWalkBeforePeerInvoke(
   }
 }
 
-/** 本批 `@同伴` 全部对话结束后走回出生点 */
+/** 一对一转交：本批 `@同伴` 对话结束后发起人走回出生点。多目标批处理时不调用。 */
 export async function runCollabWalkReturnToSpawn(fromAgentId: string): Promise<void> {
   if (!returnImpl) return;
   try {

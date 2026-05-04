@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import Agent, GameWorld, Room, Task, default_world
+from .monitor_store import MONITOR_DDL
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -30,6 +31,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    conn.executescript(MONITOR_DDL)
     conn.commit()
 
 

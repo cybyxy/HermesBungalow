@@ -1,20 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import {
-  clearCollabWalkFootOverride,
-  runApproachWalkBeforePeerInvoke,
-  runCollabWalkReturnToSpawn,
-} from '../collab/studioCollabWalkBridge';
-import * as gameApi from '../services/gameApi';
-import type { ClarifySsePayload } from '../services/gameApi';
+import { stopStudioChat, submitStudioChat } from '../chat/studioChatActions';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
-import type { Agent, GameWorldSnapshot } from '../types/game';
+import type { GameWorldSnapshot } from '../types/game';
 import { MAIN_MENUS } from './menuConfig';
 import { colors, layoutPx } from './theme';
 
 const MENU_BTN_W = 70;
-const MAX_INVOKE_DEPTH = 8;
 /** 与左侧主菜单按钮同高，保证底栏一行内所有按钮水平对齐 */
 const FOOTER_BTN_H = 34;
 /** 底栏输入行占位高度（多行时输入框由此向上浮出，不撑高底栏主行） */
@@ -33,48 +26,6 @@ const footerBarBtn: CSSProperties = {
   fontFamily: 'inherit',
   cursor: 'pointer',
 };
-
-/** 将 SSE event_type 映射为中文气泡文案（末尾不接 "..."，调用方自行追加） */
-function _eventTypeToChinese(eventType: string): string {
-  if (eventType === 'tool.started') return '工具使用中';
-  if (eventType === 'tool.completed') return '工具已完成';
-  if (eventType === 'approval.required') return '等待确认';
-  if (eventType === 'reasoning.available') return '推理中';
-  if (eventType === '_thinking') return '思考中';
-  if (eventType === 'error') return '出错了';
-  return '工具使用中';
-}
-
-/** 右侧推理与对话区：Agent 回复行标题为「名称 · 职业」。 */
-function agentReplyHeadline(agent: Agent): string {
-  const p = (agent.profession || '').trim();
-  return p ? `${agent.name} · ${p}` : agent.name;
-}
-
-/** Prepend 同伴 @ 转交说明，使每轮（任意 Agent）都能点名其他人。 */
-function withPeerHintForMessage(snapshot: GameWorldSnapshot | null, core: string): string {
-  if (!snapshot || snapshot.agents.length < 2) return core;
-  return (
-    gameApi.buildPeerInvokeHint(
-      snapshot.agents.map((a) => ({ name: a.name, profile: a.profile, id: a.id })),
-    ) + core
-  );
-}
-
-/** 发给同伴 Hermes 的 user 文本：含同伴全文（去掉 @/invoke 转交行）+ 子任务正文。 */
-function buildHandoffPeerUserMessage(
-  snapshot: GameWorldSnapshot | null,
-  invokerFullReply: string,
-  invokeBody: string,
-): string {
-  const stripped = gameApi.stripHermesBungalowInvokes(invokerFullReply);
-  const task = invokeBody.trim();
-  if (!stripped) {
-    return withPeerHintForMessage(snapshot, task);
-  }
-  const ctx = `\n\n──────── 同伴本轮对用户输出的正文（@ 转交行已剥离，供你衔接上下文）────────\n${gameApi.truncateHandoffContext(stripped)}\n\n──────── 对方点名要你处理的任务 ────────\n${task}`;
-  return withPeerHintForMessage(snapshot, ctx);
-}
 
 function clipboardFileKey(f: File): string {
   return `${f.size}\0${f.lastModified}\0${f.name}`;
@@ -113,7 +64,7 @@ async function sniffImageFormat(blob: Blob): Promise<'png' | 'jpeg' | 'gif' | 'w
   return null;
 }
 
-/** 剪贴板未带 image/* MIME 时，按魔数补全类型，便于 /api/upload 与模型识别。 */
+/** 剪贴板未带 image/* MIME 时，按魔数补全类型，便于走游戏上传接口与模型识别。 */
 async function normalizePastedImageFile(f: File): Promise<File | null> {
   if (f.type.startsWith('image/')) return f;
   const sig = await sniffImageFormat(f);
@@ -222,7 +173,6 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
   const [thumbUrls, setThumbUrls] = useState<string[]>([]);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const sessionsRef = useRef<Record<string, string>>({});
 
   const syncTextareaHeight = useCallback(() => {
     const el = textareaRef.current;
@@ -242,37 +192,20 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
     return () => window.removeEventListener('resize', onResize);
   }, [syncTextareaHeight]);
 
-  const selectedAgentStreaming = Boolean(selectedAgentId && agentStreamIds[selectedAgentId]);
+  const agentInferState = useUiStore((s) => s.agentInferState);
   const selectedStreamId =
     selectedAgentId && agentStreamIds[selectedAgentId] ? agentStreamIds[selectedAgentId] : null;
+  const selectedOrchestrating = Boolean(
+    selectedAgentId && agentInferState[selectedAgentId]?.phase === 'thinking' && !selectedStreamId,
+  );
+  const inputBlocked = Boolean(selectedStreamId || selectedOrchestrating);
 
   const handleStop = useCallback(async () => {
-    const aid = useUiStore.getState().selectedAgentId;
-    if (!aid) return;
-    const sid = useUiStore.getState().agentStreamIds[aid];
-    if (!sid) return;
-    try {
-      await gameApi.cancelStream(sid);
-    } catch {
-      // best-effort
-    } finally {
-      useUiStore.getState().clearAgentStream(aid);
-    }
+    await stopStudioChat();
   }, []);
   const [toast, setToast] = useState<string | null>(null);
 
   const selectedAgent = snapshot?.agents.find((a) => a.id === selectedAgentId) ?? null;
-
-  useEffect(() => {
-    if (!snapshot) return;
-    const valid = new Set(snapshot.agents.map((a) => a.id));
-    for (const k of Object.keys(sessionsRef.current)) {
-      if (!valid.has(k)) delete sessionsRef.current[k];
-    }
-    for (const a of snapshot.agents) {
-      if (a.hermes_session_id) sessionsRef.current[a.id] = a.hermes_session_id;
-    }
-  }, [snapshot]);
 
   useEffect(() => {
     if (!toast) return;
@@ -291,8 +224,11 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
   /** 焦点在游戏区等时，把剪贴板/拖放里的图片并入底栏待发送列表（与 textarea onPaste 逻辑对齐）。 */
   useEffect(() => {
     const chatStreaming = () => {
-      const aid = useUiStore.getState().selectedAgentId;
-      return Boolean(aid && useUiStore.getState().agentStreamIds[aid]);
+      const st = useUiStore.getState();
+      const aid = st.selectedAgentId;
+      if (!aid) return false;
+      if (st.agentStreamIds[aid]) return true;
+      return st.agentInferState[aid]?.phase === 'thinking';
     };
 
     const onPasteCapture = (e: ClipboardEvent) => {
@@ -356,376 +292,16 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
     };
   }, []);
 
-  const runSseForAgent = useCallback(async (agent: Agent, headline: string, messageToModel: string, attachments?: string[]) => {
-    const append = useUiStore.getState().appendInference;
-    const appendTo = useUiStore.getState().appendToInference;
-    let sid = agent.hermes_session_id ?? sessionsRef.current[agent.id];
-    if (!sid) {
-      const created = await gameApi.createHermesSession(agent.profile);
-      sid = created.session_id;
-      sessionsRef.current[agent.id] = sid;
-    }
-    let replyEntryId: string | null = null;
-    const ensureReplyEntry = () => {
-      if (!replyEntryId) {
-        replyEntryId = append({
-          variant: 'reply',
-          headline,
-          body: '',
-          agentId: agent.id,
-        });
-      }
-      return replyEntryId;
-    };
-    let acc = '';
-    let latestSid = sid;
-    let streamError: Error | null = null;
-    let mergeReasoningId: string | null = null;
-    useUiStore.getState().beginCenterAgentThinking(agent.id);
-    try {
-      await gameApi.streamChatSse(
-        messageToModel,
-        sid,
-        (chunk, done, fullText, doneMeta) => {
-          if (done) {
-            const fromDone = fullText != null && fullText !== '' ? fullText : '';
-            // Hermes `done` 里持久化的 assistant 常会去掉 @/invoke 转交，不能用来覆盖流式 acc，否则无法解析同伴转交
-            acc = gameApi.mergeAssistantTextForOrchestration(acc, fromDone || null);
-            const finalized = acc;
-            if (finalized) {
-              const id = replyEntryId ?? ensureReplyEntry();
-              appendTo(id, finalized);
-            }
-            if (doneMeta?.display?.markdown_editor === true) {
-              const id = replyEntryId ?? ensureReplyEntry();
-              if (id) {
-                useUiStore.getState().patchInference(id, { markdownEditor: true });
-              }
-            }
-            return;
-          }
-          if (chunk) {
-            appendTo(ensureReplyEntry(), chunk);
-            acc += chunk;
-          }
-        },
-        (meta) => {
-          if (meta.type === 'reasoning') {
-            const t = meta.text;
-            if (!t) return;
-            if (mergeReasoningId) {
-              appendTo(mergeReasoningId, t);
-            } else {
-              mergeReasoningId = append({ variant: 'reasoning', headline: '推理', body: t, agentId: agent.id });
-            }
-          } else if (meta.type === 'tool') {
-            mergeReasoningId = null;
-            const p = meta.payload as { name?: string; preview?: string; args?: Record<string, string>; event_type?: string };
-            const toolName = p.name ?? '未知工具';
-            const eventType = p.event_type ?? 'tool.started';
-            const eventLabel = _eventTypeToChinese(eventType);
-            const argsLines = p.args
-              ? Object.entries(p.args).map(([k, v]) => `  ${k}: ${v}`).join('\n')
-              : '';
-            const body = argsLines ? `调用工具: ${toolName}\n${argsLines}` : `调用工具: ${toolName}`;
-            useUiStore.getState().setCenterAgentTool(agent.id, eventLabel);
-            append({ variant: 'tool_start', headline: '工具', body, agentId: agent.id });
-          } else if (meta.type === 'tool_complete') {
-            mergeReasoningId = null;
-            const p = meta.payload as { name?: string };
-            const toolName = p.name ?? '';
-            const doneText = toolName ? `${toolName} 完成` : '工具完成';
-            append({ variant: 'tool_done', headline: '工具', body: doneText, agentId: agent.id });
-            // tool_complete 后保持 tool 状态，气泡显示 "xxx 完成..."，等下一个事件（thinking/tool）再更新
-            useUiStore.getState().setCenterAgentTool(agent.id, doneText);
-          }
-        },
-        {
-          bungalowAgentId: agent.id,
-          onHermesSessionId: (id) => {
-            if (id) {
-              sessionsRef.current[agent.id] = id;
-              latestSid = id;
-            }
-          },
-          onStreamId: (streamId) => {
-            useUiStore.getState().setAgentStream(agent.id, streamId);
-          },
-          attachments,
-          onClarifyRequest: (p) =>
-            new Promise<string>((resolve) => {
-              useUiStore.getState().setClarifyPrompt({ question: p.question, choices_offered: p.choices_offered ?? [], resolve });
-            }),
-        },
-      );
-    } catch (e) {
-      streamError = e instanceof Error ? e : new Error(String(e));
-      throw streamError;
-    } finally {
-      useUiStore.getState().finishCenterAgentInference(
-        agent.id,
-        streamError ? streamError.message : acc,
-      );
-      useUiStore.getState().clearAgentStream(agent.id);
-    }
-    return { text: acc, sid: latestSid };
-  }, []);
-
   const send = useCallback(async () => {
-    const text = input.trim();
-    if (!text && pendingImages.length === 0) {
-      setToast('请输入内容或添加图片');
-      return;
-    }
-    const finalizeRound = useUiStore.getState().finalizeInferenceRound;
-
-    const dispatchInvokes = async (
-      fromAgent: Agent,
-      invokeList: { target: string; message: string }[],
-      depth: number,
-      invokerFullReply: string,
-    ): Promise<void> => {
-      const append = useUiStore.getState().appendInference;
-      if (depth > MAX_INVOKE_DEPTH) {
-        return;
-      }
-      const expanded = gameApi.expandHermesInvokesForSender(fromAgent, snapshot?.agents ?? [], invokeList);
-      const selfSet = new Set(
-        [fromAgent.id, fromAgent.profile ?? '', fromAgent.name, (fromAgent.display_name ?? '').trim()].filter(
-          Boolean,
-        ) as string[],
-      );
-      type TargetRow = { peer: Agent; message: string };
-      const targets: TargetRow[] = [];
-      for (const iv of expanded) {
-        if (selfSet.has(iv.target)) {
-          continue;
-        }
-        const peer = gameApi.resolveGameAgent(snapshot?.agents, iv.target);
-        if (!peer) {
-          append({
-            variant: 'error',
-            headline: '系统',
-            body: `未找到同伴：「${iv.target}」`,
-            agentId: fromAgent.id,
-          });
-          continue;
-        }
-        targets.push({ peer, message: iv.message });
-      }
-
-      clearCollabWalkFootOverride(fromAgent.id);
-      for (let i = 0; i < targets.length; i++) {
-        const { peer, message } = targets[i]!;
-        const msg = buildHandoffPeerUserMessage(snapshot, invokerFullReply, message);
-        try {
-          await runApproachWalkBeforePeerInvoke(fromAgent.id, peer.id, {
-            chainFromCurrent: i > 0,
-          });
-          const { text: reply } = await runSseForAgent(peer, agentReplyHeadline(peer), msg);
-          const nested = gameApi.parseHermesBungalowInvokes(reply);
-          if (nested.length > 0) {
-            await dispatchInvokes(peer, nested, depth + 1, reply);
-          }
-        } catch (err) {
-          append({
-            variant: 'error',
-            headline: `${peer.name} · 转交异常`,
-            body: (err as Error).message,
-            agentId: peer.id,
-          });
-        }
-      }
-      await runCollabWalkReturnToSpawn(fromAgent.id);
-    };
-
-    const handoff = gameApi.parseUserHandoffPrefix(text);
-    if (handoff) {
-      const { token, message: sub } = handoff;
-      if (!sub) {
-        setToast(
-          '转发内容不能为空。请使用：`@对方 profile/id/姓名/显示名 | 要说的话` 或 `@对方 要说的话`；群发：`@所有人 | …` 或 `@所有人 …`（竖线可用全角｜）',
-        );
-        setPendingImages([]);
-        return;
-      }
-      const append = useUiStore.getState().appendInference;
-
-      if (gameApi.isBroadcastAllHandoffToken(token)) {
-        if (!selectedAgent) {
-          setToast('请先在顶部选一个 Agent，再发 `@所有人 | …`（由当前 Agent 群发至其余同伴）');
-          setPendingImages([]);
-          return;
-        }
-        if (!snapshot || snapshot.agents.length < 2) {
-          setToast('至少需要两名 Agent 才能使用 `@所有人`');
-          setPendingImages([]);
-          return;
-        }
-        const relayRoundUserIdx = useUiStore.getState().inferenceLog.length;
-        append({
-          variant: 'user',
-          headline: '你 · 群发',
-          body: `@所有人 | ${sub}`,
-          agentId: selectedAgent.id,
-        });
-        try {
-          await dispatchInvokes(selectedAgent, [{ target: '所有人', message: sub }], 0, '');
-          void loadState();
-        } catch (e) {
-          append({
-            variant: 'error',
-            headline: '系统',
-            body: (e as Error).message,
-            agentId: selectedAgent.id,
-          });
-        } finally {
-          finalizeRound(relayRoundUserIdx);
-          setInput('');
-          setPendingImages([]);
-        }
-        return;
-      }
-
-      const peer = gameApi.resolveGameAgent(snapshot?.agents, token);
-      if (peer && useUiStore.getState().agentStreamIds[peer.id]) {
-        setToast(`${peer.name} 正在推理中，请稍后再试或切换到其他 Agent`);
-        setPendingImages([]);
-        return;
-      }
-      const relayRoundUserIdx = useUiStore.getState().inferenceLog.length;
-      append({
-        variant: 'user',
-        headline: '你 · 手动转发',
-        body: `@${token} | ${sub}`,
-        agentId: selectedAgent?.id ?? peer?.id ?? null,
-      });
-      if (!peer) {
-        append({
-          variant: 'error',
-          headline: '系统',
-          body: `未找到目标「${token}」。请使用当前存档里 Agent 的 id、profile、姓名或显示名（@ 同一行）。`,
-          agentId: selectedAgent?.id ?? null,
-        });
-        finalizeRound(relayRoundUserIdx);
-        setInput('');
-        setPendingImages([]);
-        return;
-      }
-      try {
-        const { text: relayAcc } = await runSseForAgent(
-          peer,
-          agentReplyHeadline(peer),
-          withPeerHintForMessage(snapshot, sub),
-        );
-        const relayInvokes = gameApi.expandHermesInvokesForSender(
-          peer,
-          snapshot?.agents ?? [],
-          gameApi.parseHermesBungalowInvokes(relayAcc),
-        );
-        if (relayInvokes.length > 0) {
-          await dispatchInvokes(peer, relayInvokes, 0, relayAcc);
-        }
-        void loadState();
-      } catch (e) {
-        append({
-          variant: 'error',
-          headline: '系统',
-          body: (e as Error).message,
-          agentId: peer?.id ?? null,
-        });
-      } finally {
-        finalizeRound(relayRoundUserIdx);
-        setInput('');
-        setPendingImages([]);
-      }
-      return;
-    }
-
-    if (!selectedAgent) {
-      setToast(
-        '请先在顶部选一个 Agent 作为本轮对话入口（各 Agent 独立会话、地位对等）；点名另一名请单独发：`@对方的 profile / id / 姓名 / 显示名 | 消息`（竖线可用全角｜）',
-      );
-      setPendingImages([]);
-      return;
-    }
-    const append = useUiStore.getState().appendInference;
-
-    if (useUiStore.getState().agentStreamIds[selectedAgent.id]) {
-      setToast(`${selectedAgent.name} 正在推理中，请稍候或点击「停止」`);
-      setPendingImages([]);
-      return;
-    }
-
-    const mainRoundUserIdx = useUiStore.getState().inferenceLog.length;
-    const pendingCount = pendingImages.length;
-    const pendingFilesSnapshot = [...pendingImages];
-    setPendingImages([]);
-    append({
-      variant: 'user',
-      headline: '你',
-      body: text || `（已附加 ${pendingCount} 张图片）`,
-      agentId: selectedAgent.id,
+    await submitStudioChat({
+      text: input,
+      pendingFiles: pendingImages,
+      snapshot,
+      onToast: (msg) => setToast(msg),
+      clearInput: () => setInput(''),
+      clearPendingFiles: () => setPendingImages([]),
     });
-    try {
-      // Ensure session exists before uploading images
-      let sid = sessionsRef.current[selectedAgent.id] ?? '';
-      if (!sid && pendingFilesSnapshot.length > 0) {
-        sid = (await gameApi.createHermesSession(selectedAgent.profile)).session_id;
-        sessionsRef.current[selectedAgent.id] = sid;
-      }
-
-      // Upload pending images
-      let attachments: string[] = [];
-      if (pendingFilesSnapshot.length > 0) {
-        const uploadResults = await Promise.all(
-          pendingFilesSnapshot.map((f) =>
-            gameApi.uploadImage(f, sid).catch((err) => {
-              setToast(`图片上传失败: ${(err as Error).message}`);
-              return null;
-            }),
-          ),
-        );
-        const succeeded = uploadResults.filter((r): r is { filename: string; path: string; size: number } => r !== null);
-        attachments = succeeded.map((r) => r.path);
-        if (succeeded.length < pendingFilesSnapshot.length) {
-          setToast(`图片上传部分失败（${succeeded.length}/${pendingFilesSnapshot.length}）`);
-        }
-      }
-
-      const peerHint =
-        snapshot && snapshot.agents.length > 1
-          ? gameApi.buildPeerInvokeHint(
-              snapshot.agents.map((a) => ({ name: a.name, profile: a.profile, id: a.id })),
-            )
-          : '';
-      const attachHint = attachments.length > 0 ? `\n\n[Attached files: ${attachments.join('\n')}]` : '';
-      const messageToModel = peerHint + (text || '（请结合上传的图片回答。）') + attachHint;
-
-      const { text: acc } = await runSseForAgent(selectedAgent, agentReplyHeadline(selectedAgent), messageToModel, attachments);
-
-      const invokes = gameApi.expandHermesInvokesForSender(
-        selectedAgent,
-        snapshot?.agents ?? [],
-        gameApi.parseHermesBungalowInvokes(acc),
-      );
-      if (invokes.length > 0) {
-        await dispatchInvokes(selectedAgent, invokes, 0, acc);
-      }
-
-      void loadState();
-    } catch (e) {
-      append({
-        variant: 'error',
-        headline: '系统',
-        body: (e as Error).message,
-        agentId: selectedAgent.id,
-      });
-    } finally {
-      finalizeRound(mainRoundUserIdx);
-      setInput('');
-    }
-  }, [input, loadState, pendingImages, runSseForAgent, selectedAgent, snapshot]);
+  }, [input, pendingImages, snapshot]);
 
   const toggleMenuSheet = (key: string) => {
     if (bottomSheet.kind === 'menu' && bottomSheet.menuKey === key) {
@@ -839,7 +415,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
               type="button"
               title="添加图片"
               style={{ ...footerBarBtn, flexShrink: 0 }}
-              disabled={selectedAgentStreaming}
+              disabled={inputBlocked}
               onClick={() => imageInputRef.current?.click()}
             >
               🖼️
@@ -884,7 +460,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    if (!selectedStreamId) void send();
+                    if (!inputBlocked) void send();
                   }
                 }}
                 onPaste={(e) => {
@@ -924,7 +500,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
                     });
                   })();
                 }}
-                disabled={selectedAgentStreaming}
+                disabled={inputBlocked}
                 rows={1}
               />
             </div>
@@ -935,10 +511,14 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
                 flexShrink: 0,
                 color: selectedStreamId ? '#f88' : undefined,
                 border: selectedStreamId ? '1px solid #a44' : undefined,
+                opacity: selectedOrchestrating ? 0.55 : undefined,
               }}
-              onClick={() => (selectedStreamId ? void handleStop() : void send())}
+              onClick={() => {
+                if (selectedStreamId) void handleStop();
+                else if (!selectedOrchestrating) void send();
+              }}
             >
-              {selectedStreamId ? '停止' : '发送'}
+              {selectedStreamId ? '停止' : selectedOrchestrating ? '…' : '发送'}
             </button>
           </div>
 
