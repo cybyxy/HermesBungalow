@@ -1,21 +1,23 @@
 /**
- * 整页 Phaser：顶栏为 React DOM；中央游戏区 + 底栏壳层在 Phaser（+ DOM textarea）。
+ * 整页 Phaser：顶栏 / 左右栏 / 底栏为 React DOM；中央仅 Phaser 画布（底栏菜单与输入见 BottomBar）。
  */
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { Agent, GameWorldSnapshot } from '../types/game';
-import type { AgentInferenceState } from '../store/uiStore';
 import { useGameStore } from '../store/gameStore';
-import { useUiStore } from '../store/uiStore';
+import { STUDIO_CENTER_ZOOM_LEVELS, useUiStore } from '../store/uiStore';
 import { syncHermesSessionsFromSnapshot } from '../chat/studioChatActions';
 import { registerStudioCollabWalk } from '../collab/studioCollabWalkBridge';
 import { C, computeBuildingLayout, getRoomGridCell } from './buildingLayout';
-import { computeFullPageLayout } from './fullPageLayout';
+import { BottomBar } from './BottomBar';
+import { computePhaserParentLayout } from './fullPageLayout';
 import { TaskMonitorPanel } from './TaskMonitorPanel';
 import { RightPanel } from './RightPanel';
 import { TopBar } from './TopBar';
 import { colors, layoutPx, studioGlass } from './theme';
 import {
   mountStudioGame,
+  STUDIO_GAME_BASE_HEIGHT,
+  STUDIO_GAME_BASE_WIDTH,
   type AgentSpriteVisual,
   type StudioCtxBridge,
   type StudioGameApi,
@@ -40,7 +42,6 @@ function dirFromDelta(dx: number, dy: number): Direction {
 export function CenterStage(props: {
   snapshot: GameWorldSnapshot;
   selectedAgentId: string | null;
-  centerInference: Record<string, AgentInferenceState>;
   gatewayStatus: string;
   loading: boolean;
   onSelectAgent: (id: string) => void;
@@ -51,7 +52,6 @@ export function CenterStage(props: {
   const {
     snapshot,
     selectedAgentId,
-    centerInference,
     gatewayStatus,
     loading,
     onSelectAgent,
@@ -60,7 +60,11 @@ export function CenterStage(props: {
     onRefresh,
   } = props;
   const studioRightPanelCollapsed = useUiStore((s) => s.studioRightPanelCollapsed);
+  const studioLeftPanelCollapsed = useUiStore((s) => s.studioLeftPanelCollapsed);
   const toggleStudioRightPanelCollapsed = useUiStore((s) => s.toggleStudioRightPanelCollapsed);
+  const studioCenterPixelZoom = useUiStore((s) => s.studioCenterPixelZoom);
+  const bumpStudioCenterPixelZoom = useUiStore((s) => s.bumpStudioCenterPixelZoom);
+  const resetStudioCenterPixelZoom = useUiStore((s) => s.resetStudioCenterPixelZoom);
   const wrapRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<StudioGameApi | null>(null);
 
@@ -69,7 +73,6 @@ export function CenterStage(props: {
   const prevLocationRef = useRef<Record<string, string>>({});
   const snapshotRef = useRef(snapshot);
   const selectedIdRef = useRef(selectedAgentId);
-  const inferenceRef = useRef(centerInference);
   const gatewayRef = useRef(gatewayStatus);
   const loadingRef = useRef(loading);
   const handlersRef = useRef({
@@ -81,7 +84,6 @@ export function CenterStage(props: {
   const studioCtxRef = useRef<StudioCtxBridge | null>(null);
   snapshotRef.current = snapshot;
   selectedIdRef.current = selectedAgentId;
-  inferenceRef.current = centerInference;
   gatewayRef.current = gatewayStatus;
   loadingRef.current = loading;
   handlersRef.current = { onSelectAgent, onMoveAgent, onOpenAgentDetail, onRefresh };
@@ -89,17 +91,17 @@ export function CenterStage(props: {
   if (!studioCtxRef.current) {
     studioCtxRef.current = {
       getPack: () => {
-        const wrap = wrapRef.current;
-        const W = Math.max(32, wrap?.clientWidth ?? 0);
-        const H = Math.max(32, wrap?.clientHeight ?? 0);
+        const W = Math.max(32, STUDIO_GAME_BASE_WIDTH);
+        const H = Math.max(32, STUDIO_GAME_BASE_HEIGHT);
         const ui = useUiStore.getState();
         const rightPanelCollapsed = ui.studioRightPanelCollapsed;
-        const fullLayout = computeFullPageLayout(W, H, { rightPanelCollapsed });
+        const fullLayout = computePhaserParentLayout(W, H);
         const cw = fullLayout.center.w;
         const ch = fullLayout.center.h;
         const snap = snapshotRef.current;
         const sel = selectedIdRef.current;
-        const centerInference = inferenceRef.current;
+        /** 读 store 而非 ref，避免编排 SSE / WS 在同一帧内多次更新时 Phaser 仍用旧头顶态 */
+        const centerInference = ui.agentInferState;
         const walkFrame = walkTickRef.current % FRAME_COUNT;
         const now = performance.now();
         const L = computeBuildingLayout(cw, ch);
@@ -142,7 +144,7 @@ export function CenterStage(props: {
           if (ui.bottomSheet.kind === 'menu' && ui.bottomSheet.menuKey === key) ui.closeBottomSheet();
           else ui.openBottomSheet({ kind: 'menu', menuKey: key });
         },
-        onQuickNewTask: () => useUiStore.getState().openBottomSheet({ kind: 'newTask' }),
+        onQuickNewTask: () => useUiStore.getState().openNewTaskModal(),
         onQuickAssign: () => {
           const tid = useUiStore.getState().selectedTaskId;
           const aid = useUiStore.getState().selectedAgentId;
@@ -247,6 +249,15 @@ export function CenterStage(props: {
     return () => clearTimeout(timer);
   }, [snapshot.agents]);
 
+  useEffect(() => {
+    gameRef.current?.layoutToHost();
+  }, [studioCenterPixelZoom]);
+
+  const rightPanelW = studioRightPanelCollapsed ? layoutPx.sidePanelCollapsed : layoutPx.sidePanel;
+  const leftPanelW = studioLeftPanelCollapsed ? layoutPx.sidePanelCollapsed : layoutPx.sidePanel;
+  const zoomMin = studioCenterPixelZoom <= STUDIO_CENTER_ZOOM_LEVELS[0];
+  const zoomMax = studioCenterPixelZoom >= STUDIO_CENTER_ZOOM_LEVELS[STUDIO_CENTER_ZOOM_LEVELS.length - 1]!;
+
   return (
     <div
       style={{
@@ -258,16 +269,19 @@ export function CenterStage(props: {
         position: 'relative',
       }}
     >
+      {/* 全宽铺底（含侧栏下方），侧栏 `studioGlass` 的 backdrop-filter 才能叠在画布上；勿再 left/right 内缩洞区 */}
       <div
         ref={wrapRef}
         style={{
           position: 'absolute',
-          inset: 0,
+          top: layoutPx.topBar,
+          bottom: layoutPx.bottomBar,
+          left: 0,
+          right: 0,
+          zIndex: 0,
           background: C.bg,
           overflow: 'auto',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          display: 'block',
         }}
       />
       <div
@@ -279,6 +293,7 @@ export function CenterStage(props: {
           height: layoutPx.topBar,
           zIndex: 75,
           pointerEvents: 'auto',
+          overflow: 'visible',
         }}
       >
         <TopBar
@@ -289,6 +304,83 @@ export function CenterStage(props: {
           selectedAgentId={selectedAgentId}
           onOpenAgentDetail={onOpenAgentDetail}
         />
+      </div>
+      <div
+        aria-label="画布缩放"
+        style={{
+          position: 'absolute',
+          right: rightPanelW + 6,
+          top: layoutPx.topBar + 8,
+          zIndex: 58,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+          pointerEvents: 'auto',
+          ...studioGlass.muted,
+          borderRadius: 8,
+          padding: 6,
+          border: `1px solid ${colors.border}`,
+        }}
+      >
+        <button
+          type="button"
+          title="缩小画布"
+          disabled={zoomMin}
+          onClick={() => bumpStudioCenterPixelZoom(-1)}
+          style={{
+            width: 30,
+            height: 28,
+            padding: 0,
+            borderRadius: 4,
+            border: `1px solid ${colors.border}`,
+            background: zoomMin ? 'rgba(40,40,60,0.5)' : 'rgba(42,58,90,0.75)',
+            color: zoomMin ? '#555' : colors.bright,
+            cursor: zoomMin ? 'default' : 'pointer',
+            fontSize: 16,
+            lineHeight: 1,
+          }}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          title="恢复 100% 显示"
+          onClick={() => resetStudioCenterPixelZoom()}
+          style={{
+            width: 30,
+            height: 26,
+            padding: 0,
+            borderRadius: 4,
+            border: `1px solid ${colors.border}`,
+            background: 'rgba(42,58,90,0.6)',
+            color: studioCenterPixelZoom === 1 ? colors.gold : colors.bright,
+            cursor: 'pointer',
+            fontSize: 10,
+            fontWeight: 'bold',
+          }}
+        >
+          {studioCenterPixelZoom === 1 ? '1∶1' : `${Math.round(studioCenterPixelZoom * 100)}%`}
+        </button>
+        <button
+          type="button"
+          title="放大画布"
+          disabled={zoomMax}
+          onClick={() => bumpStudioCenterPixelZoom(1)}
+          style={{
+            width: 30,
+            height: 28,
+            padding: 0,
+            borderRadius: 4,
+            border: `1px solid ${colors.border}`,
+            background: zoomMax ? 'rgba(40,40,60,0.5)' : 'rgba(42,58,90,0.75)',
+            color: zoomMax ? '#555' : colors.bright,
+            cursor: zoomMax ? 'default' : 'pointer',
+            fontSize: 16,
+            lineHeight: 1,
+          }}
+        >
+          +
+        </button>
       </div>
       <TaskMonitorPanel snapshot={snapshot} />
       <div
@@ -338,6 +430,18 @@ export function CenterStage(props: {
             <RightPanel snapshot={snapshot} />
           )}
         </div>
+      </div>
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 85,
+          pointerEvents: 'auto',
+        }}
+      >
+        <BottomBar snapshot={snapshot} gatewayStatus={gatewayStatus} />
       </div>
     </div>
   );

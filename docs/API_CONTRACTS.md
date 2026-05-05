@@ -82,6 +82,21 @@
 | PUT | `/api/game/save` | 写入存档快照 | 有 |
 | POST | `/api/game/llm/apply-tags` | 解析 LLM 文本中的游戏事件标签并应用 | 有 |
 | POST | `/api/game/tick` | 推进游戏内时间（body 可选 `{ "minutes": N }`，默认 1 分钟/次） | 有 |
+| POST | `/api/game/agent-relay` | 对指定 Agent 跑一轮 Hermes；若目标为跨机访客则 HTTP 转发到对方 `agent-relay-from-peer` | 有 |
+| POST | `/api/game/agent-relay-from-peer` | 机机：校验 `HERMES_BUNGALOW_PEER_TOKEN` 后对**本机** `world.agents` 跑一轮 relay（不含访客） | 有 |
+| POST | `/api/game/peers/visit` | 登记访客：`source_base_url` + `relay_agent_id` + 展示字段；或带 `target_base_url` 由本机**代发**到对方（需 `HERMES_BUNGALOW_PUBLIC_BASE`） | 有 |
+| POST | `/api/game/peers/leave` | 撤销访客：`visitor_id`；或带 `target_base_url` 代发到对方 | 有 |
+| GET | `/api/game/peers` | 返回本机配置的 peer base URL 列表（来自 `HERMES_BUNGALOW_PEERS`） | 有 |
+
+### 跨机串门（peer）环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `HERMES_BUNGALOW_PEER_TOKEN` | 双方共享密钥；`POST /peers/*`、`/agent-relay-from-peer` 校验（`Authorization: Bearer` 或 body `peer_token`） |
+| `HERMES_BUNGALOW_PEERS` | 逗号分隔的允许 base URL，或指向 JSON 数组文件路径；用于 SSRF 防护 |
+| `HERMES_BUNGALOW_PUBLIC_BASE` | 可选；浏览器走「代发」串门时，作为写入 `source_base_url` 的公网/局域网基址 |
+
+访客行合并进 `GET /api/game/state` 与 `GET /api/game/agents` 的 `agents`；字段含 `peer_relay_base_url`、`peer_relay_agent_id`、`bungalow_peer_api: 1`；**不**写入 Hermes 同步的 `world.agents`（进程内内存，重启清空）。
 
 > **Hermes 对话（里程碑 B）**  
 > - 当前实现改为 **hermes-webui `api/` 全量搬迁** 到 `backend/api`，并由 `backend/server.py` 桥接调用搬迁路由。  
@@ -116,6 +131,7 @@ Hermes 推理接入关键环境变量：
 |------|------|
 | `event_log` | 近期操作日志（移动、分配、打招呼、LLM 标签等），最多约 80 条 |
 | `rooms[].agent_ids` | 与 `agents[].location` 同步维护的房间占用列表 |
+| `agents[].peer_relay_*` / `bungalow_peer_api` | 跨机访客合并行（仅展示与 relay 路由用） |
 
 ## 二、Gateway WebSocket（`WS /ws/gateway`）
 
@@ -193,6 +209,10 @@ Hermes 推理接入关键环境变量：
 | 连接超时 | `timeout` | 指数退避重连 |
 | 序列号跳跃 | `seq_mismatch` | 请求全量 `state:snapshot` |
 | 服务不可用 | `service_unavailable` | 显示维护提示 |
+
+### 2.8 Multi-Agent Gateway（`WS /ws/multi-agent`）
+
+与 [backend/api/multi_agent_gateway.py](../backend/api/multi_agent_gateway.py) 对齐：首帧 `{ "type": "init", "profile": "...", "token": "<HERMES_GATEWAY_TOKEN 若配置>" }`，随后 `{ "type": "chat", "session_id", "message" }` 等。需 `GATEWAY_ENABLED=1`（默认）以便 lifespan 启动子进程与 hub；未启用时连接以 4403 关闭。
 
 ---
 

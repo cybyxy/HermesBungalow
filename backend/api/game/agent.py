@@ -10,12 +10,14 @@
 - orchestrated_peer_turns_sync(primary_agent, user_message, auto_peer, game_service)
 - run_recursive_peer_invokes(...)
 - build_peer_hint_lines(agents)
+- maybe_append_peer_reply_queue_to_invoker_session(game_service, invoker, delegations)
 """
 from __future__ import annotations
 
 import json
 import queue
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -226,14 +228,7 @@ def _drain_agent_stream(
     return final, err, trace
 
 
-def resolve_game_agent_token(token: str, game_service: Any):
-    """Resolve an agent by id, profile, name, or display_name（ASCII 不区分大小写）。"""
-    t = token.strip()
-    if not t:
-        return None
-    tl = t.lower()
-    with game_service._lock:
-        agents = list(game_service.world.agents)
+def _match_agent_token(t: str, tl: str, agents: list[Any]):
     for a in agents:
         if a.id == t:
             return a
@@ -249,6 +244,87 @@ def resolve_game_agent_token(token: str, game_service: Any):
         dn = str(getattr(a, "display_name", "") or "").strip()
         if dn and (dn == t or dn.lower() == tl):
             return a
+    return None
+
+
+def resolve_world_agent_token(token: str, game_service: Any):
+    """Resolve persisted world agents for ``agent-relay-from-peer``.
+
+    **Id** 始终唯一命中。按 **profile / name / display_name** 匹配时，若有多名 Agent 同值则返回
+    ``None``，避免 ``relay_agent_id="default"`` 等歧义误转发（Hermes 常见多 Agent 共 profile ``default``）。
+    """
+    t = token.strip()
+    if not t:
+        return None
+    tl = t.lower()
+    with game_service._lock:
+        agents = list(game_service.world.agents)
+    for a in agents:
+        if a.id == t:
+            return a
+    prof_hits = [
+        a
+        for a in agents
+        if (str(getattr(a, "profile", "") or "").strip() and str(getattr(a, "profile", "")).strip().lower() == tl)
+    ]
+    if len(prof_hits) == 1:
+        return prof_hits[0]
+    if len(prof_hits) > 1:
+        return None
+    nm_hits = [
+        a
+        for a in agents
+        if (str(getattr(a, "name", "") or "").strip() and str(getattr(a, "name", "")).strip().lower() == tl)
+    ]
+    if len(nm_hits) == 1:
+        return nm_hits[0]
+    if len(nm_hits) > 1:
+        return None
+    dn_hits = [
+        a
+        for a in agents
+        if (str(getattr(a, "display_name", "") or "").strip() and str(getattr(a, "display_name", "")).strip().lower() == tl)
+    ]
+    if len(dn_hits) == 1:
+        return dn_hits[0]
+    return None
+
+
+def _cross_instance_visitor_agents(agents: list[Any]) -> list[Any]:
+    """Rows with ``peer_relay_base_url`` + ``peer_relay_agent_id`` (串门访客 / 远端代跑)."""
+    out: list[Any] = []
+    for a in agents:
+        if str(getattr(a, "peer_relay_base_url", "") or "").strip() and str(
+            getattr(a, "peer_relay_agent_id", "") or ""
+        ).strip():
+            out.append(a)
+    return out
+
+
+def _is_peer_visitor_alias_token(t: str, tl: str) -> bool:
+    """用户常发 ``@访客|…``，与 visitor 的 profile/id 不一定一致。"""
+    s = (t or "").strip()
+    if s in ("访客", "串门访客", "串門訪客"):
+        return True
+    if tl in ("visitor", "peer_visitor", "bungalow_visitor", "guest"):
+        return True
+    return False
+
+
+def resolve_game_agent_token(token: str, game_service: Any):
+    """Resolve an agent by id, profile, name, or display_name（ASCII 不区分大小写）; includes peer visitors."""
+    t = token.strip()
+    if not t:
+        return None
+    tl = t.lower()
+    agents = list(game_service.iter_agents_for_token_resolve())
+    hit = _match_agent_token(t, tl, agents)
+    if hit:
+        return hit
+    if _is_peer_visitor_alias_token(t, tl):
+        relay_rows = _cross_instance_visitor_agents(agents)
+        if len(relay_rows) == 1:
+            return relay_rows[0]
     return None
 
 
@@ -402,10 +478,68 @@ def build_peer_hint_lines(agents: list[Any]) -> str:
         "勿向用户声称多 Agent 已禁用。"
         "各 Agent 的 Hermes 会话由数字工作室**后端**按人绑定，**勿**向用户索取 session_id、"
         "**勿**让用户代调浏览器独占的本地 WebUI 接口；同伴回合由服务器直接发起。"
+        "若你在一轮里点名多名同伴且均产生回复，编排器会把各同伴正文**按顺序**写入你的 Hermes 会话（同伴回复队列），"
+        "请逐条消化，勿当作同时到达合并处理。"
         "同伴："
         + list_str
         + "。无需转交时不要写以 `@` 开头的该行。）\n\n"
     )
+
+
+def maybe_append_peer_reply_queue_to_invoker_session(
+    game_service: Any,
+    invoker: Any,
+    delegations: list[dict[str, Any]] | None,
+) -> None:
+    """当同一轮有 ≥2 条顶层同伴回复时，按序写入源 Agent 会话（单锁、一次 save），避免并发向源会话落多条用户消息。
+
+    仅处理 ``run_recursive_peer_invokes`` 返回的**顶层** ``delegations``；嵌套委派由同伴各自会话承担。
+    """
+    if not delegations:
+        return
+    invoker_id = getattr(invoker, "id", None)
+    if not invoker_id:
+        return
+
+    rows: list[tuple[str, str]] = []
+    for d in delegations:
+        if not isinstance(d, dict):
+            continue
+        if not d.get("ok"):
+            continue
+        rep = str(d.get("reply") or "").strip()
+        if not rep:
+            continue
+        tok = str(d.get("target") or "").strip()
+        peer = resolve_game_agent_token(tok, game_service)
+        label = (str(getattr(peer, "name", None) or "").strip() or tok) if peer else tok
+        rows.append((label, rep))
+    if len(rows) < 2:
+        return
+
+    from api.config import _get_session_agent_lock
+    from api.game.service import bungalow_session_tls_for_agent_id
+    from api.models import get_session
+
+    sid = game_service.ensure_hermes_session_for_agent(str(invoker_id))
+    n = len(rows)
+    with bungalow_session_tls_for_agent_id(game_service, str(invoker_id)):
+        with _get_session_agent_lock(sid):
+            s = get_session(sid)
+            for i, (label, rep) in enumerate(rows, start=1):
+                body = (
+                    f"【同伴回复队列 {i}/{n} · {label}】\n\n"
+                    f"{rep}\n\n"
+                    f"（本条由工作室编排器按序写入，共 {n} 条；请逐条消化后再处理下一条，勿将多条当作同时到达合并处理。）"
+                )
+                s.messages.append(
+                    {
+                        "role": "user",
+                        "content": body,
+                        "timestamp": int(time.time()),
+                    }
+                )
+            s.save()
 
 
 # 同伴 relay 专用：减轻模型误以为要用户中转带 session_id 调本地 API（全后端编排后常见误答）。
@@ -452,6 +586,108 @@ def _agent_self_invoke_tokens(agent: Any) -> set[str]:
     return {x for x in toks if x}
 
 
+def _args_summary_for_replay(args_obj: Any) -> str:
+    if not isinstance(args_obj, dict) or not args_obj:
+        return ""
+    try:
+        s = json.dumps(args_obj, ensure_ascii=False)
+    except (TypeError, ValueError):
+        s = str(args_obj)
+    return s[:800]
+
+
+def _replay_trace_rows_to_event_sink(
+    event_sink: Callable[[dict[str, Any]], None],
+    *,
+    run_id: str,
+    agent_id: str | None,
+    trace: list[dict[str, Any]],
+    final_reply: str,
+) -> None:
+    """Replay a finished turn's ``trace`` as orchestration SSE events (cross-peer has no live stream)."""
+    if not event_sink or not run_id or not agent_id:
+        return
+    rows_in = [x for x in (trace or []) if isinstance(x, dict)]
+    fr = (final_reply or "").strip()
+    rows = rows_in
+    if not rows and fr:
+        rows = [
+            {
+                "type": "reasoning",
+                "text": (
+                    "（对端未上报分步推理 trace；以下为模型完整回复，便于在访客侧查看本轮输出。）\n\n" + fr
+                ),
+            }
+        ]
+        final_reply = ""
+    step_id = uuid.uuid4().hex
+    event_sink(
+        {
+            "type": "step_begin",
+            "run_id": run_id,
+            "step_id": step_id,
+            "agent_id": agent_id,
+            "stream_id": "",
+        }
+    )
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rt = row.get("type")
+        if rt == "reasoning":
+            t = str(row.get("text") or "")
+            if t.strip():
+                event_sink(
+                    {
+                        "type": "reasoning_delta",
+                        "run_id": run_id,
+                        "step_id": step_id,
+                        "agent_id": agent_id,
+                        "text": t,
+                    }
+                )
+        elif rt == "tool":
+            event_sink(
+                {
+                    "type": "tool_start",
+                    "run_id": run_id,
+                    "step_id": step_id,
+                    "agent_id": agent_id,
+                    "name": str(row.get("name") or "工具"),
+                    "args_summary": _args_summary_for_replay(row.get("args")),
+                }
+            )
+        elif rt == "tool_complete":
+            ok = not bool(row.get("is_error"))
+            prev = str(row.get("preview") or "").strip()
+            dur = row.get("duration")
+            bits = [x for x in (prev, f"耗时: {dur}" if dur is not None else "") if x]
+            event_sink(
+                {
+                    "type": "tool_end",
+                    "run_id": run_id,
+                    "step_id": step_id,
+                    "agent_id": agent_id,
+                    "name": str(row.get("name") or "工具"),
+                    "ok": ok,
+                    "result_summary": "\n".join(bits) if bits else ("完成" if ok else "失败"),
+                    "error": None if ok else (prev or "失败"),
+                }
+            )
+    fr = (final_reply or "").strip()
+    if fr:
+        event_sink(
+            {
+                "type": "assistant_message",
+                "run_id": run_id,
+                "step_id": step_id,
+                "agent_id": agent_id,
+                "markdown": fr,
+            }
+        )
+    event_sink({"type": "step_done", "run_id": run_id, "step_id": step_id, "agent_id": agent_id})
+
+
 def run_recursive_peer_invokes(
     game_service: Any,
     invoker_agent: Any,
@@ -464,6 +700,8 @@ def run_recursive_peer_invokes(
     event_sink: Callable[[dict[str, Any]], None] | None = None,
     run_id: str = "",
 ) -> list[dict[str, Any]]:
+    from api.game.peers import cross_peer_agent_relay_sync
+
     if depth > MAX_INVOKE_DEPTH:
         return []
     expanded = expand_broadcast_invokes(invoker_agent, agents, invoke_rows)
@@ -479,7 +717,8 @@ def run_recursive_peer_invokes(
             out.append({"target": tt, "ok": False, "error": "target_not_found", "nested": []})
             continue
         peer_prof = str(getattr(peer, "profile", "") or "default")
-        peer_sid = game_service.ensure_hermes_session_for_agent(peer.id)
+        relay_b = str(getattr(peer, "peer_relay_base_url", "") or "").strip()
+        relay_id = str(getattr(peer, "peer_relay_agent_id", "") or "").strip()
         if event_sink and run_id:
             event_sink(
                 {
@@ -490,14 +729,49 @@ def run_recursive_peer_invokes(
                     "reason": tt,
                 }
             )
-        peer_turn = sync_session_turn(
-            peer_sid,
-            compose_peer_handoff(peer_hint, invoker_full_reply, submsg),
-            game_service,
-            bungalow_agent_id=peer.id,
-            event_sink=event_sink,
-            run_id=run_id,
-        )
+        handoff_body = compose_peer_handoff(peer_hint, invoker_full_reply, submsg)
+        if relay_b and relay_id:
+            try:
+                peer_turn = cross_peer_agent_relay_sync(
+                    relay_b, relay_id, handoff_body, allow=game_service.allowed_peer_bases()
+                )
+            except Exception as ex:
+                peer_turn = {
+                    "ok": False,
+                    "reply": "",
+                    "error": str(ex),
+                    "trace": [],
+                    "profile": peer_prof,
+                }
+            if event_sink and run_id:
+                pid = getattr(peer, "id", None)
+                if not peer_turn.get("ok") and peer_turn.get("error"):
+                    event_sink(
+                        {
+                            "type": "error",
+                            "run_id": run_id,
+                            "agent_id": pid,
+                            "message": str(peer_turn.get("error") or "relay_failed"),
+                            "fatal": False,
+                        }
+                    )
+                _replay_trace_rows_to_event_sink(
+                    event_sink,
+                    run_id=run_id,
+                    agent_id=pid,
+                    trace=list(peer_turn.get("trace") or []),
+                    final_reply=str(peer_turn.get("reply") or ""),
+                )
+        else:
+            peer_sid = game_service.ensure_hermes_session_for_agent(peer.id)
+            peer_turn = sync_session_turn(
+                peer_sid,
+                handoff_body,
+                game_service,
+                bungalow_agent_id=peer.id,
+                event_sink=event_sink,
+                run_id=run_id,
+            )
         nested_text = str(peer_turn.get("reply") or "")
         nested_invokes = parse_hermes_bungalow_invokes(nested_text)
         nested_list: list[dict[str, Any]] = []
@@ -565,4 +839,5 @@ def orchestrated_peer_turns_sync(
         event_sink=event_sink,
         run_id=run_id,
     )
+    maybe_append_peer_reply_queue_to_invoker_session(game_service, primary_agent, delegations)
     return {"ok": bool(prim.get("ok")), "primary": prim, "delegations": delegations}

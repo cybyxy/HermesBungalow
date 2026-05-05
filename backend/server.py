@@ -5,6 +5,21 @@ import sys
 from pathlib import Path
 
 
+def _load_bungalow_dotenv() -> None:
+    """Load ``backend/.env`` then parent ``.env`` (repo or release root); earlier file wins on duplicate keys."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    backend_dir = Path(__file__).resolve().parent
+    for env_path in (backend_dir / ".env", backend_dir.parent / ".env"):
+        if env_path.is_file():
+            load_dotenv(env_path, override=False)
+
+
+_load_bungalow_dotenv()
+
+
 def _bootstrap_system_hermes_env() -> None:
     """Align with the user's installed Hermes home (~/.hermes: config, .env, agent).
 
@@ -23,11 +38,17 @@ def _bootstrap_system_hermes_env() -> None:
     if agent.is_dir():
         os.environ.setdefault("HERMES_WEBUI_AGENT_DIR", str(agent))
         venv_py: Path | None = None
-        for rel in ("venv/bin/python", ".venv/bin/python"):
-            cand = agent / rel
-            if cand.is_file():
-                venv_py = cand
-                break
+        if os.name == "nt":
+            for cand in (agent / "venv" / "Scripts" / "python.exe", agent / ".venv" / "Scripts" / "python.exe"):
+                if cand.is_file():
+                    venv_py = cand
+                    break
+        if venv_py is None:
+            for rel in ("venv/bin/python", ".venv/bin/python"):
+                cand = agent / rel
+                if cand.is_file():
+                    venv_py = cand
+                    break
         if venv_py is not None:
             os.environ.setdefault("HERMES_WEBUI_PYTHON", str(venv_py))
             try:
@@ -43,7 +64,8 @@ _bootstrap_system_hermes_env()
 # If proxies still rewrite Host, these origins pass CSRF without opening wide public access.
 os.environ.setdefault(
     "HERMES_WEBUI_ALLOWED_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000,http://[::1]:3000",
+    "http://localhost:3000,http://127.0.0.1:3000,http://[::1]:3000,"
+    "http://127.0.0.1:8000,http://localhost:8000,http://[::1]:8000",
 )
 
 import asyncio
@@ -65,20 +87,45 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 import uvicorn
 from uvicorn.config import LOGGING_CONFIG as UVICORN_LOGGING_CONFIG
 from starlette.applications import Starlette
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route, WebSocketRoute
+from starlette.exceptions import HTTPException
+from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+
+class SPASafeStaticFiles(StaticFiles):
+    """Serve ``frontend/dist``; on 404 return ``index.html`` so client routes survive refresh (all OS)."""
+
+    async def get_response(self, path: str, scope: Scope):
+        try:
+            return await super().get_response(path, scope)
+        except HTTPException as exc:
+            if exc.status_code != 404 or not self.html:
+                raise
+            return await super().get_response("index.html", scope)
+
 from api.game.gateway_hub import GatewayHub, gateway_enabled
+from api.game.peers import (
+    extract_peer_token,
+    normalize_peer_base_url,
+    peer_auth_configured,
+    peer_base_in_allowlist,
+    public_base_for_outbound,
+    server_peer_token,
+    verify_peer_token,
+)
 from api.multi_agent_gateway import start_all_agents, stop_all_agents
 from api.game.handoff_parser import is_broadcast_all_handoff_token, parse_user_handoff_prefix
 from api.config import MAX_UPLOAD_BYTES
-from api.game.service import GameService, bungalow_session_tls_for_agent_id, read_json_body
+from api.game.service import GameService, PeerVisitor, bungalow_session_tls_for_agent_id, read_json_body
 from api.models import get_session
 from api.upload import _sanitize_upload_name
 from api.workspace import safe_resolve_ws
@@ -92,6 +139,7 @@ from api.streaming import register_bungalow_game_service
 
 register_bungalow_game_service(game)
 WS_INCOMING_MAX_BYTES = 65536
+_PEER_HTTP_SEM = threading.BoundedSemaphore(8)
 
 from api.game import agent as bung_agent
 
@@ -99,6 +147,65 @@ from api.game import agent as bung_agent
 def _sync_session_turn(session_id: str, message: str, *, bungalow_agent_id: str | None = None) -> dict[str, Any]:
     """Run one Hermes turn on an existing session (keeps conversation history)."""
     return bung_agent.sync_session_turn(session_id, message, game, bungalow_agent_id=bungalow_agent_id)
+
+
+def _relay_local_agent_turn_blocking(agent: Any, message: str) -> dict[str, Any]:
+    sid = game.ensure_hermes_session_for_agent(agent.id)
+    return _sync_session_turn(sid, message, bungalow_agent_id=agent.id)
+
+
+def _cross_peer_relay_sync(base_url: str, relay_agent_id: str, message: str) -> dict[str, Any]:
+    from api.game.peers import cross_peer_agent_relay_sync
+
+    return cross_peer_agent_relay_sync(base_url, relay_agent_id, message, allow=game.allowed_peer_bases())
+
+
+def _http_post_peer_json(url: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    with _PEER_HTTP_SEM:
+        with httpx.Client(timeout=120.0) as client:
+            r = client.post(url, json=body)
+    try:
+        data = r.json() if r.content else {}
+    except json.JSONDecodeError:
+        data = {"ok": False, "error": "invalid_json", "detail": (r.text or "")[:500]}
+    if not isinstance(data, dict):
+        data = {"ok": False, "error": "not_object"}
+    return r.status_code, data
+
+
+def _peer_auth_token_from_body_or_preset(body: dict[str, Any], request: Request, preset: dict[str, Any] | None) -> str:
+    t = extract_peer_token(body, request).strip()
+    if t:
+        return t
+    if preset is not None:
+        return str(preset.get("peer_token") or "").strip()
+    return ""
+
+
+def _verify_peer_token_body_or_preset(body: dict[str, Any], request: Request, preset: dict[str, Any] | None) -> JSONResponse | None:
+    auth = _peer_auth_token_from_body_or_preset(body, request, preset)
+    if not auth:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "peer_token_required",
+                "hint": "填写 peer_token 或在预设中保存与服务器一致的 token",
+            },
+            status_code=401,
+        )
+    if not verify_peer_token(auth):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    return None
+
+
+def _default_outbound_relay_agent_id() -> str:
+    with game._lock:
+        for ag in game.world.agents:
+            if not str(getattr(ag, "peer_relay_base_url", "") or "").strip():
+                rid = str(getattr(ag, "id", "") or "").strip()
+                if rid:
+                    return rid
+    return ""
 
 
 def _orchestrated_peer_turns_sync(
@@ -174,6 +281,7 @@ def _orchestrate_turn_sync(
             delegations = _run_recursive_peer_invokes(
                 primary, [(token, sub)], 0, "", peer_hint, agents, event_sink=event_sink, run_id=run_id
             )
+            bung_agent.maybe_append_peer_reply_queue_to_invoker_session(game, primary, delegations)
             return {
                 "ok": True,
                 "primary": {"ok": True, "reply": "", "error": None, "user_handoff": "broadcast"},
@@ -185,6 +293,7 @@ def _orchestrate_turn_sync(
         delegations = _run_recursive_peer_invokes(
             primary, [(token, sub)], 0, "", peer_hint, agents, event_sink=event_sink, run_id=run_id
         )
+        bung_agent.maybe_append_peer_reply_queue_to_invoker_session(game, primary, delegations)
         return {
             "ok": True,
             "primary": {"ok": True, "reply": "", "error": None, "user_handoff": "relay"},
@@ -200,28 +309,15 @@ def _build_peer_hint_lines(agents: list[Any]) -> str:
 
 
 def _resolve_game_agent_token(token: str):
-    t = token.strip()
-    if not t:
-        return None
-    tl = t.lower()
-    with game._lock:
-        agents = list(game.world.agents)
-    for a in agents:
-        if a.id == t:
-            return a
-    for a in agents:
-        prof = str(getattr(a, "profile", "") or "").strip()
-        if prof and (prof == t or prof.lower() == tl):
-            return a
-    for a in agents:
-        nm = str(getattr(a, "name", "") or "").strip()
-        if nm and (nm == t or nm.lower() == tl):
-            return a
-    for a in agents:
-        dn = str(getattr(a, "display_name", "") or "").strip()
-        if dn and (dn == t or dn.lower() == tl):
-            return a
-    return None
+    from api.game.agent import resolve_game_agent_token
+
+    return resolve_game_agent_token(token, game)
+
+
+def _resolve_world_agent_token(token: str):
+    from api.game.agent import resolve_world_agent_token
+
+    return resolve_world_agent_token(token, game)
 
 
 class _BodySink:
@@ -343,20 +439,29 @@ async def health(_: Request) -> JSONResponse:
 
 
 async def get_state(_: Request) -> JSONResponse:
-    return JSONResponse(game.snapshot())
+    # 避免浏览器/CDN 缓存游戏快照，否则删除任务后 GET 仍可能拿到旧 tasks
+    return JSONResponse(
+        game.snapshot(),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 async def get_agents(_: Request) -> JSONResponse:
     rows: list[dict[str, Any]] = []
-    for a in game.world.agents:
+    for a in game.iter_agents_for_api():
         d = dict(a.to_dict())
-        sid = game.get_hermes_session_id(a.id)
-        if not sid:
-            try:
-                sid = game.ensure_hermes_session_for_agent(a.id)
-            except Exception:
-                sid = ""
-        d["hermes_session_id"] = sid or ""
+        relay_b = str(getattr(a, "peer_relay_base_url", "") or "").strip()
+        relay_id = str(getattr(a, "peer_relay_agent_id", "") or "").strip()
+        if relay_b and relay_id:
+            d["hermes_session_id"] = ""
+        else:
+            sid = game.get_hermes_session_id(a.id)
+            if not sid:
+                try:
+                    sid = game.ensure_hermes_session_for_agent(a.id)
+                except Exception:
+                    sid = ""
+            d["hermes_session_id"] = sid or ""
         rows.append(d)
     return JSONResponse({"agents": rows})
 
@@ -367,6 +472,12 @@ async def get_tasks(_: Request) -> JSONResponse:
 
 async def get_rooms(_: Request) -> JSONResponse:
     return JSONResponse({"rooms": [r.to_dict() for r in game.world.rooms]})
+
+
+async def get_tracker_timeline(request: Request) -> JSONResponse:
+    from api.game.task_tracker import parse_timeline
+    task_id = request.query_params.get("task_id") or None
+    return JSONResponse(parse_timeline(task_id))
 
 
 async def post_agent(request: Request) -> JSONResponse:
@@ -394,11 +505,87 @@ async def post_agent_move(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+def _is_peer_visitor_agent_row(agent: Any) -> bool:
+    u = str(getattr(agent, "peer_relay_base_url", "") or "").strip()
+    r = str(getattr(agent, "peer_relay_agent_id", "") or "").strip()
+    return bool(u and r)
+
+
 async def post_task(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
+    primary_hint = str(body.get("primary_agent_id") or body.get("agent_id") or "").strip()
+    resolved_from_hint: Any | None = None
+    if primary_hint:
+        from api.game.agent import resolve_game_agent_token
+
+        resolved_from_hint = resolve_game_agent_token(primary_hint, game)
+        if not resolved_from_hint:
+            return JSONResponse({"ok": False, "error": "primary_agent_not_found"}, status_code=404)
+        if game.is_peer_visitor_agent_id(resolved_from_hint.id) or _is_peer_visitor_agent_row(resolved_from_hint):
+            return JSONResponse({"ok": False, "error": "peer_visitor_cannot_orchestrate"}, status_code=400)
+
     task = game.create_task(body)
     game.persist()
-    return JSONResponse({"ok": True, "task": task.to_dict()})
+
+    primary: Any | None = resolved_from_hint
+    if not primary:
+        try:
+            from api.game.agent import resolve_game_agent_token
+
+            primary = resolve_game_agent_token("default", game)
+        except Exception:
+            primary = None
+    if not primary:
+        for a in game.world.agents:
+            if game.is_peer_visitor_agent_id(a.id):
+                continue
+            if _is_peer_visitor_agent_row(a):
+                continue
+            primary = a
+            break
+    # Last resort: align with legacy「首个未填 relay base 的存档 Agent」，避免全员误标 relay 时无人可编排
+    if not primary:
+        for a in game.world.agents:
+            if game.is_peer_visitor_agent_id(a.id):
+                continue
+            if not str(getattr(a, "peer_relay_base_url", "") or "").strip():
+                primary = a
+                break
+    if not primary:
+        return JSONResponse(
+            {
+                "ok": True,
+                "task": task.to_dict(),
+                "orchestration_user_preview": "",
+                "suggested_primary_agent_id": "",
+            }
+        )
+
+    # Build user message from task fields, exactly as if user typed it in the chat bar.
+    parts = [f"任务名称：{task.name}"]
+    if getattr(task, "catalog", None):
+        parts.append(f"任务目录：{task.catalog}")
+    if task.description:
+        parts.append(f"目标描述：{task.description}")
+    if task.deliverables:
+        parts.append(f"交付产物：{task.deliverables}")
+    if task.acceptance_criteria:
+        parts.append(f"验收标准：{task.acceptance_criteria}")
+    if task.due_at:
+        parts.append(f"完成日期：{task.due_at}")
+    if task.estimated_hours:
+        parts.append(f"预计工时：{task.estimated_hours}小时")
+    task_prompt = ("请着手完成以下任务：\n" + "\n".join(parts)).strip()
+
+    # 编排改由前端走与底栏相同的 ``POST …/agent-chat-orchestrated/run`` + SSE，避免双轨、多 worker 下队列不一致。
+    return JSONResponse(
+        {
+            "ok": True,
+            "task": task.to_dict(),
+            "orchestration_user_preview": task_prompt,
+            "suggested_primary_agent_id": primary.id,
+        }
+    )
 
 
 async def post_task_assign(request: Request) -> JSONResponse:
@@ -413,6 +600,24 @@ async def post_task_assign(request: Request) -> JSONResponse:
 async def post_task_complete(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
     res = game.complete_task(int(body.get("task_id", 0)), int(body.get("quality", 0)))
+    game.persist()
+    if not res.get("ok"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse(res)
+
+
+async def post_task_update(request: Request) -> JSONResponse:
+    body = read_json_body(await request.body())
+    res = game.update_task(body)
+    game.persist()
+    if not res.get("ok"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse(res)
+
+
+async def post_task_delete(request: Request) -> JSONResponse:
+    body = read_json_body(await request.body())
+    res = game.delete_task(int(body.get("task_id", 0)))
     game.persist()
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
@@ -629,14 +834,15 @@ async def post_agent_relay_chat(request: Request) -> JSONResponse:
     agent = _resolve_game_agent_token(token)
     if not agent:
         return JSONResponse({"ok": False, "error": "target_agent_not_found", "token": token}, status_code=404)
+    relay_b = str(getattr(agent, "peer_relay_base_url", "") or "").strip()
+    relay_id = str(getattr(agent, "peer_relay_agent_id", "") or "").strip()
     wo_id = game.monitor_start_work_order(f"relay → {token}: {message}", agent.id)
     loop = asyncio.get_event_loop()
     try:
-        sid = game.ensure_hermes_session_for_agent(agent.id)
-        result = await loop.run_in_executor(
-            None,
-            partial(_sync_session_turn, sid, message, bungalow_agent_id=agent.id),
-        )
+        if relay_b and relay_id:
+            result = await loop.run_in_executor(None, partial(_cross_peer_relay_sync, relay_b, relay_id, message))
+        else:
+            result = await loop.run_in_executor(None, partial(_relay_local_agent_turn_blocking, agent, message))
     except Exception as e:
         game.monitor_abort_work_order(wo_id, str(e))
         return JSONResponse({"ok": False, "error": "relay_failed", "detail": str(e)}, status_code=500)
@@ -647,6 +853,286 @@ async def post_agent_relay_chat(request: Request) -> JSONResponse:
     result = dict(result)
     result["work_order_id"] = wo_id
     return JSONResponse(result)
+
+
+async def post_agent_relay_from_peer(request: Request) -> JSONResponse:
+    """Machine-to-machine: run one Hermes turn for a local world agent (peer token only)."""
+    body = read_json_body(await request.body())
+    if not peer_auth_configured():
+        return JSONResponse({"ok": False, "error": "peer_auth_not_configured"}, status_code=503)
+    tok = extract_peer_token(body, request)
+    if not verify_peer_token(tok):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    target = str(body.get("target_agent_id") or "").strip()
+    message = str(body.get("message") or "").strip()
+    if not target or not message:
+        return JSONResponse({"ok": False, "error": "target_agent_id_and_message_required"}, status_code=400)
+    agent = _resolve_world_agent_token(target)
+    if not agent:
+        return JSONResponse({"ok": False, "error": "target_agent_not_found"}, status_code=404)
+    wo_id = game.monitor_start_work_order(f"from-peer → {agent.id}", agent.id)
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, partial(_relay_local_agent_turn_blocking, agent, message))
+    except Exception as e:
+        game.monitor_abort_work_order(wo_id, str(e))
+        return JSONResponse({"ok": False, "error": "relay_failed", "detail": str(e)}, status_code=500)
+    try:
+        game.monitor_record_relay(wo_id, agent.id, message, result)
+    except Exception:
+        pass
+    result = dict(result)
+    result["work_order_id"] = wo_id
+    try:
+        tr = result.get("trace")
+        if isinstance(tr, str):
+            try:
+                tr = json.loads(tr)
+            except json.JSONDecodeError:
+                tr = []
+        if not isinstance(tr, list):
+            tr = []
+        tr = [x for x in tr if isinstance(x, dict)]
+        reply_txt = str(result.get("reply") or "").strip()
+        reply_preview_out = reply_txt[:8000]
+        if not tr and reply_txt:
+            tr = [
+                {
+                    "type": "reasoning",
+                    "text": "（本轮未生成分步 trace；以下为模型完整回复。）\n\n" + reply_txt[:12000],
+                }
+            ]
+            reply_preview_out = ""
+        try:
+            tr = json.loads(json.dumps(tr, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            tr = []
+        game._broadcast(
+            "agent_status",
+            {
+                "action": "peer_relay_inference",
+                "target_agent_id": agent.id,
+                "trace": tr,
+                "reply_preview": reply_preview_out,
+                "ok": bool(result.get("ok")),
+                "error": result.get("error"),
+            },
+        )
+    except Exception:
+        pass
+    return JSONResponse(result)
+
+
+async def post_peers_visit(request: Request) -> JSONResponse:
+    body = read_json_body(await request.body())
+    if not peer_auth_configured():
+        return JSONResponse({"ok": False, "error": "peer_auth_not_configured"}, status_code=503)
+    tok = extract_peer_token(body, request)
+    if not verify_peer_token(tok):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    try:
+        tgt_raw = str(body.get("target_base_url") or "").strip()
+        if tgt_raw:
+            tgt = normalize_peer_base_url(tgt_raw)
+            if not peer_base_in_allowlist(tgt, allow=game.allowed_peer_bases()):
+                return JSONResponse({"ok": False, "error": "target_not_in_peer_allowlist"}, status_code=403)
+            pub = public_base_for_outbound(request)
+            if not pub:
+                return JSONResponse(
+                    {"ok": False, "error": "public_base_required", "hint": "set HERMES_BUNGALOW_PUBLIC_BASE or rely on request URL"},
+                    status_code=400,
+                )
+            forward = {k: v for k, v in body.items() if k not in ("target_base_url", "peer_token")}
+            forward["source_base_url"] = pub
+            forward["peer_token"] = server_peer_token()
+            url = f"{tgt}/api/game/peers/visit"
+            loop = asyncio.get_event_loop()
+            status, data = await loop.run_in_executor(None, partial(_http_post_peer_json, url, forward))
+            return JSONResponse(data, status_code=status if status >= 400 else 200)
+        src = normalize_peer_base_url(str(body.get("source_base_url") or ""))
+        if not peer_base_in_allowlist(src, allow=game.allowed_peer_bases()):
+            return JSONResponse({"ok": False, "error": "source_not_in_peer_allowlist"}, status_code=403)
+        relay_agent_id = str(body.get("relay_agent_id") or "").strip()
+        if not relay_agent_id:
+            return JSONResponse({"ok": False, "error": "relay_agent_id_required"}, status_code=400)
+        relay_ag = bung_agent.resolve_world_agent_token(relay_agent_id, game)
+        if not relay_ag:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "relay_agent_not_found",
+                    "hint": "请使用本机存档里存在的 Agent **游戏 id**（推荐）；若用 profile/姓名，必须在全场唯一。"
+                    " 多个 Agent 的 Hermes profile 均为 default 时，不能用 default 作 relay_agent_id。",
+                },
+                status_code=400,
+            )
+        relay_agent_id = str(getattr(relay_ag, "id", "") or "").strip()
+        vid = "pv_" + uuid.uuid4().hex[:12]
+        v = PeerVisitor(
+            visitor_id=vid,
+            relay_base_url=src,
+            relay_agent_id=relay_agent_id,
+            name=str(body.get("name") or relay_agent_id),
+            display_name=str(body.get("display_name") or body.get("name") or relay_agent_id),
+            profession=str(body.get("profession") or ""),
+            profile=str(body.get("profile") or ""),
+            location=str(body.get("location") or "休息室"),
+        )
+        game.register_peer_visitor(v)
+        return JSONResponse({"ok": True, "visitor_id": vid, "bungalow_peer_api": 1})
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": "invalid_peer_url", "detail": str(e)}, status_code=400)
+
+
+async def post_peers_leave(request: Request) -> JSONResponse:
+    body = read_json_body(await request.body())
+    if not peer_auth_configured():
+        return JSONResponse({"ok": False, "error": "peer_auth_not_configured"}, status_code=503)
+    tok = extract_peer_token(body, request)
+    if not verify_peer_token(tok):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    try:
+        tgt_raw = str(body.get("target_base_url") or "").strip()
+        if tgt_raw:
+            tgt = normalize_peer_base_url(tgt_raw)
+            if not peer_base_in_allowlist(tgt, allow=game.allowed_peer_bases()):
+                return JSONResponse({"ok": False, "error": "target_not_in_peer_allowlist"}, status_code=403)
+            vid = str(body.get("visitor_id") or "").strip()
+            if not vid:
+                return JSONResponse({"ok": False, "error": "visitor_id_required"}, status_code=400)
+            forward = {"visitor_id": vid, "peer_token": server_peer_token()}
+            url = f"{tgt}/api/game/peers/leave"
+            loop = asyncio.get_event_loop()
+            status, data = await loop.run_in_executor(None, partial(_http_post_peer_json, url, forward))
+            return JSONResponse(data, status_code=status if status >= 400 else 200)
+        vid = str(body.get("visitor_id") or "").strip()
+        if not vid:
+            return JSONResponse({"ok": False, "error": "visitor_id_required"}, status_code=400)
+        if not game.revoke_peer_visitor(vid):
+            return JSONResponse({"ok": False, "error": "visitor_not_found"}, status_code=404)
+        return JSONResponse({"ok": True})
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": "invalid_peer_url", "detail": str(e)}, status_code=400)
+
+
+async def get_game_peers(_: Request) -> JSONResponse:
+    try:
+        return JSONResponse({"peers": game.allowed_peer_bases()})
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+async def put_peers_presets(request: Request) -> JSONResponse:
+    body = read_json_body(await request.body())
+    raw = body.get("presets")
+    if not isinstance(raw, list):
+        return JSONResponse({"ok": False, "error": "presets_array_required"}, status_code=400)
+    try:
+        out = game.put_peer_presets(raw)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": "invalid_peer_preset", "detail": str(e)}, status_code=400)
+    return JSONResponse(out)
+
+
+async def post_peers_visit_by_preset(request: Request) -> JSONResponse:
+    body = read_json_body(await request.body())
+    if not peer_auth_configured():
+        return JSONResponse({"ok": False, "error": "peer_auth_not_configured"}, status_code=503)
+    preset_id = str(body.get("preset_id") or "").strip()
+    preset = game.get_peer_preset(preset_id)
+    if not preset:
+        return JSONResponse({"ok": False, "error": "preset_not_found"}, status_code=404)
+    err_auth = _verify_peer_token_body_or_preset(body, request, preset)
+    if err_auth is not None:
+        return err_auth
+    if game.get_active_outbound_visit():
+        return JSONResponse({"ok": False, "error": "already_visiting"}, status_code=409)
+    try:
+        tgt = normalize_peer_base_url(str(preset.get("base_url") or ""))
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": "invalid_peer_url", "detail": str(e)}, status_code=400)
+    if not peer_base_in_allowlist(tgt, allow=game.allowed_peer_bases()):
+        return JSONResponse({"ok": False, "error": "target_not_in_peer_allowlist"}, status_code=403)
+    pub = public_base_for_outbound(request)
+    if not pub:
+        return JSONResponse(
+            {"ok": False, "error": "public_base_required", "hint": "set HERMES_BUNGALOW_PUBLIC_BASE or rely on request URL"},
+            status_code=400,
+        )
+    relay_agent_id = str(body.get("relay_agent_id") or preset.get("relay_agent_id") or "").strip()
+    if not relay_agent_id:
+        relay_agent_id = _default_outbound_relay_agent_id()
+    if not relay_agent_id:
+        return JSONResponse(
+            {"ok": False, "error": "relay_agent_id_required", "hint": "本机没有可用的本地 Agent 作为串门代表"},
+            status_code=400,
+        )
+    relay_ag = bung_agent.resolve_world_agent_token(relay_agent_id, game)
+    if not relay_ag:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "relay_agent_not_found",
+                "hint": "请使用本机存档里存在的 Agent **游戏 id**（推荐）；若用 profile/姓名，必须在全场唯一。",
+            },
+            status_code=400,
+        )
+    relay_agent_id = str(getattr(relay_ag, "id", "") or "").strip()
+    forward_tok = str(preset.get("peer_token") or "").strip() or server_peer_token()
+    forward: dict[str, Any] = {
+        "source_base_url": pub,
+        "relay_agent_id": relay_agent_id,
+        "peer_token": forward_tok,
+        "name": str(body.get("name") or getattr(relay_ag, "name", "") or relay_agent_id),
+        "display_name": str(
+            body.get("display_name")
+            if body.get("display_name") not in (None, "")
+            else (getattr(relay_ag, "display_name", None) or body.get("name") or getattr(relay_ag, "name", "") or relay_agent_id)
+        ),
+        "profession": str(body.get("profession") or getattr(relay_ag, "profession", "") or ""),
+        "profile": str(body.get("profile") or getattr(relay_ag, "profile", "") or ""),
+        "location": str(body.get("location") or getattr(relay_ag, "location", "") or "休息室"),
+    }
+    url = f"{tgt}/api/game/peers/visit"
+    loop = asyncio.get_event_loop()
+    status, data = await loop.run_in_executor(None, partial(_http_post_peer_json, url, forward))
+    if status < 400 and isinstance(data, dict) and data.get("ok") and data.get("visitor_id"):
+        game.set_active_outbound_visit(
+            preset_id,
+            str(preset.get("label") or preset_id),
+            tgt,
+            str(data["visitor_id"]),
+        )
+    return JSONResponse(data, status_code=status if status >= 400 else 200)
+
+
+async def post_peers_leave_outbound(request: Request) -> JSONResponse:
+    body = read_json_body(await request.body())
+    if not peer_auth_configured():
+        return JSONResponse({"ok": False, "error": "peer_auth_not_configured"}, status_code=503)
+    active = game.get_active_outbound_visit()
+    if not active:
+        return JSONResponse({"ok": False, "error": "not_visiting"}, status_code=400)
+    preset_id_active = str(active.get("preset_id") or "").strip()
+    preset_active = game.get_peer_preset(preset_id_active) if preset_id_active else None
+    err_auth = _verify_peer_token_body_or_preset(body, request, preset_active)
+    if err_auth is not None:
+        return err_auth
+    try:
+        tgt = normalize_peer_base_url(str(active.get("target_base_url") or ""))
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": "invalid_peer_url", "detail": str(e)}, status_code=400)
+    vid = str(active.get("visitor_id") or "").strip()
+    if not vid:
+        return JSONResponse({"ok": False, "error": "visitor_id_missing"}, status_code=500)
+    forward_tok = str((preset_active or {}).get("peer_token") or "").strip() or server_peer_token()
+    forward = {"visitor_id": vid, "peer_token": forward_tok}
+    url = f"{tgt}/api/game/peers/leave"
+    loop = asyncio.get_event_loop()
+    status, data = await loop.run_in_executor(None, partial(_http_post_peer_json, url, forward))
+    if status < 400 and isinstance(data, dict) and data.get("ok"):
+        game.clear_active_outbound_visit()
+    return JSONResponse(data, status_code=status if status >= 400 else 200)
 
 
 async def post_agent_chat_orchestrated(request: Request) -> JSONResponse:
@@ -853,6 +1339,8 @@ async def post_game_hermes_session(request: Request) -> JSONResponse:
     agent = _resolve_game_agent_token(agent_id)
     if not agent:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
+    if str(getattr(agent, "peer_relay_base_url", "") or "").strip():
+        return JSONResponse({"ok": False, "error": "peer_visitor_no_local_session"}, status_code=400)
     loop = asyncio.get_event_loop()
     try:
         sid = await loop.run_in_executor(None, game.ensure_hermes_session_for_agent, agent.id)
@@ -876,6 +1364,8 @@ async def post_game_agent_upload_attachment(request: Request) -> JSONResponse:
     agent = _resolve_game_agent_token(agent_id)
     if not agent:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
+    if str(getattr(agent, "peer_relay_base_url", "") or "").strip():
+        return JSONResponse({"ok": False, "error": "peer_visitor_no_local_session"}, status_code=400)
     raw = await up.read()
     if len(raw) > MAX_UPLOAD_BYTES:
         return JSONResponse({"ok": False, "error": "file_too_large"}, status_code=413)
@@ -966,6 +1456,15 @@ async def gateway_ws(ws: WebSocket) -> None:
         hub.unregister(ws)
 
 
+async def multi_agent_ws(ws: WebSocket) -> None:
+    if not gateway_enabled():
+        await ws.close(code=4403)
+        return
+    from api.multi_agent_gateway import gateway as multi_agent_gateway_singleton
+
+    await multi_agent_gateway_singleton.handle(ws)
+
+
 @asynccontextmanager
 async def lifespan(_: Starlette):
     # Startup: begin hub pump before yielding so it's ready when connections arrive
@@ -988,11 +1487,14 @@ routes: list[Route | WebSocketRoute] = [
     Route("/api/game/state", get_state, methods=["GET"]),
     Route("/api/game/agents", get_agents, methods=["GET"]),
     Route("/api/game/tasks", get_tasks, methods=["GET"]),
+    Route("/api/game/tracker/timeline", get_tracker_timeline, methods=["GET"]),
     Route("/api/game/rooms", get_rooms, methods=["GET"]),
     Route("/api/game/agent", post_agent, methods=["POST"]),
     Route("/api/game/agent/update", post_agent_update, methods=["POST"]),
     Route("/api/game/agent/move", post_agent_move, methods=["POST"]),
     Route("/api/game/task", post_task, methods=["POST"]),
+    Route("/api/game/task/update", post_task_update, methods=["POST"]),
+    Route("/api/game/task/delete", post_task_delete, methods=["POST"]),
     Route("/api/game/task/assign", post_task_assign, methods=["POST"]),
     Route("/api/game/task/complete", post_task_complete, methods=["POST"]),
     Route("/api/game/greeting", post_greeting, methods=["POST"]),
@@ -1008,6 +1510,13 @@ routes: list[Route | WebSocketRoute] = [
     Route("/api/game/agent/profile-files", get_agent_profile_files, methods=["GET"]),
     Route("/api/game/agent/profile-files/save", post_agent_profile_files_save, methods=["POST"]),
     Route("/api/game/agent-relay", post_agent_relay_chat, methods=["POST"]),
+    Route("/api/game/agent-relay-from-peer", post_agent_relay_from_peer, methods=["POST"]),
+    Route("/api/game/peers/visit", post_peers_visit, methods=["POST"]),
+    Route("/api/game/peers/visit-by-preset", post_peers_visit_by_preset, methods=["POST"]),
+    Route("/api/game/peers/leave", post_peers_leave, methods=["POST"]),
+    Route("/api/game/peers/leave-outbound", post_peers_leave_outbound, methods=["POST"]),
+    Route("/api/game/peers/presets", put_peers_presets, methods=["PUT"]),
+    Route("/api/game/peers", get_game_peers, methods=["GET"]),
     Route("/api/game/agent-chat-orchestrated", post_agent_chat_orchestrated, methods=["POST"]),
     Route("/api/game/agent-chat-orchestrated/run", post_agent_chat_orchestrated_run, methods=["POST"]),
     Route("/api/game/agent-chat-orchestrated/stream", get_agent_chat_orchestrated_stream, methods=["GET"]),
@@ -1026,7 +1535,18 @@ routes: list[Route | WebSocketRoute] = [
     Route("/api/{rest:path}", hermes_api_get, methods=["GET"]),
     Route("/api/{rest:path}", hermes_api_post, methods=["POST"]),
     WebSocketRoute("/ws/gateway", gateway_ws),
+    WebSocketRoute("/ws/multi-agent", multi_agent_ws),
 ]
+
+_release_frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _release_frontend_dist.is_dir():
+    routes.append(
+        Mount(
+            "/",
+            SPASafeStaticFiles(directory=str(_release_frontend_dist), html=True),
+            name="frontend_dist",
+        )
+    )
 
 app = Starlette(debug=False, routes=routes, lifespan=lifespan)
 

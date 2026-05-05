@@ -11,8 +11,9 @@ export function Modal(props: {
   insetRightPx?: number;
   nonBlocking?: boolean;
   dismissible?: boolean;
+  draggable?: boolean;
 }) {
-  const { title, open, onClose, children, zIndex, variant, insetRightPx, nonBlocking, dismissible } = props;
+  const { title, open, onClose, children, zIndex, variant, insetRightPx, nonBlocking, dismissible, draggable } = props;
   return (
     <PopupSheet
       open={open}
@@ -23,6 +24,7 @@ export function Modal(props: {
       insetRightPx={insetRightPx}
       nonBlocking={nonBlocking}
       dismissible={dismissible}
+      draggable={draggable}
     >
       {children}
     </PopupSheet>

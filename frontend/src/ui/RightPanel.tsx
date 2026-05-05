@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
-import type { GameWorldSnapshot } from '../types/game';
+import type { Agent, GameWorldSnapshot } from '../types/game';
 import { useUiStore, type InferenceEntry } from '../store/uiStore';
 import { AgentAvatar } from './AgentAvatar';
 import { InferenceMarkdownBody, inferenceMono } from './inferenceMarkdown';
 import { MarkdownWorkspace } from './MarkdownWorkspace';
+import { displayAgentProfession } from './buildingLayout';
 import { colors } from './theme';
 import * as gameApi from '../services/gameApi';
 
@@ -74,34 +75,65 @@ function UserAvatar(props: { size?: number }) {
   );
 }
 
-/** 用户消息首行：对话目标 Agent 名称（``agentId``；正文 ``@…|`` 或旧式 ``/relay`` 解析收件人）。 */
-function userInferenceTargetName(e: InferenceEntry, snapshot: GameWorldSnapshot): string {
+function _agentDisplayName(a: Agent): string {
+  return ((a.display_name || a.name || a.id) as string).trim() || 'Agent';
+}
+
+/** 会话区：``名称(职业)``；无职业则仅名称。 */
+function formatSessionNameWithProfession(a: Agent | undefined): string {
+  if (!a) return 'Agent';
+  const name = _agentDisplayName(a);
+  const prof = displayAgentProfession(a);
+  return prof ? `${name}(${prof})` : name;
+}
+
+/** 用户消息首行：对话目标 ``名称(职业)``（``@…|`` 或 ``agentId``）。 */
+function userInferenceSessionLabel(e: InferenceEntry, snapshot: GameWorldSnapshot): string {
   const body = (e.body || '').trim();
   const h = gameApi.parseUserHandoffPrefix(body);
   if (h) {
     if (gameApi.isBroadcastAllHandoffToken(h.token)) return '全体同伴';
     const hit = gameApi.resolveGameAgent(snapshot.agents, h.token);
-    return hit?.name ?? h.token;
+    if (!hit) return h.token;
+    return formatSessionNameWithProfession(hit);
   }
   if (e.agentId) {
-    const hit = snapshot.agents.find((a) => a.id === e.agentId);
-    if (hit?.name) return hit.name;
+    const hit = gameApi.resolveSnapshotAgentForInference(snapshot, e.agentId);
+    if (hit) return formatSessionNameWithProfession(hit);
   }
   return 'Agent';
 }
 
 /** 首行「职业」文案：系统 / Agent 职业（无则退回 headline 后缀）。 */
-function inferenceRoleLabel(e: InferenceEntry, agent: { profession?: string } | undefined): string {
+function inferenceRoleLabel(e: InferenceEntry, agent: Agent | undefined): string {
   if (e.variant === 'user') return '';
   if (e.variant === 'error') {
     const h = (e.headline || '').trim();
     return h && h !== '系统' ? h : '系统';
   }
-  const p = (agent?.profession || '').trim();
+  const p = agent ? displayAgentProfession(agent) : '';
   if (p) return p;
   const h = e.headline || '';
   const i = h.indexOf(' · ');
   if (i >= 0) return h.slice(i + 3).trim() || h;
+  return h || 'Agent';
+}
+
+/** 会话区回复/错误：``名称(职业)``；无 agent 时退回 headline 解析。 */
+function inferenceSessionSpeakerLabel(e: InferenceEntry, agent: Agent | undefined): string {
+  if (e.variant === 'error') {
+    if (agent) return formatSessionNameWithProfession(agent);
+    const h = (e.headline || '').trim();
+    return h && h !== '系统' ? h : '系统';
+  }
+  if (agent) return formatSessionNameWithProfession(agent);
+  const h = e.headline || '';
+  const i = h.indexOf(' · ');
+  if (i >= 0) {
+    const namePart = h.slice(0, i).trim();
+    const profPart = h.slice(i + 3).trim();
+    return profPart ? `${namePart}(${profPart})` : namePart || h;
+  }
   return h || 'Agent';
 }
 
@@ -160,7 +192,7 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
       {/* 上半：会话 */}
       <div
         style={{
-          flex: '7 1 70%',
+          flex: '1 1 0',
           minHeight: 0,
           display: 'flex',
           flexDirection: 'column',
@@ -232,7 +264,7 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
             </p>
           )}
           {visibleInferenceLog.map((e) => {
-            const agent = e.agentId ? snapshot.agents.find((a) => a.id === e.agentId) : undefined;
+            const agent = e.agentId ? gameApi.resolveSnapshotAgentForInference(snapshot, e.agentId) : undefined;
             const { border, bg } = entryStyle(e.variant);
             const time = new Date(e.at).toLocaleTimeString('zh-CN', {
               hour: '2-digit',
@@ -241,8 +273,7 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
             });
             const isUser = e.variant === 'user';
             const AV = 34;
-            const roleLabel = inferenceRoleLabel(e, agent);
-            const userTargetName = isUser ? userInferenceTargetName(e, snapshot) : '';
+            const sessionSpeakerLabel = isUser ? userInferenceSessionLabel(e, snapshot) : inferenceSessionSpeakerLabel(e, agent);
             return (
               <div
                 key={e.id}
@@ -287,9 +318,9 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
                             whiteSpace: 'nowrap',
                             textAlign: 'right',
                           }}
-                          title={userTargetName}
+                          title={sessionSpeakerLabel}
                         >
-                          {userTargetName}
+                          {sessionSpeakerLabel}
                         </span>
                         <span
                           style={{
@@ -321,9 +352,9 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
                             whiteSpace: 'nowrap',
                             textAlign: 'left',
                           }}
-                          title={roleLabel}
+                          title={sessionSpeakerLabel}
                         >
-                          {roleLabel}
+                          {sessionSpeakerLabel}
                         </span>
                         <span style={{ fontSize: 9, color: '#666', flexShrink: 0 }}>{time}</span>
                       </>
@@ -350,8 +381,9 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
       {/* 下半：过程与工具 */}
       <div
         style={{
-          flex: '3 1 30%',
-          minHeight: 0,
+          flex: '0 0 30%',
+          minHeight: 96,
+          maxHeight: '38%',
           display: 'flex',
           flexDirection: 'column',
           minWidth: 0,
@@ -385,7 +417,7 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
             </p>
           )}
           {visibleToolLog.map((e) => {
-            const agent = e.agentId ? snapshot.agents.find((a) => a.id === e.agentId) : undefined;
+            const agent = e.agentId ? gameApi.resolveSnapshotAgentForInference(snapshot, e.agentId) : undefined;
             const { border, bg } = entryStyle(e.variant);
             const roleLabel = inferenceRoleLabel(e, agent);
             const time = new Date(e.at).toLocaleTimeString('zh-CN', {

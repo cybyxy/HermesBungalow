@@ -1,7 +1,7 @@
 /** Visual tokens aligned with docs/原型/prototype-complete.html */
 
 /**
- * 与 TaskMonitorPanel / 左右浮栏一致的半透明 + backdrop-filter（任务监视同款）。
+ * 与 TaskMonitorPanel（编排监视）/ 左右浮栏一致的半透明 + backdrop-filter。
  * 嵌套区块用 `muted` / `inset` 避免重复强 blur。
  */
 export const studioGlass = {
@@ -71,6 +71,7 @@ const professionMap: Record<string, string> = {
   设计师: '#9370DB',
   测试员: '#228B22',
   分析师: '#FF8C00',
+  访客: '#78909c',
 };
 
 export function professionColor(profession: string): string {

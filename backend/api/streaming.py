@@ -10,6 +10,7 @@ import logging
 import mimetypes
 import os
 import queue
+import random
 import re
 import threading
 import time
@@ -59,6 +60,64 @@ def _bungalow_clear_streaming_session_tls(was_set: bool) -> None:
         clear_bungalow_game_session_root()
     except Exception:
         pass
+
+
+# 口头禅字段可能含多条（|、顿号、中英文逗号分号、换行）
+_CATCHPHRASE_SPLIT_RE = re.compile(r"[|\n\r、，；,;]+")
+
+
+def _bungalow_game_agent_character_prompt(bungalow_agent_id: str | None) -> str | None:
+    """数字工作室：向 LLM 注入存档中的性格 + 随机一条口头禅 / 随机一条梗语。"""
+    if not bungalow_agent_id or _BUNGALOW_GAME_SERVICE is None:
+        return None
+    try:
+        with _BUNGALOW_GAME_SERVICE._lock:
+            ag = next(
+                (
+                    x
+                    for x in _BUNGALOW_GAME_SERVICE.world.agents
+                    if getattr(x, "id", None) == bungalow_agent_id
+                ),
+                None,
+            )
+    except Exception:
+        logger.debug("bungalow game agent character prompt: lookup failed", exc_info=True)
+        return None
+    if ag is None:
+        return None
+
+    pers = str(getattr(ag, "personality", None) or "").strip()
+    cf_raw = str(getattr(ag, "catchphrase", None) or "").strip()
+    catch_parts = [p.strip() for p in _CATCHPHRASE_SPLIT_RE.split(cf_raw) if p.strip()]
+    rnd_catch = random.choice(catch_parts) if catch_parts else ""
+
+    memes_raw = list(getattr(ag, "memes", None) or [])
+    memes = [str(m).strip() for m in memes_raw if str(m).strip()]
+    rnd_meme = random.choice(memes) if memes else ""
+
+    disp = str(getattr(ag, "display_name", None) or "").strip()
+    if not disp:
+        disp = str(getattr(ag, "name", None) or "").strip() or bungalow_agent_id
+    prof = str(getattr(ag, "profile", None) or "default").strip()
+
+    lines = [
+        "【Hermes数字工作室 · 本回合角色口吻】",
+        f"角色：{disp}（profile={prof}）",
+    ]
+    if pers:
+        lines.append(f"性格：{pers}")
+    else:
+        lines.append("性格：（存档未单独填写；请沿用 SOUL.md 与人设）")
+    if rnd_catch:
+        lines.append(f"本轮随机选用的口头禅：{rnd_catch}")
+    else:
+        lines.append("口头禅：（存档未配置多条时可依 SOUL 自然发挥）")
+    if rnd_meme:
+        lines.append(f"本轮可自然穿插的一句梗（随机）：{rnd_meme}")
+    lines.append(
+        "请在回复中自然体现以上性格；口头禅与梗语点到为止，勿重复堆砌，勿喧宾夺主。"
+    )
+    return "\n".join(lines)
 
 
 def _sync_bungalow_agent_hermes_session(agent_id: str | None, started_sid: str, s) -> None:
@@ -1833,6 +1892,12 @@ def _run_agent_streaming(
             # Pass personality via ephemeral_system_prompt (agent's own mechanism)
             if _personality_prompt:
                 agent.ephemeral_system_prompt = _personality_prompt
+            _bungalow_char = _bungalow_game_agent_character_prompt(bungalow_agent_id)
+            if _bungalow_char:
+                _base_eph = str(getattr(agent, "ephemeral_system_prompt", None) or "").strip()
+                agent.ephemeral_system_prompt = (
+                    f"{_base_eph}\n\n{_bungalow_char}".strip() if _base_eph else _bungalow_char
+                )
             _previous_messages = list(s.messages or [])
 
             # ── Periodic checkpoint during streaming (Issue #765) ──

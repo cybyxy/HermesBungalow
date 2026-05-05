@@ -4,6 +4,7 @@ import { useUiStore } from './store/uiStore';
 import * as gameApi from './services/gameApi';
 import { CenterStage } from './ui/CenterStage';
 import { BottomSheetHost } from './ui/BottomSheetHost';
+import { NewTaskModal } from './ui/NewTaskModal';
 import { ClarifyModal } from './ui/ClarifyModal';
 /** 5 秒真实时间 ≈ 1 游戏分钟 */
 const GAME_TICK_MS = 5000;
@@ -19,7 +20,6 @@ export function App() {
   const disconnectGateway = useGameStore((s) => s.disconnectGateway);
 
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
-  const agentInferState = useUiStore((s) => s.agentInferState);
   const setSelectedAgent = useUiStore((s) => s.setSelectedAgent);
   const clearSelection = useUiStore((s) => s.clearSelection);
   const openBottomSheet = useUiStore((s) => s.openBottomSheet);
@@ -73,7 +73,6 @@ export function App() {
           <CenterStage
             snapshot={snapshot}
             selectedAgentId={selectedAgentId}
-            centerInference={agentInferState}
             gatewayStatus={gatewayStatus}
             loading={loading}
             onSelectAgent={setSelectedAgent}
@@ -87,6 +86,7 @@ export function App() {
         </div>
       )}
       <BottomSheetHost />
+      <NewTaskModal />
       <ClarifyModal />
     </div>
   );

@@ -30,6 +30,9 @@ class Agent:
     current_task_id: int | None = None
     hermes_session_id: str | None = None
     skills: list[dict[str, Any]] = field(default_factory=list)  # [{name, level}]
+    # Cross-instance relay: when set, relay runs on peer (source) Hermes, not local.
+    peer_relay_base_url: str = ""
+    peer_relay_agent_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -48,14 +51,16 @@ class Task:
     progress: float = 0.0
     status: str = "pending"
     assignee_id: str | None = None
-    required_profession: str = "程序员"
-    difficulty: int = 2
-    reward: int = 100
     quality: int = 0
     estimated_hours: float = 2.0
     is_collaborative: bool = False
     collaboration_bonus: float = 0.3
-    subtasks: list[dict[str, Any]] = field(default_factory=list)
+    # ISO date YYYY-MM-DD or empty
+    due_at: str = ""
+    deliverables: str = ""
+    acceptance_criteria: str = ""
+    # 任务目录 / 分类路径，如「产品/需求」或「2025Q1」
+    catalog: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -157,41 +162,7 @@ def default_world() -> GameWorld:
             personality="理性冷静",
         ),
     ]
-    tasks = [
-        Task(
-            id=1,
-            name="设计登录页面",
-            progress=65,
-            status="in_progress",
-            assignee_id="A",
-            required_profession="程序员",
-            difficulty=2,
-            reward=100,
-            quality=85,
-            is_collaborative=True,
-        ),
-        Task(
-            id=2,
-            name="编写API接口",
-            progress=30,
-            status="pending",
-            assignee_id=None,
-            required_profession="程序员",
-            difficulty=3,
-            reward=150,
-        ),
-        Task(
-            id=3,
-            name="测试支付模块",
-            progress=80,
-            status="in_progress",
-            assignee_id="C",
-            required_profession="测试员",
-            difficulty=2,
-            reward=80,
-            quality=90,
-        ),
-    ]
+    tasks: list[Task] = []
     rooms = [
         Room(id="king", name="城主办公室", type="fixed"),
         Room(id="rest", name="休息室", type="fixed", agent_ids=[]),

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { Agent } from '../types/game';
+import { displayAgentProfession, agentTitleWithProfessionLine } from './buildingLayout';
 import { professionColor } from './theme';
 import { getPersonSheetUrl, isPersonSheetBase } from './personSprites';
 import { getSpriteFrame, getSpriteSliceUrl, resolveSpriteBase } from './spriteMap';
@@ -15,7 +16,7 @@ export function AgentAvatar(props: {
   const [imgError, setImgError] = useState(false);
   const [sliceSrc, setSliceSrc] = useState('');
 
-  const ring = professionColor(agent?.profession ?? '');
+  const ring = professionColor(displayAgentProfession(agent ?? null) || '');
   const spriteSeed = agent ? (agent.profile ?? agent.id) : '';
   const base = agent
     ? resolveSpriteBase(agent.avatar, agent.gender, agent.personality, agent.name, spriteSeed)
@@ -78,7 +79,7 @@ export function AgentAvatar(props: {
 
   return (
     <span
-      title={title ?? (agent ? `${agent.name} · ${agent.profession}` : '')}
+      title={title ?? (agent ? agentTitleWithProfessionLine(agent) : '')}
       style={{ position: 'relative', display: 'inline-flex' }}
     >
       <span style={outer}>

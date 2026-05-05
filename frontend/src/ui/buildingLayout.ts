@@ -29,6 +29,31 @@ export const V_CORR_H = 14;
 export const AGENT_W = 32;
 export const AGENT_H = 48;
 
+/** 跨机登记访客在办公室 Tiled 地图上的脚底像素（与旧 default 站位一致）。 */
+export const PEER_VISITOR_OFFICE_FEET_PX = 490;
+export const PEER_VISITOR_OFFICE_FEET_PY = 779;
+
+export function isPeerVisitorAgent(agent: Agent): boolean {
+  const url = (agent.peer_relay_base_url ?? '').trim();
+  const rid = (agent.peer_relay_agent_id ?? '').trim();
+  if (url && rid) return true;
+  if (agent.bungalow_peer_api != null && Number(agent.bungalow_peer_api) === 1) return true;
+  return false;
+}
+
+/** 仅 UI：串门访客职业统一展示「访客」，不写回存档。 */
+export function displayAgentProfession(agent: Agent | null | undefined): string {
+  if (!agent) return '';
+  if (isPeerVisitorAgent(agent)) return '访客';
+  return (agent.profession || '').trim();
+}
+
+/** 顶栏/tooltip 等：``姓名 · 职业``；无职业且非访客时只返回姓名。 */
+export function agentTitleWithProfessionLine(agent: Agent): string {
+  const prof = displayAgentProfession(agent);
+  return prof ? `${agent.name} · ${prof}` : agent.name;
+}
+
 export const C = {
   bg: '#0a0a15',
   wall: '#654321',
@@ -81,7 +106,8 @@ export function computeBuildingLayout(canvasW: number, canvasH: number) {
   const KING_W = Math.floor(ROOM_W * 1.5);
   const KING_H = Math.floor(ROOM_H * KING_H_RATIO);
   const BUILDING_H = KING_H + V_CORR_H + ROOM_H * 3 + MID_CORRIDOR_H * 2 + BOTTOM_CORRIDOR_H + WALL * 5;
-  const buildingOffsetX = (centerW - BUILDING_W) / 2;
+  /** 与 Phaser 中央区左上角对齐，避免整段建筑水平居中造成「场景偏右」观感 */
+  const buildingOffsetX = 0;
   const buildingOffsetY = centerH - BUILDING_H;
 
   const row2Y = KING_H + WALL + V_CORR_H + WALL;
@@ -147,6 +173,19 @@ export function computeHitRegions(
   const agentRegions: HitRegion[] = [];
   for (const agent of agents) {
     const pos = roomSlots[agent.location];
+    if (isPeerVisitorAgent(agent) && officeHit) {
+      const ax = officeHit.rootX + PEER_VISITOR_OFFICE_FEET_PX;
+      const ay = officeHit.rootY + PEER_VISITOR_OFFICE_FEET_PY;
+      agentRegions.push({
+        kind: 'agent',
+        id: agent.id,
+        x: ax - AGENT_W / 2,
+        y: ay - AGENT_H,
+        w: AGENT_W,
+        h: AGENT_H + 20,
+      });
+      continue;
+    }
     const spawn =
       officeHit?.spawns?.find((s) => {
         const a = s.agentAttr.trim();

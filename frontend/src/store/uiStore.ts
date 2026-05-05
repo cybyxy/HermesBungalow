@@ -34,7 +34,6 @@ export type BottomSheetState =
   | { kind: 'closed' }
   | { kind: 'menu'; menuKey: string }
   | { kind: 'agent'; agentId: string }
-  | { kind: 'newTask' }
   | { kind: 'addAgent' }
   | { kind: 'skills' };
 
@@ -61,10 +60,14 @@ interface UiStore {
   /** 右侧「会话 / 过程」折叠为窄条，中央区变宽 */
   studioRightPanelCollapsed: boolean;
   toggleStudioRightPanelCollapsed: () => void;
-  /** 左侧任务监视浮层折叠（与右侧折叠条行为类似） */
+  /** 左侧「编排监视」浮层折叠（与右侧折叠条行为类似） */
   studioLeftPanelCollapsed: boolean;
   toggleStudioLeftPanelCollapsed: () => void;
-  /** 编排返回的 monitor 工作单 id：左栏任务监视对该单高频轮询直至终态 */
+  /** 中央画布相对逻辑像素的 CSS 倍率（仅放大/缩小显示，不改变 Phaser 内部分辨率） */
+  studioCenterPixelZoom: number;
+  bumpStudioCenterPixelZoom: (delta: -1 | 1) => void;
+  resetStudioCenterPixelZoom: () => void;
+  /** 编排返回的 monitor 工作单 id：左栏编排监视对该单高频轮询直至终态 */
   monitorFocusWorkOrderId: string | null;
   setMonitorFocusWorkOrderId: (id: string | null) => void;
   inferenceLog: InferenceEntry[];
@@ -76,6 +79,8 @@ interface UiStore {
   setSelectedTask: (id: number | null) => void;
   clearSelection: () => void;
   appendInference: (e: Omit<InferenceEntry, 'id' | 'at'> & { id?: string }) => string;
+  /** 单次 set 追加多条，避免 WS 一回多段 trace 时中间态丢失。 */
+  appendInferenceBatch: (items: Array<Omit<InferenceEntry, 'id' | 'at'> & { id?: string }>) => void;
   appendToInference: (id: string, chunk: string) => void;
   patchInference: (id: string, partial: Partial<Omit<InferenceEntry, 'id' | 'at'>>) => void;
   /** After a round ends: keep the user row at `userMessageIndex` and tail rows for this round (reply/error + 过程轨迹). */
@@ -95,13 +100,38 @@ interface UiStore {
   bottomSheet: BottomSheetState;
   openBottomSheet: (p: Exclude<BottomSheetState, { kind: 'closed' }>) => void;
   closeBottomSheet: () => void;
+  /** 居中模态：新建任务（与底栏停靠弹窗分离） */
+  newTaskModalOpen: boolean;
+  newTaskFormResetKey: number;
+  openNewTaskModal: () => void;
+  closeNewTaskModal: () => void;
 }
 
 const MAX_INFERENCE = 200;
 
+/** 中央 Phaser 画布 CSS 相对像素缓冲的缩放档位（像素风，整数/半档倍率）。 */
+export const STUDIO_CENTER_ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+
+function nearestStudioCenterZoomIndex(z: number): number {
+  let best = 2;
+  let bd = Infinity;
+  for (let i = 0; i < STUDIO_CENTER_ZOOM_LEVELS.length; i++) {
+    const d = Math.abs(STUDIO_CENTER_ZOOM_LEVELS[i]! - z);
+    if (d < bd) {
+      bd = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
 type PersistedInferenceSlice = Pick<
   UiStore,
-  'inferenceLog' | 'agentInferState' | 'studioRightPanelCollapsed' | 'studioLeftPanelCollapsed'
+  | 'inferenceLog'
+  | 'agentInferState'
+  | 'studioRightPanelCollapsed'
+  | 'studioLeftPanelCollapsed'
+  | 'studioCenterPixelZoom'
 >;
 
 function newEntryId(): string {
@@ -134,6 +164,14 @@ export const useUiStore = create<UiStore>()(
       studioLeftPanelCollapsed: false,
       toggleStudioLeftPanelCollapsed: () =>
         set((s) => ({ studioLeftPanelCollapsed: !s.studioLeftPanelCollapsed })),
+      studioCenterPixelZoom: 1,
+      bumpStudioCenterPixelZoom: (delta) =>
+        set((s) => {
+          const i = nearestStudioCenterZoomIndex(s.studioCenterPixelZoom);
+          const ni = Math.max(0, Math.min(STUDIO_CENTER_ZOOM_LEVELS.length - 1, i + delta));
+          return { studioCenterPixelZoom: STUDIO_CENTER_ZOOM_LEVELS[ni]! };
+        }),
+      resetStudioCenterPixelZoom: () => set({ studioCenterPixelZoom: 1 }),
       monitorFocusWorkOrderId: null,
       setMonitorFocusWorkOrderId: (id) => set({ monitorFocusWorkOrderId: id }),
       inferenceLog: [],
@@ -159,6 +197,22 @@ export const useUiStore = create<UiStore>()(
           ].slice(-MAX_INFERENCE),
         }));
         return id;
+      },
+      appendInferenceBatch: (items) => {
+        if (!items.length) return;
+        set((s) => {
+          const t0 = Date.now();
+          const appended = items.map((partial, i) => ({
+            id: partial.id ?? newEntryId(),
+            at: t0 + i,
+            variant: partial.variant,
+            agentId: partial.agentId ?? null,
+            headline: partial.headline,
+            body: partial.body,
+            ...(partial.markdownEditor != null ? { markdownEditor: partial.markdownEditor } : {}),
+          }));
+          return { inferenceLog: [...s.inferenceLog, ...appended].slice(-MAX_INFERENCE) };
+        });
       },
       appendToInference: (id, chunk) =>
         set((s) => ({
@@ -234,6 +288,11 @@ export const useUiStore = create<UiStore>()(
       bottomSheet: { kind: 'closed' },
       openBottomSheet: (p) => set({ bottomSheet: p }),
       closeBottomSheet: () => set({ bottomSheet: { kind: 'closed' } }),
+      newTaskModalOpen: false,
+      newTaskFormResetKey: 0,
+      openNewTaskModal: () =>
+        set((s) => ({ newTaskModalOpen: true, newTaskFormResetKey: s.newTaskFormResetKey + 1 })),
+      closeNewTaskModal: () => set({ newTaskModalOpen: false }),
     }),
     {
       name: 'hermes-bungalow-inference-v1',
@@ -244,6 +303,7 @@ export const useUiStore = create<UiStore>()(
         agentInferState: s.agentInferState,
         studioRightPanelCollapsed: s.studioRightPanelCollapsed,
         studioLeftPanelCollapsed: s.studioLeftPanelCollapsed,
+        studioCenterPixelZoom: s.studioCenterPixelZoom,
       }),
       merge: (persistedState, currentState) => {
         const p = (persistedState ?? {}) as Partial<PersistedInferenceSlice>;
@@ -279,6 +339,12 @@ export const useUiStore = create<UiStore>()(
             typeof p.studioLeftPanelCollapsed === 'boolean'
               ? p.studioLeftPanelCollapsed
               : currentState.studioLeftPanelCollapsed,
+          studioCenterPixelZoom:
+            typeof p.studioCenterPixelZoom === 'number' &&
+            Number.isFinite(p.studioCenterPixelZoom) &&
+            p.studioCenterPixelZoom > 0
+              ? p.studioCenterPixelZoom
+              : currentState.studioCenterPixelZoom,
         };
       },
     },

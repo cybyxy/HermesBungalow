@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import type { Agent, GameRoom, GameWorldSnapshot } from '../types/game';
+import { displayAgentProfession, agentTitleWithProfessionLine } from './buildingLayout';
 import { colors, layoutPx, professionColor, statusColor, statusLabelCn } from './theme';
 import { AgentAvatar } from './AgentAvatar';
 
@@ -34,7 +35,8 @@ export function LeftPanel(props: {
         )}
         {snapshot.agents.map((a: Agent) => {
           const isSel = a.id === selectedAgentId;
-          const pc = professionColor(a.profession);
+          const profLabel = displayAgentProfession(a) || '—';
+          const pc = professionColor(profLabel);
           return (
             <button
               key={a.id}
@@ -57,10 +59,10 @@ export function LeftPanel(props: {
                 alignItems: 'center',
               }}
             >
-              <AgentAvatar agent={a} size={40} title={`${a.name} · ${a.profession}`} />
+              <AgentAvatar agent={a} size={40} title={agentTitleWithProfessionLine(a)} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ color: colors.bright, fontWeight: 'bold', fontSize: 11 }}>{a.name || a.id}</div>
-                <div style={{ color: pc, fontSize: 9, marginTop: 2 }}>{a.profession}</div>
+                <div style={{ color: pc, fontSize: 9, marginTop: 2 }}>{profLabel}</div>
                 <div style={{ color: '#888', fontSize: 9, marginTop: 2 }}>📍 {a.location || '—'}</div>
                 <div style={{ color: statusColor(a.status), fontSize: 9, marginTop: 2 }}>{statusLabelCn(a.status)}</div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>

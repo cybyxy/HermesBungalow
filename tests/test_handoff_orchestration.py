@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import threading
 from typing import Any
 
@@ -37,6 +38,9 @@ class _FakeGame:
     def __init__(self, agents: list[Any]) -> None:
         self.world = _FakeWorld(agents)
         self._lock = threading.Lock()
+
+    def iter_agents_for_token_resolve(self):
+        yield from self.world.agents
 
     def ensure_hermes_session_for_agent(self, agent_id: str) -> str:
         return f"sid-{agent_id}"
@@ -95,6 +99,73 @@ def test_run_recursive_peer_invokes_nested(monkeypatch: pytest.MonkeyPatch, thre
 
 def bungalow_agent_id_sequence(calls: list[tuple[str | None, str]]) -> list[str]:
     return [c[0] or "?" for c in calls]
+
+
+def test_maybe_append_peer_reply_queue_writes_sequential_user_rows(
+    monkeypatch: pytest.MonkeyPatch, three_agents: list[_Ag],
+) -> None:
+    """≥2 顶层同伴回复时，按序写入源会话 messages（单 save 前多条 user）。"""
+
+    class _Sess:
+        def __init__(self) -> None:
+            self.session_id = "sid-x"
+            self.messages: list[Any] = []
+            self.save_calls = 0
+
+        def save(self, **_k: Any) -> None:
+            self.save_calls += 1
+
+    sess = _Sess()
+
+    def fake_get_session(_sid: str) -> Any:
+        return sess
+
+    monkeypatch.setattr("api.models.get_session", fake_get_session)
+    monkeypatch.setattr("api.config._get_session_agent_lock", lambda _sid: contextlib.nullcontext())
+    monkeypatch.setattr(
+        "api.game.service.bungalow_session_tls_for_agent_id",
+        lambda *_a, **_k: contextlib.nullcontext(),
+    )
+
+    game = _FakeGame(three_agents)
+    invoker = three_agents[0]
+    deleg = [
+        {"ok": True, "reply": "first", "target": "p2"},
+        {"ok": True, "reply": "second", "target": "p3"},
+    ]
+    agent_mod.maybe_append_peer_reply_queue_to_invoker_session(game, invoker, deleg)
+    assert len(sess.messages) == 2
+    assert sess.messages[0]["role"] == "user"
+    assert "1/2" in sess.messages[0]["content"] and "Bob" in sess.messages[0]["content"] and "first" in sess.messages[0]["content"]
+    assert sess.messages[1]["role"] == "user"
+    assert "2/2" in sess.messages[1]["content"] and "Carol" in sess.messages[1]["content"] and "second" in sess.messages[1]["content"]
+    assert sess.save_calls == 1
+
+
+def test_maybe_append_peer_reply_queue_skips_single_reply(
+    monkeypatch: pytest.MonkeyPatch, three_agents: list[_Ag],
+) -> None:
+    class _Sess:
+        def __init__(self) -> None:
+            self.session_id = "sid-x"
+            self.messages: list[Any] = []
+
+        def save(self, **_k: Any) -> None:
+            pass
+
+    sess = _Sess()
+    monkeypatch.setattr("api.models.get_session", lambda _sid: sess)
+    monkeypatch.setattr("api.config._get_session_agent_lock", lambda _sid: contextlib.nullcontext())
+    monkeypatch.setattr(
+        "api.game.service.bungalow_session_tls_for_agent_id",
+        lambda *_a, **_k: contextlib.nullcontext(),
+    )
+    game = _FakeGame(three_agents)
+    invoker = three_agents[0]
+    agent_mod.maybe_append_peer_reply_queue_to_invoker_session(
+        game, invoker, [{"ok": True, "reply": "only", "target": "p2"}],
+    )
+    assert sess.messages == []
 
 
 def test_orchestrated_peer_turns_sync_happy_path(monkeypatch: pytest.MonkeyPatch, three_agents: list[_Ag]):

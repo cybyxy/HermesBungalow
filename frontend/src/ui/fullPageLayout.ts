@@ -15,6 +15,23 @@ export type FullPageLayoutOptions = {
   rightPanelCollapsed?: boolean;
 };
 
+/**
+ * Phaser 挂载父元素为顶栏与底栏之间的全宽区域（画布铺在左右侧栏下方，便于侧栏毛玻璃叠在画面上）。
+ * 传入的 W×H 即画布尺寸，`center` 与画布同大。
+ */
+export function computePhaserParentLayout(W: number, H: number): FullPageLayout {
+  const tw = Math.max(32, W);
+  const th = Math.max(32, H);
+  return {
+    W: tw,
+    H: th,
+    top: { x: 0, y: 0, w: tw, h: 0 },
+    right: { x: 0, y: 0, w: 0, h: th },
+    bottom: { x: 0, y: th, w: tw, h: 0 },
+    center: { x: 0, y: 0, w: tw, h: th },
+  };
+}
+
 /** 整页分区：顶栏、底栏、右侧栏、中央 Phaser 游戏区（办公室 + 建筑）。 */
 export function computeFullPageLayout(
   W: number,
