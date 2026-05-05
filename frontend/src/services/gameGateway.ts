@@ -24,11 +24,6 @@ export class HermesGameGateway {
   private chatHandlers = new Set<ChatStreamHandler>();
   private _status: GatewayStatus = 'disconnected';
   private statusListeners = new Set<(s: GatewayStatus) => void>();
-  /** User called `disconnect()` — do not auto-reconnect after `onclose`. */
-  private intentionalClose = false;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private reconnectAttempt = 0;
-  private lastUrl: string | undefined;
 
   get status(): GatewayStatus {
     return this._status;
@@ -44,13 +39,6 @@ export class HermesGameGateway {
     this.statusListeners.forEach((fn) => fn(s));
   }
 
-  private clearReconnectTimer(): void {
-    if (this.reconnectTimer != null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-  }
-
   onGameEvent(handler: GameEventHandler): () => void {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
@@ -62,43 +50,19 @@ export class HermesGameGateway {
   }
 
   connect(url?: string): void {
-    this.intentionalClose = false;
-    this.lastUrl = url ?? defaultGatewayWsUrl();
-    this.clearReconnectTimer();
-    this.openSocket();
-  }
-
-  private openSocket(): void {
-    if (this.intentionalClose) return;
-    const u = this.lastUrl ?? defaultGatewayWsUrl();
-    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) return;
+    if (this.ws?.readyState === WebSocket.OPEN) return;
+    const u = url ?? defaultGatewayWsUrl();
     this.setStatus('connecting');
     const ws = new WebSocket(u);
     this.ws = ws;
     ws.onopen = () => {
-      this.reconnectAttempt = 0;
       this.setStatus('connected');
       ws.send(JSON.stringify({ type: 'game_event_sub', channels: ['task', 'agent_status', 'competition', 'social'] }));
     };
     ws.onerror = () => { /* let onclose handle final status */ };
     ws.onclose = () => {
-      this.ws = null;
-      if (this.intentionalClose) {
-        this.setStatus('disconnected');
-        return;
-      }
       this.setStatus('disconnected');
-      this.reconnectAttempt += 1;
-      const cap = 30_000;
-      const base = 400 + this.reconnectAttempt * 450;
-      const jitter = Math.random() * 500;
-      const delay = Math.min(cap, base + jitter);
-      this.clearReconnectTimer();
-      this.reconnectTimer = setTimeout(() => {
-        this.reconnectTimer = null;
-        if (this.intentionalClose) return;
-        this.openSocket();
-      }, delay);
+      this.ws = null;
     };
     ws.onmessage = (ev) => {
       try {
@@ -124,9 +88,6 @@ export class HermesGameGateway {
   }
 
   disconnect(): void {
-    this.intentionalClose = true;
-    this.clearReconnectTimer();
-    this.reconnectAttempt = 0;
     this.ws?.close();
     this.ws = null;
     this.setStatus('disconnected');

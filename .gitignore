@@ -4,7 +4,6 @@ frontend/node_modules/
 
 # Build output
 frontend/dist/
-dist/
 frontend/.parcel-cache/
 
 # Python

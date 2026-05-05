@@ -63,10 +63,17 @@ def trigger_competition(task: Any, world_agents: list[Any]) -> list[str]:
     条件：任务仅需1人 + 同职业空闲Agent≥2人举手
     返回举手Agent id列表，不满足返回空列表。
     """
-    if not task.is_collaborative and getattr(task, "required_count", 1) == 1:
-        idle = [a for a in world_agents if getattr(a, "status", None) == "idle"]
-        if len(idle) >= MIN_CANDIDATES:
-            return [a.id for a in idle]
+    if not task.is_collaborative and task.required_count == 1:
+        # 找同职业空闲Agent
+        from collections import defaultdict
+        by_prof: dict[str, list[Any]] = defaultdict(list)
+        for a in world_agents:
+            if getattr(a, 'status', None) == 'idle':
+                by_prof[getattr(a, 'profession', '') or ''].append(a)
+        prof = task.required_profession or ''
+        candidates = by_prof.get(prof, [])
+        if len(candidates) >= MIN_CANDIDATES:
+            return [a.id for a in candidates]
     return []
 
 
@@ -192,8 +199,14 @@ def resolve_task_competition(
     Returns:
         CompetitionResult（service.py 已在 len(candidates)>=2 时调用本函数）
     """
-    # service.py assign_task 已保证：candidates = 空闲 Agent 列表（不限职业）
-    candidates = [a for a in world_agents if getattr(a, "status", None) == "idle"]
+    # service.py assign_task 已保证：candidates = 同职业且空闲的 Agent 列表
+    # 这里直接取 world_agents 中 profession 匹配且 status==idle 的所有人作为候选
+    prof = getattr(task, 'required_profession', '') or ''
+    candidates = [
+        a for a in world_agents
+        if getattr(a, 'profession', '') == prof
+        and getattr(a, 'status', None) == 'idle'
+    ]
     if len(candidates) < MIN_CANDIDATES:
         return None
 

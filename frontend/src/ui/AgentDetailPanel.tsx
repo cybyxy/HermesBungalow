@@ -4,9 +4,6 @@ import type { Agent, GameWorldSnapshot } from '../types/game';
 import * as gameApi from '../services/gameApi';
 import { colors, statusColor, statusLabelCn, studioGlass, taskStatusLabelCn } from './theme';
 import { AgentAvatar } from './AgentAvatar';
-import { displayAgentProfession, isPeerVisitorAgent } from './buildingLayout';
-
-const PROFESSION_SUGGESTIONS = ['程序员', '设计师', '测试员', '分析师', '产品经理', '运维工程师', '城主'];
 
 const REASONING_MODEL_OPTIONS = [
   { value: 'auto', label: '自动选择' },
@@ -46,9 +43,6 @@ export function AgentDetailPanel(props: {
   const [memoryText, setMemoryText] = useState('');
   const [cfgBusy, setCfgBusy] = useState(false);
   const [cfgMsg, setCfgMsg] = useState<string | null>(null);
-  const [profDraft, setProfDraft] = useState('');
-  const [profBusy, setProfBusy] = useState(false);
-  const [profMsg, setProfMsg] = useState<string | null>(null);
 
   const agent = useMemo(
     () => snapshot?.agents.find((a) => a.id === agentId) ?? null,
@@ -58,12 +52,6 @@ export function AgentDetailPanel(props: {
     () => (snapshot?.tasks ?? []).filter((t) => t.assignee_id === agent?.id),
     [snapshot, agent?.id],
   );
-
-  useEffect(() => {
-    if (!agent) return;
-    setProfDraft(agent.profession || '');
-    setProfMsg(null);
-  }, [agent?.id, agent?.profession]);
 
   useEffect(() => {
     if (!active || tab !== 'config' || !agent?.id) return;
@@ -115,66 +103,7 @@ export function AgentDetailPanel(props: {
           </span>
         </div>
         <div style={{ textAlign: 'center', color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{agent.name}</div>
-        {isPeerVisitorAgent(agent) ? (
-          <div style={{ textAlign: 'center', color: '#888', fontSize: 10, marginTop: 4 }}>👤 {displayAgentProfession(agent)}</div>
-        ) : (
-          <div style={{ marginTop: 6, textAlign: 'center' }}>
-            <div style={{ color: '#888', fontSize: 9, marginBottom: 2 }}>职业（写入存档，同步 Hermes 不覆盖）</div>
-            <input
-              list={`agent-detail-profession-${agent.id}`}
-              value={profDraft}
-              onChange={(e) => setProfDraft(e.target.value)}
-              disabled={profBusy}
-              style={{
-                width: '100%',
-                maxWidth: 160,
-                fontSize: 11,
-                padding: '4px 6px',
-                borderRadius: 4,
-                border: `1px solid ${colors.border}`,
-                background: 'rgba(20,22,40,0.9)',
-                color: '#eee',
-                boxSizing: 'border-box',
-              }}
-            />
-            <datalist id={`agent-detail-profession-${agent.id}`}>
-              {PROFESSION_SUGGESTIONS.map((p) => (
-                <option key={p} value={p} />
-              ))}
-            </datalist>
-            <button
-              type="button"
-              disabled={profBusy || (profDraft.trim() === (agent.profession || '').trim())}
-              onClick={() => {
-                setProfBusy(true);
-                setProfMsg(null);
-                void gameApi
-                  .updateAgentConfig({ id: agent.id, profession: profDraft.trim() })
-                  .then(() => {
-                    setProfMsg('已保存');
-                    onProfileUpdated?.();
-                  })
-                  .catch((e) => setProfMsg((e as Error).message))
-                  .finally(() => setProfBusy(false));
-              }}
-              style={{
-                marginTop: 4,
-                fontSize: 10,
-                padding: '3px 10px',
-                borderRadius: 4,
-                border: `1px solid ${colors.border}`,
-                background: 'rgba(42,58,90,0.7)',
-                color: colors.bright,
-                cursor: 'pointer',
-              }}
-            >
-              {profBusy ? '…' : '保存职业'}
-            </button>
-            {profMsg && (
-              <div style={{ fontSize: 9, color: profMsg.startsWith('已') ? '#6a8' : '#c66', marginTop: 2 }}>{profMsg}</div>
-            )}
-          </div>
-        )}
+        <div style={{ textAlign: 'center', color: '#888', fontSize: 10, marginTop: 4 }}>👤 {agent.profession}</div>
         <div
           style={{
             marginTop: 8,

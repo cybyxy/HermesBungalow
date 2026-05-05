@@ -1,8 +1,4 @@
 import Phaser from 'phaser';
-
-/** 与 `office_layer.json` 一致的设计分辨率（60×28 格 ×32px）；Phaser `Scale.FIT` 等比套入宿主。 */
-export const STUDIO_GAME_BASE_WIDTH = 1920;
-export const STUDIO_GAME_BASE_HEIGHT = 896;
 import type { Agent, GameWorldSnapshot } from '../types/game';
 import type { AgentInferenceState, BottomSheetState } from '../store/uiStore';
 import {
@@ -18,12 +14,9 @@ import {
   computeBuildingLayout,
   computeHitRegions,
   hitTest,
-  isPeerVisitorAgent,
-  PEER_VISITOR_OFFICE_FEET_PX,
-  PEER_VISITOR_OFFICE_FEET_PY,
 } from '../ui/buildingLayout';
 import { useUiStore } from '../store/uiStore';
-import { computePhaserParentLayout, type FullPageLayout } from '../ui/fullPageLayout';
+import { computeFullPageLayout, type FullPageLayout } from '../ui/fullPageLayout';
 import { StudioShellUi } from './studioShellUi';
 import type { Direction } from '../ui/spriteMap';
 import { resolveSpriteBase } from '../ui/spriteMap';
@@ -162,6 +155,12 @@ type AgentUi = {
 
 class StudioScene extends Phaser.Scene {
   /**
+   * 瓦片地图在「中央区宽度 viewW」内居中后再向右平移的格数。
+   * 此前相对视口整体偏左约 6 格（与壳层分区或 1920 稿面对齐有关），在此统一修正。
+   */
+  private static readonly OFFICE_MAP_LAYOUT_TILE_SHIFT_X = 6;
+
+  /**
    * 人物精灵挂在 Scene 上（不放进 centerRoot），否则整棵 centerRoot depth=1
    * 会先于壳层 batch 绘制；子节点 depth 无法压过 StudioShellUi 的 depth 50/400。
    */
@@ -170,6 +169,7 @@ class StudioScene extends Phaser.Scene {
   private centerRoot!: Phaser.GameObjects.Container;
   private buildingG!: Phaser.GameObjects.Graphics;
   private labelTexts: Phaser.GameObjects.Text[] = [];
+  private hintText!: Phaser.GameObjects.Text;
   private agentUi = new Map<string, AgentUi>();
   private lastLayoutKey = '';
   private officeRoot: Phaser.GameObjects.Container | null = null;
@@ -195,11 +195,6 @@ class StudioScene extends Phaser.Scene {
   private collabFacingOverride = new Map<string, Direction>();
   private collabFacingPeer = new Map<string, string>();
 
-  /** 右键 / 中键 / Shift+左键拖拽平移相机 */
-  private scenePanPointerId: number | null = null;
-  private scenePanLastX = 0;
-  private scenePanLastY = 0;
-
   constructor() {
     super({ key: 'StudioScene' });
   }
@@ -221,7 +216,9 @@ class StudioScene extends Phaser.Scene {
     }
     this.cameras.main.setBackgroundColor(hx(C.bg));
     this.cameras.main.setRoundPixels(true);
-    const L0 = computePhaserParentLayout(this.scale.width, this.scale.height);
+    const L0 = computeFullPageLayout(this.scale.width, this.scale.height, {
+      rightPanelCollapsed: useUiStore.getState().studioRightPanelCollapsed,
+    });
     this.centerRoot = this.add.container(L0.center.x, L0.center.y);
     this.centerRoot.setDepth(1);
 
@@ -229,61 +226,23 @@ class StudioScene extends Phaser.Scene {
     this.centerRoot.add(this.buildingG);
     this.buildingG.setDepth(0);
 
-    const canvasEl = this.game.canvas;
-    if (canvasEl) {
-      canvasEl.addEventListener('contextmenu', (ev) => ev.preventDefault());
-    }
-
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (this.scenePanPointerId !== pointer.id || !pointer.isDown) return;
-      const ev = pointer.event as PointerEvent | undefined;
-      let mdx = ev?.movementX;
-      let mdy = ev?.movementY;
-      if (mdx === undefined) mdx = pointer.x - this.scenePanLastX;
-      if (mdy === undefined) mdy = pointer.y - this.scenePanLastY;
-      this.scenePanLastX = pointer.x;
-      this.scenePanLastY = pointer.y;
-      if (mdx === 0 && mdy === 0) return;
-      const cam = this.cameras.main;
-      const b = this.game.scale.canvasBounds;
-      const bw = Math.max(1, b.width);
-      const bh = Math.max(1, b.height);
-      cam.scrollX -= (mdx * cam.width) / bw;
-      cam.scrollY -= (mdy * cam.height) / bh;
+    this.hintText = this.add.text(12, 18, '中央活动区 · 点击 Agent 选中，选中后点击房间移动', {
+      fontSize: '12px',
+      color: studioInk.muted,
+      fontFamily: studioFontUi,
     });
-
-    const endScenePan = (pointer: Phaser.Input.Pointer) => {
-      if (this.scenePanPointerId === pointer.id) {
-        this.scenePanPointerId = null;
-        this.input.setDefaultCursor('default');
-        if (canvasEl) canvasEl.style.cursor = 'pointer';
-      }
-    };
-    this.input.on('pointerup', endScenePan);
-    this.input.on('pointerupoutside', endScenePan);
+    this.hintText.setLetterSpacing(0.08);
+    this.centerRoot.add(this.hintText);
+    this.hintText.setDepth(10);
+    this.hintText.setText('中央活动区 · 正在加载办公室地图…');
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       const bridge = this.game.registry.get('studioCtx') as StudioCtxBridge | undefined;
       if (!bridge) return;
+      const pack = bridge.getPack();
       const gx = pointer.x;
       const gy = pointer.y;
       if (this.shellUi?.pointerDown(gx, gy)) return;
-
-      const panByButtons =
-        pointer.rightButtonDown() ||
-        pointer.middleButtonDown() ||
-        (pointer.leftButtonDown() &&
-          Boolean((pointer.event as MouseEvent | undefined)?.shiftKey));
-      if (panByButtons) {
-        this.scenePanPointerId = pointer.id;
-        this.scenePanLastX = gx;
-        this.scenePanLastY = gy;
-        this.input.setDefaultCursor('grabbing');
-        if (canvasEl) canvasEl.style.cursor = 'grabbing';
-        return;
-      }
-
-      const pack = bridge.getPack();
       const cx = pack.fullLayout.center.x;
       const cy = pack.fullLayout.center.y;
       const cw = pack.fullLayout.center.w;
@@ -317,22 +276,23 @@ class StudioScene extends Phaser.Scene {
     this.lastLayoutKey = '';
     this.officeMapSpawns = [];
     this.officeObstacleTilesCache = [];
-    for (const k of this.officeTilesetTextureKeys) {
-      if (this.textures.exists(k)) this.textures.remove(k);
-    }
-    this.officeTilesetTextureKeys = [];
-    const page = computePhaserParentLayout(this.scale.width, this.scale.height);
+    const page = computeFullPageLayout(this.scale.width, this.scale.height, {
+      rightPanelCollapsed: useUiStore.getState().studioRightPanelCollapsed,
+    });
     const L = computeBuildingLayout(page.center.w, page.center.h);
     this.rebuildBuilding(page.center.w, page.center.h, L);
   }
 
-  /** 办公室图层 1:1 图块像素；与 Tiled 原点一致左上角对齐 (0,·)，竖直仅在视口更高时居中。 */
+  /** 办公室图层 1:1 图块像素，不缩放；小于视口则居中，大于视口则居中后由相机裁切 */
   private layoutOfficeTiledMap(viewW: number, viewH: number): void {
     const root = this.officeRoot;
     if (!root || this.officePixelSize.w < 8 || viewW < 32 || viewH < 32) return;
+    const mw = this.officePixelSize.w;
     const mh = this.officePixelSize.h;
+    const tw = Math.max(1, this.officeMapTileW);
+    const dx = StudioScene.OFFICE_MAP_LAYOUT_TILE_SHIFT_X * tw;
     root.setScale(1);
-    root.setPosition(0, Math.max(0, (viewH - mh) / 2));
+    root.setPosition((viewW - mw) / 2 + dx, (viewH - mh) / 2);
   }
 
   private async tryMountOfficeTiledMap(): Promise<void> {
@@ -347,7 +307,7 @@ class StudioScene extends Phaser.Scene {
     try {
       const mapRes = await fetch(publicAssetUrl('assets/tiles/office_layer.json'));
       if (!mapRes.ok) {
-        console.warn(`[office map] office_layer.json 读取失败 ${mapRes.status}`);
+        this.hintText.setText(`中央活动区 · office_layer.json 读取失败 ${mapRes.status}`);
         this.applyVectorBuildingFallback();
         return;
       }
@@ -369,7 +329,7 @@ class StudioScene extends Phaser.Scene {
         .sort((a, b) => Number(a.firstgid) - Number(b.firstgid)) as { firstgid: number; source: string }[];
 
       if (!tsRefs.length) {
-        console.warn('[office map] office_layer 未声明 tilesets');
+        this.hintText.setText('中央活动区 · office_layer 未声明 tilesets');
         this.applyVectorBuildingFallback();
         return;
       }
@@ -392,9 +352,12 @@ class StudioScene extends Phaser.Scene {
           }
         }
         if (!tsDoc?.image) {
-          console.warn(`[office map] 无法读取 tileset（${source}）`);
-          this.applyVectorBuildingFallback();
-          return;
+          if (i === 0) {
+            this.hintText.setText(`中央活动区 · 无法读取首个 tileset（${source}）`);
+            this.applyVectorBuildingFallback();
+            return;
+          }
+          continue;
         }
 
         const nextFirst = i + 1 < tsRefs.length ? Number(tsRefs[i + 1]!.firstgid) : null;
@@ -421,14 +384,11 @@ class StudioScene extends Phaser.Scene {
             break;
           }
         }
-        if (!loaded) {
+        if (!loaded && i === 0) {
           const tried = imageFileCandidates(sourceBase, tsDoc.image)
             .map((f) => publicAssetUrl(`assets/tiles/${f}`))
             .join(', ');
-          console.warn(`[office map] tileset「${sourceBase}」PNG 加载失败，已尝试：${tried}`);
-          if (import.meta.env.DEV) {
-            console.error('[office map] tileset PNG failed', { source, sourceBase, tried });
-          }
+          this.hintText.setText(`中央活动区 · 主图集 PNG 加载失败，已尝试：${tried}`);
           this.applyVectorBuildingFallback();
           return;
         }
@@ -453,14 +413,14 @@ class StudioScene extends Phaser.Scene {
         mapData as Parameters<typeof collectOfficeSpawnsFromMap>[0],
       );
 
-      if (unmappedCount > 0) {
+      if (import.meta.env.DEV && unmappedCount > 0) {
         console.warn(
           `[office map] ${unmappedCount} 个瓦片无对应已加载 tileset（GID 样例）:`,
           unmappedGidSamples,
         );
       }
       if (!tiles.length) {
-        console.warn('[office map] office_layer 解析后无图块，请检查图层/chunks');
+        this.hintText.setText('中央活动区 · office_layer 解析后无图块，请检查图层/chunks');
         this.applyVectorBuildingFallback();
         return;
       }
@@ -471,12 +431,15 @@ class StudioScene extends Phaser.Scene {
       this.centerRoot.add(c);
       this.officePixelSize = officeMapPixelExtent(extentMeta, tileWUse, tileHUse, tiles);
       this.lastLayoutKey = '';
-      const page = computePhaserParentLayout(this.scale.width, this.scale.height);
+      const page = computeFullPageLayout(this.scale.width, this.scale.height, {
+        rightPanelCollapsed: useUiStore.getState().studioRightPanelCollapsed,
+      });
       const L = computeBuildingLayout(page.center.w, page.center.h);
       this.rebuildBuilding(page.center.w, page.center.h, L);
       this.layoutOfficeTiledMap(page.center.w, page.center.h);
+      this.hintText.setText('中央活动区 · 办公室地图（office_layer.json）· 点击 Agent，选中后点房间移动');
     } catch (e) {
-      console.warn(`[office map] 办公室地图失败：${(e as Error).message}`);
+      this.hintText.setText(`中央活动区 · 办公室地图失败：${(e as Error).message}`);
       this.applyVectorBuildingFallback();
     }
   }
@@ -577,9 +540,6 @@ class StudioScene extends Phaser.Scene {
 
   applySync(pack: StudioSyncPack): void {
     if (!this.buildingG || !this.centerRoot) return;
-    const z = useUiStore.getState().studioCenterPixelZoom;
-    const clampZ = Number.isFinite(z) ? Math.min(3, Math.max(0.25, z)) : 1;
-    this.cameras.main.setZoom(clampZ);
     const { w, h, fullLayout } = pack;
     if (w < 32 || h < 32) return;
 
@@ -617,7 +577,6 @@ class StudioScene extends Phaser.Scene {
     const key = `${cw}x${ch}`;
     if (key !== this.lastLayoutKey) {
       this.lastLayoutKey = key;
-      this.cameras.main.setScroll(0, 0);
       this.rebuildBuilding(cw, ch, L);
     }
     if (this.officeRoot && this.officePixelSize.w > 0) {
@@ -1056,14 +1015,6 @@ class StudioScene extends Phaser.Scene {
   }
 
   private static matchOfficeSpawn(agent: Agent, spawns: OfficeSceneSpawn[]): OfficeSceneSpawn | undefined {
-    if (isPeerVisitorAgent(agent)) {
-      return {
-        agentAttr: '__peer_visitor__',
-        px: PEER_VISITOR_OFFICE_FEET_PX,
-        py: PEER_VISITOR_OFFICE_FEET_PY,
-        direction: 'down',
-      };
-    }
     return spawns.find((s) => {
       const a = s.agentAttr.trim();
       const p = (agent.profile?.trim() ?? '').toLowerCase();
@@ -1093,21 +1044,34 @@ export type StudioGameApi = {
   destroy: () => void;
 };
 
+/** 画布 CSS 与 buffer 宽高一一对应，避免 100% 拉伸导致「原图」被缩放变形；大于容器时由外层 overflow 滚动查看。 */
+function layoutStudioCanvasFullBleed(canvas: HTMLCanvasElement | null, _host: HTMLElement): void {
+  if (!canvas) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w < 1 || h < 1) return;
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  canvas.style.boxSizing = 'border-box';
+  canvas.style.display = 'block';
+  canvas.style.flexShrink = '0';
+  canvas.style.imageRendering = 'pixelated';
+}
+
 export function mountStudioGame(parent: HTMLElement, ctx: StudioCtxBridge): StudioGameApi {
   parent.style.position = parent.style.position || 'relative';
   pendingStudioCtxBridge = ctx;
+  const pw = Math.max(32, parent.clientWidth);
+  const ph = Math.max(32, parent.clientHeight);
   const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent,
-    width: STUDIO_GAME_BASE_WIDTH,
-    height: STUDIO_GAME_BASE_HEIGHT,
+    width: pw,
+    height: ph,
     transparent: false,
     backgroundColor: hx(C.bg),
     banner: false,
-    scale: {
-      mode: Phaser.Scale.FIT,
-      autoCenter: Phaser.Scale.CENTER_BOTH,
-    },
+    scale: { mode: Phaser.Scale.NONE },
     render: {
       antialias: false,
       pixelArt: true,
@@ -1121,8 +1085,8 @@ export function mountStudioGame(parent: HTMLElement, ctx: StudioCtxBridge): Stud
   const canvas = game.canvas;
   if (canvas) {
     canvas.style.cursor = 'pointer';
-    canvas.style.imageRendering = 'pixelated';
   }
+  layoutStudioCanvasFullBleed(canvas, parent);
 
   const getScene = (): StudioScene | null => {
     try {
@@ -1161,11 +1125,11 @@ export function mountStudioGame(parent: HTMLElement, ctx: StudioCtxBridge): Stud
       const w = Math.max(32, parent.clientWidth);
       const h = Math.max(32, parent.clientHeight);
       try {
-        game.scale.setParentSize(w, h);
+        game.scale.resize(w, h);
       } catch {
         /* torn down */
       }
-      if (game.canvas) game.canvas.style.imageRendering = 'pixelated';
+      layoutStudioCanvasFullBleed(game.canvas, parent);
     },
     destroy: () => {
       game.destroy(true, false);

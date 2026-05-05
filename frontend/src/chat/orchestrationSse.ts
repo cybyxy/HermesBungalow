@@ -4,8 +4,6 @@
  */
 import { useUiStore } from '../store/uiStore';
 import type { Agent, GameWorldSnapshot } from '../types/game';
-import { agentTitleWithProfessionLine } from '../ui/buildingLayout';
-import * as gameApi from '../services/gameApi';
 
 let sseActiveHermesStreamId: string | null = null;
 const stepReasoningEntryId = new Map<string, string>();
@@ -20,11 +18,13 @@ export function clearSseActiveHermesStreamId(): void {
 
 function agentReplyHeadline(agent: Agent | undefined): string {
   if (!agent) return 'Agent';
-  return agentTitleWithProfessionLine(agent);
+  const p = (agent.profession || '').trim();
+  return p ? `${agent.name} · ${p}` : agent.name;
 }
 
 function resolveAgent(snapshot: GameWorldSnapshot | null, agentId: string | null | undefined): Agent | undefined {
-  return gameApi.resolveSnapshotAgentForInference(snapshot, agentId ?? undefined);
+  if (!snapshot || !agentId) return undefined;
+  return snapshot.agents.find((a) => a.id === agentId);
 }
 
 export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot: GameWorldSnapshot | null): void {
@@ -146,9 +146,6 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
   }
 }
 
-/**
- * 订阅编排 SSE。网络闪断时同一 `run_id` 可再次连接，后端 `_ORCH_SSE_QUEUES` 在 `turn_done` 前仍保留队列。
- */
 export function consumeOrchestratedSse(
   runId: string,
   snapshot: GameWorldSnapshot | null,
@@ -157,94 +154,30 @@ export function consumeOrchestratedSse(
 ): Promise<void> {
   const url = `/api/game/agent-chat-orchestrated/stream?run_id=${encodeURIComponent(runId)}`;
   return new Promise((resolve, reject) => {
-    let settled = false;
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let reconnectCount = 0;
-    let hasReceivedData = false;
-    const maxReconnects = 14;
-
-    const cleanup = () => {
-      if (reconnectTimer != null) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      es?.close();
-      es = null;
-    };
-
-    const finishOk = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      loadState();
-      resolve();
-    };
-
-    const finishErr = (message: string) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(new Error(message));
-    };
-
-    const scheduleReconnect = () => {
-      if (settled) return;
-      if (!hasReceivedData && reconnectCount >= 3) {
-        finishErr('无法建立编排事件流（请确认后端已启动且未返回 404）');
-        return;
-      }
-      reconnectCount += 1;
-      if (reconnectCount > maxReconnects) {
-        finishErr('编排事件流多次自动重连失败，请检查网络后重试');
-        return;
-      }
-      const delay = Math.min(12_000, 350 + reconnectCount * 600 + Math.random() * 450);
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        if (settled) return;
-        if (hasReceivedData && reconnectCount === 1) {
-          useUiStore.getState().appendInference({
-            variant: 'status',
-            headline: '系统',
-            body: '编排事件流中断，正在自动重连…',
-            agentId: orchestratorId,
-          });
-        }
-        open();
-      }, delay);
-    };
-
-    const onMessage = (e: MessageEvent) => {
-      if (settled) return;
+    const es = new EventSource(url);
+    es.onmessage = (e) => {
       try {
-        hasReceivedData = true;
         const ev = JSON.parse(e.data) as Record<string, unknown>;
         applyOrchestrationSseEvent(ev, snapshot);
         if (ev.type === 'turn_done') {
-          finishOk();
+          es.close();
+          loadState();
+          resolve();
         }
       } catch (err) {
-        finishErr(err instanceof Error ? err.message : String(err));
+        es.close();
+        reject(err instanceof Error ? err : new Error(String(err)));
       }
     };
-
-    const open = () => {
-      if (settled) return;
-      es?.close();
-      try {
-        es = new EventSource(url, { withCredentials: true } as EventSourceInit);
-      } catch {
-        es = new EventSource(url);
-      }
-      es.onmessage = onMessage;
-      es.onerror = () => {
-        if (settled) return;
-        es?.close();
-        scheduleReconnect();
-      };
+    es.onerror = () => {
+      es.close();
+      useUiStore.getState().appendInference({
+        variant: 'error',
+        headline: '系统',
+        body: 'SSE 连接中断',
+        agentId: orchestratorId,
+      });
+      reject(new Error('sse_error'));
     };
-
-    open();
   });
 }

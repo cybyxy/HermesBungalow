@@ -7,7 +7,6 @@ import * as gameApi from '../services/gameApi';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
 import type { Agent, GameWorldSnapshot } from '../types/game';
-import { agentTitleWithProfessionLine, isPeerVisitorAgent } from '../ui/buildingLayout';
 
 const sessionsRef: Record<string, string> = {};
 
@@ -27,17 +26,17 @@ export function resolveAgent(snapshot: GameWorldSnapshot | null, token: string):
 }
 
 export function agentReplyHeadline(agent: Agent): string {
-  return agentTitleWithProfessionLine(agent);
+  const p = (agent.profession || '').trim();
+  return p ? `${agent.name} · ${p}` : agent.name;
 }
 
-/** 用户 `@同伴|…` 且未选顶栏 Agent 时，用「另一名」作 API 的 agent_id（发起点）。跨机访客不能当编排主 agent。 */
+/** 用户 `@同伴|…` 且未选顶栏 Agent 时，用「另一名」作 API 的 agent_id（发起点）。 */
 function orchestratorForRelay(snapshot: GameWorldSnapshot | null, selected: Agent | null, relayPeer: Agent): Agent | null {
-  if (selected && !isPeerVisitorAgent(selected)) return selected;
-  return snapshot?.agents.find((a) => a.id !== relayPeer.id && !isPeerVisitorAgent(a)) ?? null;
+  if (selected?.id) return selected;
+  return snapshot?.agents.find((a) => a.id !== relayPeer.id) ?? null;
 }
 
-/** 与底栏发送一致：``POST …/agent-chat-orchestrated/run`` + 订阅 SSE；调用方负责先 append 用户气泡（若有）。 */
-export async function runOrchestratedAndFlushUi(
+async function runOrchestratedAndFlushUi(
   snapshot: GameWorldSnapshot | null,
   orchestratorId: string,
   message: string,
@@ -117,8 +116,8 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
     const append = useUiStore.getState().appendInference;
 
     if (gameApi.isBroadcastAllHandoffToken(token)) {
-      if (!selectedAgent || isPeerVisitorAgent(selectedAgent)) {
-        onToast('请先在顶部选一个本机 Agent，再发 `@所有人 | …`（访客不能作为群发起点）');
+      if (!selectedAgent) {
+        onToast('请先在顶部选一个 Agent，再发 `@所有人 | …`（由当前 Agent 群发至其余同伴）');
         clearPendingFiles();
         return;
       }
@@ -206,19 +205,6 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
   const append = useUiStore.getState().appendInference;
 
   const mainRoundUserIdx = useUiStore.getState().inferenceLog.length;
-
-  /** 访客无本机 Hermes session；禁止用户以访客为入口直连模型，仅允许本机 Agent 通过 `@访客 | …` 委派。 */
-  if (isPeerVisitorAgent(selectedAgent)) {
-    if (pendingImages.length > 0) {
-      onToast('与访客沟通请通过本机 Agent：先选中一名本机 Agent，再发 `@访客的 profile/id/姓名 | 要说的话`；图片已忽略。');
-    } else {
-      onToast('不能与访客直连对话。请选中一名本机 Agent，使用 `@访客的 profile、id 或显示名 | 消息` 让同伴代为与访客交互。');
-    }
-    clearPendingFiles();
-    clearInput();
-    return;
-  }
-
   const pendingCount = pendingImages.length;
   const pendingFilesSnapshot = pendingImages;
   pendingImages = [];

@@ -7,7 +7,7 @@ import os
 import random
 import threading
 import time
-from dataclasses import dataclass
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -22,27 +22,6 @@ from .monitor_store import MonitorRecorder, record_orchestration_result, record_
 from .persistence import get_save_meta, init_db, load_world_from_db, save_world_to_db, _connect
 
 EmitFn = Callable[[str, dict[str, Any]], None]
-
-_META_PEER_PRESETS = "bungalow_peer_presets"
-_META_ACTIVE_OUTBOUND = "bungalow_active_outbound"
-
-# 完成任务时的固定结算（不再使用 per-task 积分字段）
-TASK_COMPLETE_XP = 50
-TASK_COMPLETE_GOLD = 100
-
-
-@dataclass
-class PeerVisitor:
-    """Ephemeral row for a remote Hermes agent shown on this instance (not in world.agents)."""
-
-    visitor_id: str
-    relay_base_url: str
-    relay_agent_id: str
-    name: str
-    display_name: str
-    profession: str
-    profile: str
-    location: str
 
 
 @contextlib.contextmanager
@@ -79,7 +58,6 @@ class GameService:
         self._emit: EmitFn | None = None
         self._greeting_cooldown: dict[frozenset[str], float] = {}
         self._hermes_session_by_agent: dict[str, str] = {}
-        self._peer_visitors: list[PeerVisitor] = []
         if not self.sync_agents_from_hermes():
             self.sync_room_occupancy()
         try:
@@ -108,235 +86,7 @@ class GameService:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            d = self._world.to_dict()
-            extras = [self._peer_visitor_public_dict(v) for v in self._peer_visitors]
-            d["agents"] = list(d["agents"]) + extras
-            d["peer_presets"] = self._peer_presets_for_api_unlocked()
-            pub = self._active_outbound_public_unlocked()
-            if pub:
-                d["active_peer_visit"] = pub
-            return d
-
-    def _meta_get_unlocked(self, key: str) -> str | None:
-        cur = self._conn.execute("SELECT value FROM game_meta WHERE key = ?", (key,))
-        row = cur.fetchone()
-        return str(row["value"]) if row else None
-
-    def _meta_set_unlocked(self, key: str, value: str) -> None:
-        self._conn.execute(
-            "INSERT INTO game_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        self._conn.commit()
-
-    def get_peer_presets_raw(self) -> list[dict[str, Any]]:
-        with self._lock:
-            raw = self._meta_get_unlocked(_META_PEER_PRESETS)
-        if not raw:
-            return []
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return []
-        return data if isinstance(data, list) else []
-
-    def _peer_presets_for_api_unlocked(self) -> list[dict[str, Any]]:
-        pub: list[dict[str, Any]] = []
-        for p in self.get_peer_presets_raw():
-            pid = str(p.get("id") or "").strip()
-            if not pid:
-                continue
-            t = str(p.get("peer_token") or "").strip()
-            pub.append(
-                {
-                    "id": pid,
-                    "label": str(p.get("label") or pid).strip() or pid,
-                    "base_url": str(p.get("base_url") or "").strip(),
-                    "relay_agent_id": str(p.get("relay_agent_id") or "").strip(),
-                    "has_peer_token": bool(t),
-                }
-            )
-        return pub
-
-    def get_peer_preset(self, preset_id: str) -> dict[str, Any] | None:
-        pid = (preset_id or "").strip()
-        if not pid:
-            return None
-        for p in self.get_peer_presets_raw():
-            if str(p.get("id") or "").strip() == pid:
-                return dict(p)
-        return None
-
-    def put_peer_presets(self, presets: list[Any]) -> dict[str, Any]:
-        from api.game.peers import normalize_peer_base_url
-
-        _MISSING = object()
-        with self._lock:
-            old_by_id = {str(p.get("id", "")).strip(): p for p in self.get_peer_presets_raw() if str(p.get("id") or "").strip()}
-            out: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            for p in presets:
-                if not isinstance(p, dict):
-                    continue
-                pid = str(p.get("id") or "").strip()
-                if not pid or pid in seen:
-                    continue
-                seen.add(pid)
-                label = str(p.get("label") or pid).strip() or pid
-                base_url = str(p.get("base_url") or "").strip()
-                if not base_url:
-                    continue
-                norm_base = normalize_peer_base_url(base_url)
-                relay = str(p.get("relay_agent_id") or "").strip()
-                tok_raw = p.get("peer_token", _MISSING)
-                if tok_raw is _MISSING:
-                    old_p = old_by_id.get(pid) or {}
-                    old_t = old_p.get("peer_token")
-                    tok = str(old_t).strip() if isinstance(old_t, str) else ""
-                elif isinstance(tok_raw, str):
-                    tok = tok_raw.strip()
-                else:
-                    tok = ""
-                out.append(
-                    {
-                        "id": pid,
-                        "label": label,
-                        "base_url": norm_base,
-                        "relay_agent_id": relay,
-                        "peer_token": tok,
-                    }
-                )
-            self._meta_set_unlocked(_META_PEER_PRESETS, json.dumps(out, ensure_ascii=False))
-            return {"ok": True, "count": len(out)}
-
-    def allowed_peer_bases(self) -> list[str]:
-        from api.game.peers import load_peer_allowlist, normalize_peer_base_url
-
-        bases = list(load_peer_allowlist())
-        for p in self.get_peer_presets_raw():
-            u = str(p.get("base_url") or "").strip()
-            if not u:
-                continue
-            try:
-                bases.append(normalize_peer_base_url(u))
-            except ValueError:
-                pass
-        return sorted(set(bases))
-
-    def get_active_outbound_visit(self) -> dict[str, Any] | None:
-        with self._lock:
-            raw = self._meta_get_unlocked(_META_ACTIVE_OUTBOUND)
-        if not raw:
-            return None
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(data, dict):
-            return None
-        if not str(data.get("visitor_id") or "").strip() or not str(data.get("target_base_url") or "").strip():
-            return None
-        return data
-
-    def _active_outbound_public_unlocked(self) -> dict[str, Any] | None:
-        raw = self._meta_get_unlocked(_META_ACTIVE_OUTBOUND)
-        if not raw:
-            return None
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(data, dict):
-            return None
-        if not str(data.get("visitor_id") or "").strip():
-            return None
-        return {
-            "preset_id": str(data.get("preset_id") or ""),
-            "label": str(data.get("label") or ""),
-            "target_base_url": str(data.get("target_base_url") or ""),
-        }
-
-    def set_active_outbound_visit(self, preset_id: str, label: str, target_base_url: str, visitor_id: str) -> None:
-        from api.game.peers import normalize_peer_base_url
-
-        tgt = normalize_peer_base_url(target_base_url)
-        payload = json.dumps(
-            {
-                "preset_id": (preset_id or "").strip(),
-                "label": label or "",
-                "target_base_url": tgt,
-                "visitor_id": visitor_id.strip(),
-            },
-            ensure_ascii=False,
-        )
-        with self._lock:
-            self._meta_set_unlocked(_META_ACTIVE_OUTBOUND, payload)
-
-    def clear_active_outbound_visit(self) -> None:
-        with self._lock:
-            self._conn.execute("DELETE FROM game_meta WHERE key = ?", (_META_ACTIVE_OUTBOUND,))
-            self._conn.commit()
-
-    def peer_visitor_as_agent(self, v: PeerVisitor) -> Agent:
-        return Agent(
-            id=v.visitor_id,
-            name=v.name,
-            display_name=v.display_name or v.name,
-            profession=v.profession,
-            profile=v.profile,
-            location=v.location,
-            status="idle",
-            peer_relay_base_url=v.relay_base_url,
-            peer_relay_agent_id=v.relay_agent_id,
-            hermes_session_id=None,
-        )
-
-    def _peer_visitor_public_dict(self, v: PeerVisitor) -> dict[str, Any]:
-        d = self.peer_visitor_as_agent(v).to_dict()
-        d["bungalow_peer_api"] = 1
-        d["hermes_session_id"] = ""
-        return d
-
-    def iter_agents_for_api(self):
-        with self._lock:
-            for a in self._world.agents:
-                yield a
-            for v in self._peer_visitors:
-                yield self.peer_visitor_as_agent(v)
-
-    def iter_agents_for_token_resolve(self):
-        with self._lock:
-            world = list(self._world.agents)
-            visitors = [self.peer_visitor_as_agent(v) for v in self._peer_visitors]
-        yield from world
-        yield from visitors
-
-    def register_peer_visitor(self, v: PeerVisitor) -> None:
-        with self._lock:
-            self._peer_visitors = [
-                x
-                for x in self._peer_visitors
-                if not (x.relay_base_url == v.relay_base_url and x.relay_agent_id == v.relay_agent_id)
-            ]
-            self._peer_visitors.append(v)
-            self.sync_room_occupancy()
-            self._append_event_log("peer_visit", {"visitor_id": v.visitor_id, "source": v.relay_base_url})
-            self._broadcast("agent_status", {"action": "peer_visit", "agent": self._peer_visitor_public_dict(v)})
-
-    def revoke_peer_visitor(self, visitor_id: str) -> bool:
-        with self._lock:
-            before = len(self._peer_visitors)
-            self._peer_visitors = [x for x in self._peer_visitors if x.visitor_id != visitor_id]
-            if len(self._peer_visitors) == before:
-                return False
-            self.sync_room_occupancy()
-            self._append_event_log("peer_leave", {"visitor_id": visitor_id})
-            self._broadcast("agent_status", {"action": "peer_leave", "visitor_id": visitor_id})
-            return True
-
-    def is_peer_visitor_agent_id(self, agent_id: str) -> bool:
-        with self._lock:
-            return any(x.visitor_id == agent_id for x in self._peer_visitors)
+            return self._world.to_dict()
 
     def sync_agents_from_hermes(self) -> bool:
         """Replace world agents with one entry per Hermes profile.
@@ -366,8 +116,6 @@ class GameService:
             if not default_room:
                 default_room = "休息室"
             PROFESSION_MAP = {
-                "崽崽": "城主",
-                "default": "城主",
                 "pymaster": "后端开发",
                 "uiwizard": "前端开发",
                 "ui": "设计师",
@@ -397,13 +145,9 @@ class GameService:
                 old = old_by_id.get(aid) or old_by_name.get(name)
                 profile_name = str(one.get("profile") or "")
                 prof_raw = one.get("profession") or ""
-                # Hermes/SOUL 推导的职业（首次落库用）
-                prof_computed = PROFESSION_MAP.get(profile_name) or prof_raw.strip() or DEFAULT_PROFESSION
-                # 存档里已有非空职业则保留（用户可在详情中改；避免每次 sync 覆盖数据库已写入结果）
-                if old and str(getattr(old, "profession", "") or "").strip():
-                    prof = str(old.profession).strip()
-                else:
-                    prof = prof_computed
+                # 优先级：PROFESSION_MAP[key] > 定位字段 > DEFAULT
+                # 用 None 做映射表默认值，区分"未命中"和"命中空字符串"
+                prof = PROFESSION_MAP.get(profile_name) or prof_raw.strip() or DEFAULT_PROFESSION
                 dis_name = DISPLAY_NAME_MAP.get(profile_name) or name
                 # personality: prefer dedicated field, fall back to description
                 pers_raw = one.get("personality")
@@ -500,13 +244,6 @@ class GameService:
                 )
                 if room is not None and a.id not in room.agent_ids:
                     room.agent_ids.append(a.id)
-            for v in self._peer_visitors:
-                room = next(
-                    (r for r in self._world.rooms if r.name == v.location or r.id == v.location),
-                    None,
-                )
-                if room is not None and v.visitor_id not in room.agent_ids:
-                    room.agent_ids.append(v.visitor_id)
 
     def _append_event_log(self, kind: str, payload: dict[str, Any]) -> None:
         entry: dict[str, Any] = {"at": time.time(), "kind": kind, **payload}
@@ -572,8 +309,6 @@ class GameService:
                     for key, val in payload.items():
                         if key == "id" or not hasattr(a, key):
                             continue
-                        if key == "profession" and val is not None:
-                            val = str(val).strip()
                         setattr(a, key, val)
                     self.sync_room_occupancy()
                     self._append_event_log("agent_update", {"agent_id": a.id})
@@ -590,102 +325,41 @@ class GameService:
                     self._append_event_log("move", {"agent_id": agent_id, "room": room_id})
                     self._broadcast("agent_status", {"action": "move", "agent_id": agent_id, "room": room_id})
                     return True
-            for v in self._peer_visitors:
-                if v.visitor_id == agent_id:
-                    v.location = room_id
-                    self.sync_room_occupancy()
-                    self._append_event_log("move", {"agent_id": agent_id, "room": room_id, "peer_visitor": True})
-                    self._broadcast("agent_status", {"action": "move", "agent_id": agent_id, "room": room_id})
-                    return True
         return False
 
     def create_task(self, payload: dict[str, Any]) -> Task:
         with self._lock:
             tid = max((t.id for t in self._world.tasks), default=0) + 1
-            try:
-                est = float(payload.get("estimated_hours", 2.0))
-            except (TypeError, ValueError):
-                est = 2.0
             task = Task(
                 id=tid,
                 name=str(payload.get("name") or "新任务"),
                 description=str(payload.get("description") or ""),
+                required_profession=str(payload.get("required_profession") or "程序员"),
+                difficulty=int(payload.get("difficulty") or 2),
+                reward=int(payload.get("reward") or 100),
                 is_collaborative=bool(payload.get("is_collaborative") or False),
-                estimated_hours=max(0.0, est),
-                due_at=str(payload.get("due_at") or "").strip()[:32],
-                deliverables=str(payload.get("deliverables") or ""),
-                acceptance_criteria=str(payload.get("acceptance_criteria") or ""),
-                catalog=str(payload.get("catalog") or "").strip()[:256],
             )
             self._world.tasks.append(task)
             self._broadcast("task", {"action": "create", "task": task.to_dict()})
             return task
 
-    def update_task(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Partial update: 名称、描述、截止、产物、验收、预计工时、协作标记。"""
-        with self._lock:
-            tid = int(payload.get("task_id", 0))
-            task = next((t for t in self._world.tasks if t.id == tid), None)
-            if not task:
-                return {"ok": False, "error": "task_not_found"}
-            if "name" in payload:
-                n = str(payload.get("name") or "").strip()
-                if n:
-                    task.name = n
-            if "description" in payload:
-                task.description = str(payload.get("description") or "")
-            if "due_at" in payload:
-                task.due_at = str(payload.get("due_at") or "").strip()[:32]
-            if "deliverables" in payload:
-                task.deliverables = str(payload.get("deliverables") or "")
-            if "acceptance_criteria" in payload:
-                task.acceptance_criteria = str(payload.get("acceptance_criteria") or "")
-            if "catalog" in payload:
-                task.catalog = str(payload.get("catalog") or "").strip()[:256]
-            if "estimated_hours" in payload:
-                try:
-                    task.estimated_hours = max(0.0, float(payload.get("estimated_hours")))
-                except (TypeError, ValueError):
-                    pass
-            if "is_collaborative" in payload:
-                task.is_collaborative = bool(payload.get("is_collaborative"))
-            self._broadcast("task", {"action": "update", "task": task.to_dict()})
-            return {"ok": True, "task": task.to_dict()}
-
-    def delete_task(self, task_id: int) -> dict[str, Any]:
-        """Remove task; clear assignees' current_task_id and idle working agents."""
-        with self._lock:
-            task = next((t for t in self._world.tasks if t.id == task_id), None)
-            if not task:
-                return {"ok": False, "error": "task_not_found"}
-            tid = task.id
-            for a in self._world.agents:
-                if a.current_task_id == tid:
-                    a.current_task_id = None
-                    if getattr(a, "status", None) == "working":
-                        a.status = "idle"
-            self._world.tasks = [t for t in self._world.tasks if t.id != tid]
-            self._append_event_log("task_delete", {"task_id": tid})
-            self._broadcast("task", {"action": "delete", "task_id": tid})
-            return {"ok": True, "task_id": tid}
-
     def assign_task(self, task_id: int, agent_id: str | None) -> dict[str, Any]:
-        """分配任务；多名空闲 Agent 未点名时随机竞争。"""
+        """分配任务；同职业多人时随机竞争。"""
         with self._lock:
             task = next((t for t in self._world.tasks if t.id == task_id), None)
             if not task:
                 return {"ok": False, "error": "task_not_found"}
-            candidates = [a for a in self._world.agents if getattr(a, "status", None) == "idle"]
+            prof = task.required_profession
+            candidates = [a for a in self._world.agents if a.profession == prof]
             result: dict[str, Any] = {"ok": True, "task_id": task_id, "competition": False}
 
             if agent_id:
-                target = next((a for a in self._world.agents if a.id == agent_id), None)
-                if not target:
-                    return {"ok": False, "error": "agent_not_found"}
                 task.assignee_id = agent_id
                 task.status = "in_progress"
-                target.status = "working"
-                target.current_task_id = task_id
+                for a in self._world.agents:
+                    if a.id == agent_id:
+                        a.status = "working"
+                        a.current_task_id = task_id
                 self._append_event_log("task_assign", {"task_id": task_id, "assignee_id": agent_id, "competition": False})
                 self._broadcast("task", {"action": "assign", "task": task.to_dict()})
                 return result
@@ -783,8 +457,8 @@ class GameService:
             task.status = "completed"
             task.progress = 100.0
             task.quality = max(0, min(100, quality))
-            xp_gain = TASK_COMPLETE_XP
-            gold_gain = TASK_COMPLETE_GOLD
+            xp_gain = task.reward // 2
+            gold_gain = task.reward
             if task.is_collaborative:
                 gold_gain = int(gold_gain * (1 + task.collaboration_bonus))
             if task.assignee_id:

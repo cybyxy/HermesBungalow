@@ -12050,20 +12050,20 @@
             {
               "name": "x",
               "type": "float",
-              "value": 600
+              "value": 490
             },
             {
               "name": "y",
               "type": "float",
-              "value": 720
+              "value": 779
             }
           ],
           "rotation": 0,
           "type": "",
           "visible": true,
           "width": 0,
-          "x": 600,
-          "y": 720
+          "x": 490,
+          "y": 779
         },
         {
           "height": 0,

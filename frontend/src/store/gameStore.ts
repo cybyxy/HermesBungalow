@@ -1,9 +1,7 @@
 import { create } from 'zustand';
 import type { GameWorldSnapshot } from '../types/game';
-import { appendGatewayPeerRelayInference } from '../chat/orchestrationUi';
 import * as gameApi from '../services/gameApi';
 import { gameGateway, type GatewayStatus } from '../services/gameGateway';
-import { useUiStore } from './uiStore';
 
 let offStatus: (() => void) | null = null;
 let offGame: (() => void) | null = null;
@@ -27,7 +25,6 @@ interface GameStore {
   loadState: (opts?: { silent?: boolean }) => Promise<void>;
   moveAgent: (agentId: string, roomId: string) => Promise<void>;
   assignTask: (taskId: number, agentId?: string | null) => Promise<void>;
-  deleteTask: (taskId: number) => Promise<void>;
   applyLlmTags: (text: string) => Promise<void>;
   connectGateway: () => void;
   disconnectGateway: () => void;
@@ -89,24 +86,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     await get().loadState();
   },
 
-  deleteTask: async (taskId) => {
-    const tid = Number(taskId);
-    if (!Number.isFinite(tid)) throw new Error('无效的任务 ID');
-    await gameApi.postDeleteTask(tid);
-    set((s) => {
-      if (!s.snapshot) return {};
-      return { snapshot: gameApi.stripTaskFromWorldSnapshot(s.snapshot, tid) };
-    });
-    if (Number(useUiStore.getState().selectedTaskId) === tid) {
-      useUiStore.getState().setSelectedTask(null);
-    }
-    try {
-      await get().loadState({ silent: true });
-    } catch {
-      /* 乐观更新已生效；静默刷新失败时保留当前 UI */
-    }
-  },
-
   applyLlmTags: async (text) => {
     await gameApi.postLlmApplyTags(text);
     await get().loadState();
@@ -130,10 +109,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
           );
           return { snapshot: { ...s.snapshot, agents } };
         });
-        return;
-      }
-      if (channel === 'agent_status' && data.action === 'peer_relay_inference') {
-        appendGatewayPeerRelayInference(get().snapshot, data);
         return;
       }
       void get().loadState();

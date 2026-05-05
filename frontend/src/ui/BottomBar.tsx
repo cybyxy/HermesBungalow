@@ -164,7 +164,6 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
   const selectedTaskId = useUiStore((s) => s.selectedTaskId);
   const bottomSheet = useUiStore((s) => s.bottomSheet);
   const openBottomSheet = useUiStore((s) => s.openBottomSheet);
-  const openNewTaskModal = useUiStore((s) => s.openNewTaskModal);
   const closeBottomSheet = useUiStore((s) => s.closeBottomSheet);
 
   const agentStreamIds = useUiStore((s) => s.agentStreamIds);
@@ -314,7 +313,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
 
   const onQuickAssign = () => {
     if (selectedTaskId == null || !selectedAgentId) {
-      setToast('请在左侧栏「工作室任务」中选一条任务，并在场景中选中一名 Agent');
+      setToast('请先选中右侧一个任务和左侧一个 Agent');
       return;
     }
     void assignTask(selectedTaskId, selectedAgentId).then(() => loadState());
@@ -560,7 +559,7 @@ export function BottomBar(props: { snapshot: GameWorldSnapshot | null; gatewaySt
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', alignSelf: 'flex-end', gap: 4, flexShrink: 0 }}>
-          <button type="button" style={footerBarBtn} onClick={() => openNewTaskModal()}>
+          <button type="button" style={footerBarBtn} onClick={() => openBottomSheet({ kind: 'newTask' })}>
             新建
           </button>
           <button type="button" style={footerBarBtn} onClick={onQuickAssign}>

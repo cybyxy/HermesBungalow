@@ -1,4 +1,4 @@
-import type { Agent, GameTask, GameWorldSnapshot, PeerPresetPayload } from '../types/game';
+import type { Agent, GameTask, GameWorldSnapshot } from '../types/game';
 
 const JSON_HDR = { 'Content-Type': 'application/json' };
 
@@ -43,7 +43,6 @@ export function normalizeAgentFromApi(raw: unknown): Agent {
   return {
     id: String(r.id ?? ''),
     name: String(r.name ?? ''),
-    display_name: r.display_name != null && String(r.display_name) !== '' ? String(r.display_name) : undefined,
     profession: String(r.profession ?? ''),
     profile: r.profile != null && String(r.profile) !== '' ? String(r.profile) : undefined,
     gender: r.gender != null && r.gender !== '' ? String(r.gender) : undefined,
@@ -67,71 +66,17 @@ export function normalizeAgentFromApi(raw: unknown): Agent {
       r.hermes_session_id != null && String(r.hermes_session_id) !== ''
         ? String(r.hermes_session_id)
         : undefined,
-    avatar: r.avatar != null && String(r.avatar) !== '' ? String(r.avatar) : undefined,
-    peer_relay_base_url:
-      r.peer_relay_base_url != null && String(r.peer_relay_base_url) !== ''
-        ? String(r.peer_relay_base_url)
-        : undefined,
-    peer_relay_agent_id:
-      r.peer_relay_agent_id != null && String(r.peer_relay_agent_id) !== ''
-        ? String(r.peer_relay_agent_id)
-        : undefined,
-    bungalow_peer_api:
-      r.bungalow_peer_api != null && Number.isFinite(Number(r.bungalow_peer_api))
-        ? Number(r.bungalow_peer_api)
-        : undefined,
   };
 }
 
-/** 统一任务 id 为 number，避免 `2 !== "2"` 导致前端删选/过滤失败。 */
-export function normalizeGameSnapshotTasks(s: GameWorldSnapshot): GameWorldSnapshot {
-  const tasks = (s.tasks ?? [])
-    .map((t) => {
-      const id = Number((t as GameTask).id);
-      if (!Number.isFinite(id)) return null;
-      const progress = Number((t as GameTask).progress);
-      return {
-        ...(t as GameTask),
-        id,
-        progress: Number.isFinite(progress) ? progress : 0,
-        estimated_hours:
-          (t as GameTask).estimated_hours != null
-            ? (() => {
-                const eh = Number((t as GameTask).estimated_hours);
-                return Number.isFinite(eh) ? eh : 0;
-              })()
-            : undefined,
-      } as GameTask;
-    })
-    .filter((x): x is GameTask => x != null);
-  return { ...s, tasks };
-}
-
-/** 从快照中移除指定任务并清理 Agent 的 current_task_id（与后端 delete_task 语义一致）。 */
-export function stripTaskFromWorldSnapshot(snapshot: GameWorldSnapshot, taskId: number): GameWorldSnapshot {
-  const tid = Number(taskId);
-  if (!Number.isFinite(tid)) return snapshot;
-  const tasks = snapshot.tasks.filter((t) => Number(t.id) !== tid);
-  const agents = snapshot.agents.map((a) => {
-    if (a.current_task_id == null || Number(a.current_task_id) !== tid) return a;
-    return {
-      ...a,
-      current_task_id: null,
-      status: a.status === 'working' ? 'idle' : a.status,
-    };
-  });
-  return { ...snapshot, tasks, agents };
-}
-
 export async function fetchGameState(): Promise<GameWorldSnapshot> {
-  const res = await fetch('/api/game/state', { cache: 'no-store' });
-  const raw = await parseJson<GameWorldSnapshot>(res);
-  return normalizeGameSnapshotTasks(raw);
+  const res = await fetch('/api/game/state');
+  return parseJson<GameWorldSnapshot>(res);
 }
 
 /** Authoritative agent list from backend (same rows as embedded in state, explicit endpoint). */
 export async function fetchGameAgents(): Promise<Agent[]> {
-  const res = await fetch('/api/game/agents', { cache: 'no-store' });
+  const res = await fetch('/api/game/agents');
   const data = await parseJson<{ agents?: unknown[] }>(res);
   return (data.agents ?? []).map(normalizeAgentFromApi);
 }
@@ -198,8 +143,6 @@ export async function saveAgentProfileFiles(payload: {
 export async function updateAgentConfig(payload: {
   id: string;
   reasoning_model?: string;
-  /** 持久化到游戏存档；Hermes 同步不会覆盖非空职业。 */
-  profession?: string;
 }): Promise<{ ok: boolean; agent?: Record<string, unknown> }> {
   const res = await fetch('/api/game/agent/update', {
     method: 'POST',
@@ -212,60 +155,16 @@ export async function updateAgentConfig(payload: {
 export async function postCreateTask(payload: {
   name: string;
   description?: string;
-  estimated_hours?: number;
-  due_at?: string;
-  deliverables?: string;
-  acceptance_criteria?: string;
-  catalog?: string;
-  is_collaborative?: boolean;
-  /** 与底栏会话一致：指定本机 Agent 为编排入口；不传则后端用 default / 首名本机 Agent */
-  primary_agent_id?: string;
-}): Promise<{
-  ok: boolean;
-  task: GameTask;
-  /** 发给主 Agent 编排的完整用户文（与底栏一条消息等价） */
-  orchestration_user_preview?: string;
-  /** 后端解析的默认主 Agent；前端优先用顶栏选中本机 Agent */
-  suggested_primary_agent_id?: string;
-}> {
+  required_profession?: string;
+  difficulty?: number;
+  reward?: number;
+}): Promise<{ ok: boolean; task: GameTask }> {
   const res = await fetch('/api/game/task', {
     method: 'POST',
     headers: JSON_HDR,
     body: JSON.stringify(payload),
   });
   return parseJson(res);
-}
-
-export async function postUpdateTask(payload: {
-  task_id: number;
-  name?: string;
-  description?: string;
-  due_at?: string;
-  deliverables?: string;
-  acceptance_criteria?: string;
-  catalog?: string;
-  estimated_hours?: number;
-  is_collaborative?: boolean;
-}): Promise<{ ok: boolean; task: GameTask }> {
-  const res = await fetch('/api/game/task/update', {
-    method: 'POST',
-    headers: JSON_HDR,
-    body: JSON.stringify(payload),
-  });
-  return parseJson(res);
-}
-
-export async function postDeleteTask(taskId: number): Promise<{ ok: boolean; task_id?: number }> {
-  const res = await fetch('/api/game/task/delete', {
-    method: 'POST',
-    headers: JSON_HDR,
-    body: JSON.stringify({ task_id: taskId }),
-  });
-  const data = await parseJson<{ ok?: boolean; error?: string; task_id?: number }>(res);
-  if (data.ok === false) {
-    throw new Error(String(data.error ?? '删除失败'));
-  }
-  return { ok: true, task_id: data.task_id };
 }
 
 export async function postTaskAssign(taskId: number, agentId?: string | null): Promise<Record<string, unknown>> {
@@ -360,24 +259,6 @@ export function resolveGameAgent(agents: readonly Agent[] | null | undefined, to
     if (dn && (dn === t || dn.toLowerCase() === tl)) return a;
   }
   return undefined;
-}
-
-/**
- * 右侧推理 / 头顶状态用的 snapshot 行解析。
- * ``peer_relay_inference`` 等事件里 ``target_agent_id`` 常为对端 relay 游戏 id，与本地来访行的 ``peer_relay_agent_id`` 一致（不等于 pv 访客 id）。
- */
-export function resolveSnapshotAgentForInference(
-  snapshot: GameWorldSnapshot | null | undefined,
-  agentToken: string | null | undefined,
-): Agent | undefined {
-  if (!snapshot?.agents?.length || !agentToken?.trim()) return undefined;
-  const tid = agentToken.trim();
-  for (const a of snapshot.agents) {
-    if (a.bungalow_peer_api != null && Number(a.bungalow_peer_api) === 1 && (a.peer_relay_agent_id ?? '').trim() === tid) {
-      return a;
-    }
-  }
-  return snapshot.agents.find((a) => a.id === tid);
 }
 
 const USER_RELAY_RE = /^\/relay\s+(\S+)\s*\|\s*([\s\S]+)$/i;
@@ -717,26 +598,6 @@ export async function fetchMonitorArtifact(
   return parseJson(res);
 }
 
-/** 台账任务时间线 */
-export type TrackerTimelineRow = {
-  id: string;
-  title: string;
-  description: string;
-  estimated_hours: string;
-  due_date: string;
-  priority: string;
-  status: string;
-  assignee: string;
-  timeline: { step: string; name: string; plan_start: string; plan_end: string; hours: string; status: string }[];
-  steps: { step: string; name: string; status: string; assignee: string; blocker: string }[];
-};
-
-export async function fetchTrackerTimeline(taskId?: string): Promise<{ ok: boolean; tasks: TrackerTimelineRow[] }> {
-  const url = taskId ? `/api/game/tracker/timeline?task_id=${encodeURIComponent(taskId)}` : '/api/game/tracker/timeline';
-  const res = await fetch(url);
-  return parseJson(res);
-}
-
 /** One-shot LLM turn as another game agent（Hermes profile）；与 UI 里 `@对方 | 消息` 手动点名一致。 */
 export async function relayChatToAgent(
   toToken: string,
@@ -756,98 +617,4 @@ export async function relayChatToAgent(
     body: JSON.stringify({ to_agent_id: toToken.trim(), message: message.trim() }),
   });
   return parseJson(res);
-}
-
-export type PeersVisitResponse = {
-  ok: boolean;
-  visitor_id?: string;
-  bungalow_peer_api?: number;
-  error?: string;
-  detail?: string;
-  hint?: string;
-};
-
-/** Same-origin proxy: POSTs to `/api/game/peers/visit` with `target_base_url` so the server forwards to the peer. */
-export async function postPeersVisitProxy(payload: {
-  target_base_url: string;
-  peer_token: string;
-  relay_agent_id: string;
-  name?: string;
-  display_name?: string;
-  profession?: string;
-  profile?: string;
-  location?: string;
-}): Promise<PeersVisitResponse> {
-  const res = await fetch('/api/game/peers/visit', {
-    method: 'POST',
-    headers: JSON_HDR,
-    body: JSON.stringify(payload),
-  });
-  const data = (await res.json()) as PeersVisitResponse;
-  if (!res.ok) {
-    throw new Error(`${res.status}: ${JSON.stringify(data)}`);
-  }
-  return data;
-}
-
-export async function postPeersLeaveProxy(payload: {
-  target_base_url: string;
-  peer_token: string;
-  visitor_id: string;
-}): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch('/api/game/peers/leave', {
-    method: 'POST',
-    headers: JSON_HDR,
-    body: JSON.stringify(payload),
-  });
-  const data = (await res.json()) as { ok: boolean; error?: string };
-  if (!res.ok) {
-    throw new Error(`${res.status}: ${JSON.stringify(data)}`);
-  }
-  return data;
-}
-
-export async function fetchGamePeers(): Promise<{ peers: string[] }> {
-  const res = await fetch('/api/game/peers');
-  return parseJson(res);
-}
-
-export async function putPeerPresets(presets: PeerPresetPayload[]): Promise<{ ok: boolean; count?: number; error?: string }> {
-  const res = await fetch('/api/game/peers/presets', {
-    method: 'PUT',
-    headers: JSON_HDR,
-    body: JSON.stringify({ presets }),
-  });
-  return parseJson(res);
-}
-
-export async function postPeersVisitByPreset(payload: {
-  preset_id: string;
-  /** 本机鉴权；省略时用预设中保存的 token（须与服务器一致） */
-  peer_token?: string;
-  relay_agent_id?: string;
-}): Promise<PeersVisitResponse> {
-  const res = await fetch('/api/game/peers/visit-by-preset', {
-    method: 'POST',
-    headers: JSON_HDR,
-    body: JSON.stringify(payload),
-  });
-  const data = (await res.json()) as PeersVisitResponse;
-  if (!res.ok) {
-    throw new Error(`${res.status}: ${JSON.stringify(data)}`);
-  }
-  return data;
-}
-
-export async function postPeersLeaveOutbound(payload: { peer_token?: string }): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch('/api/game/peers/leave-outbound', {
-    method: 'POST',
-    headers: JSON_HDR,
-    body: JSON.stringify(payload),
-  });
-  const data = (await res.json()) as { ok: boolean; error?: string };
-  if (!res.ok) {
-    throw new Error(`${res.status}: ${JSON.stringify(data)}`);
-  }
-  return data;
 }

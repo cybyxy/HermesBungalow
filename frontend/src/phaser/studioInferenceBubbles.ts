@@ -1,7 +1,6 @@
 import Phaser from 'phaser';
 import type { InferenceEntry, InferenceVariant } from '../store/uiStore';
 import type { Agent, GameWorldSnapshot } from '../types/game';
-import { displayAgentProfession } from '../ui/buildingLayout';
 import { colors, professionColor, studioFontMeta, studioFontUi, studioInk } from '../ui/theme';
 import * as gameApi from '../services/gameApi';
 
@@ -35,7 +34,7 @@ export function userInferenceTargetNamePh(e: InferenceEntry, snapshot: GameWorld
     return hit?.name ?? h.token;
   }
   if (e.agentId) {
-    const hit = gameApi.resolveSnapshotAgentForInference(snapshot, e.agentId);
+    const hit = snapshot.agents.find((a) => a.id === e.agentId);
     if (hit?.name) return hit.name;
   }
   return 'Agent';
@@ -47,7 +46,7 @@ export function inferenceRoleLabelPh(e: InferenceEntry, agent: Agent | undefined
     const h = (e.headline || '').trim();
     return h && h !== '系统' ? h : '系统';
   }
-  const p = agent ? displayAgentProfession(agent) : '';
+  const p = (agent?.profession || '').trim();
   if (p) return p;
   const h = e.headline || '';
   const i = h.indexOf(' · ');
@@ -80,7 +79,7 @@ export function drawTopAgentAvatar(
   depth: number,
 ): Phaser.GameObjects.Text[] {
   const outs: Phaser.GameObjects.Text[] = [];
-  const ring = hx(professionColor(displayAgentProfession(agent) || ''));
+  const ring = hx(professionColor(agent.profession));
   g.fillStyle(hx('#252538'), 1);
   g.fillCircle(cx, cy, r);
   g.lineStyle(selected ? 3 : 2, selected ? hx(colors.gold) : ring, 1);
@@ -361,9 +360,9 @@ export class InferenceBubbleColumn {
     selectedAgentId: string | null,
   ): { container: Phaser.GameObjects.Container; height: number } {
     const c = this.scene.add.container(0, 0);
-    let agent = e.agentId ? gameApi.resolveSnapshotAgentForInference(snapshot, e.agentId) : undefined;
+    let agent = e.agentId ? snapshot.agents.find((a) => a.id === e.agentId) : undefined;
     if (!agent && selectedAgentId && (e.variant === 'reply' || e.variant === 'error')) {
-      agent = gameApi.resolveSnapshotAgentForInference(snapshot, selectedAgentId);
+      agent = snapshot.agents.find((a) => a.id === selectedAgentId);
     }
     const isUser = e.variant === 'user';
     const AV = 26;
@@ -460,7 +459,7 @@ export class InferenceBubbleColumn {
       }).setOrigin(0.5, 0.5);
       c.add(me);
     } else {
-      const ring = agent ? hx(professionColor(displayAgentProfession(agent) || '')) : hx('#555555');
+      const ring = agent ? hx(professionColor(agent.profession)) : hx('#555555');
       const acx = AV / 2 + 2;
       const acy = headerH / 2 + 2;
       g.fillStyle(hx('#252540'), 1);
@@ -493,9 +492,9 @@ export class InferenceBubbleColumn {
     selectedAgentId: string | null,
   ): { container: Phaser.GameObjects.Container; height: number } {
     const c = this.scene.add.container(0, 0);
-    let agent = e.agentId ? gameApi.resolveSnapshotAgentForInference(snapshot, e.agentId) : undefined;
+    let agent = e.agentId ? snapshot.agents.find((a) => a.id === e.agentId) : undefined;
     if (!agent && selectedAgentId) {
-      agent = gameApi.resolveSnapshotAgentForInference(snapshot, selectedAgentId);
+      agent = snapshot.agents.find((a) => a.id === selectedAgentId);
     }
     const sty = entryBubbleStyle(e.variant);
     const role = inferenceRoleLabelPh(e, agent);
@@ -550,7 +549,7 @@ export class InferenceBubbleColumn {
 
     const acx = AV / 2 + 6;
     const acy = headH / 2 + 1;
-    const ring = agent ? hx(professionColor(displayAgentProfession(agent) || '')) : hx('#555555');
+    const ring = agent ? hx(professionColor(agent.profession)) : hx('#555555');
     g.fillStyle(hx('#252540'), 1);
     g.lineStyle(2, ring, 1);
     g.fillCircle(acx, acy, AV / 2);

@@ -1,25 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties, PointerEvent, ReactNode } from 'react';
+import { useEffect } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { colors, layoutPx, studioGlass } from './theme';
-
-type DragSession = {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  originX: number;
-  originY: number;
-};
-
-function clampDrag(dx: number, dy: number): { x: number; y: number } {
-  const w = typeof window !== 'undefined' ? window.innerWidth : 1024;
-  const h = typeof window !== 'undefined' ? window.innerHeight : 768;
-  const maxX = Math.max(80, w * 0.48);
-  const maxY = Math.max(80, h * 0.45);
-  return {
-    x: Math.max(-maxX, Math.min(maxX, dx)),
-    y: Math.max(-maxY, Math.min(maxY, dy)),
-  };
-}
 
 export function PopupSheet(props: {
   open: boolean;
@@ -44,8 +25,6 @@ export function PopupSheet(props: {
    * 为 true：点遮罩 / Escape 可关闭。底部弹层默认 false（仅右上角 × 关闭）；overlay 默认 true。
    */
   dismissible?: boolean;
-  /** 仅 `variant="overlay"`：按住标题栏（除关闭按钮）拖动窗体。 */
-  draggable?: boolean;
 }) {
   const {
     open,
@@ -58,21 +37,11 @@ export function PopupSheet(props: {
     insetRightPx,
     nonBlocking: nonBlockingProp,
     dismissible: dismissibleProp,
-    draggable = false,
   } = props;
 
   const isBottomSheet = variant !== 'overlay';
   const dismissible = dismissibleProp ?? !isBottomSheet;
   const nonBlocking = nonBlockingProp ?? isBottomSheet;
-
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const dragOffsetRef = useRef(dragOffset);
-  dragOffsetRef.current = dragOffset;
-  const dragSession = useRef<DragSession | null>(null);
-
-  useEffect(() => {
-    if (open && draggable && !isBottomSheet) setDragOffset({ x: 0, y: 0 });
-  }, [open, draggable, isBottomSheet]);
 
   useEffect(() => {
     if (!open || !dismissible) return;
@@ -83,52 +52,9 @@ export function PopupSheet(props: {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose, dismissible]);
 
-  const onOverlayHeaderPointerDown = useCallback((e: PointerEvent<HTMLDivElement>) => {
-    if (!draggable) return;
-    if ((e.target as HTMLElement).closest('button')) return;
-    e.preventDefault();
-    const o = dragOffsetRef.current;
-    dragSession.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      originX: o.x,
-      originY: o.y,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  }, [draggable]);
-
-  const onOverlayHeaderPointerMove = useCallback((e: PointerEvent<HTMLDivElement>) => {
-    const s = dragSession.current;
-    if (!s || e.pointerId !== s.pointerId) return;
-    const nx = s.originX + (e.clientX - s.startX);
-    const ny = s.originY + (e.clientY - s.startY);
-    setDragOffset(clampDrag(nx, ny));
-  }, []);
-
-  const onOverlayHeaderPointerUp = useCallback((e: PointerEvent<HTMLDivElement>) => {
-    const s = dragSession.current;
-    if (!s || e.pointerId !== s.pointerId) return;
-    dragSession.current = null;
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      /* already released */
-    }
-  }, []);
-
   if (!open) return null;
 
   if (!isBottomSheet) {
-    const headerDragStyle: CSSProperties = draggable
-      ? {
-          ...headerStyle,
-          cursor: 'grab',
-          touchAction: 'none',
-          userSelect: 'none',
-        }
-      : headerStyle;
-
     return (
       <div
         role="presentation"
@@ -152,17 +78,10 @@ export function PopupSheet(props: {
           style={{
             ...sheetStyleOverlay,
             pointerEvents: 'auto',
-            transform: draggable ? `translate(${dragOffset.x}px, ${dragOffset.y}px)` : undefined,
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div
-            style={headerDragStyle}
-            onPointerDown={draggable ? onOverlayHeaderPointerDown : undefined}
-            onPointerMove={draggable ? onOverlayHeaderPointerMove : undefined}
-            onPointerUp={draggable ? onOverlayHeaderPointerUp : undefined}
-            onPointerCancel={draggable ? onOverlayHeaderPointerUp : undefined}
-          >
+          <div style={headerStyle}>
             <span style={{ color: colors.gold, fontWeight: 'bold', fontSize: 14 }}>{title}</span>
             <button type="button" onClick={onClose} style={closeStyle}>
               ×
