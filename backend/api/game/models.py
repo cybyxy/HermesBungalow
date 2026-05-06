@@ -56,6 +56,12 @@ class Task:
     is_collaborative: bool = False
     collaboration_bonus: float = 0.3
     subtasks: list[dict[str, Any]] = field(default_factory=list)
+    due_at: str = ""
+    deliverables: str = ""
+    acceptance_criteria: str = ""
+    catalog: str = ""
+    """LLM / SKILL 规划的可执行步骤（写入存档 JSON；见 ``task_workflow_plan`` GAME_EVENT）。"""
+    workflow_steps: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

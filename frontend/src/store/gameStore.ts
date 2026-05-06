@@ -25,6 +25,7 @@ interface GameStore {
   loadState: (opts?: { silent?: boolean }) => Promise<void>;
   moveAgent: (agentId: string, roomId: string) => Promise<void>;
   assignTask: (taskId: number, agentId?: string | null) => Promise<void>;
+  deleteTask: (taskId: number) => Promise<void>;
   applyLlmTags: (text: string) => Promise<void>;
   connectGateway: () => void;
   disconnectGateway: () => void;
@@ -86,6 +87,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
     await get().loadState();
   },
 
+  deleteTask: async (taskId) => {
+    await gameApi.postTaskDelete(taskId);
+    // 乐观移除，避免与定时 tick / WebSocket 触发的 loadState 竞态导致列表「删不掉」
+    set((s) => {
+      if (!s.snapshot) return {};
+      return {
+        snapshot: { ...s.snapshot, tasks: s.snapshot.tasks.filter((t) => t.id !== taskId) },
+      };
+    });
+    await get().loadState({ silent: true });
+  },
+
   applyLlmTags: async (text) => {
     await gameApi.postLlmApplyTags(text);
     await get().loadState();
@@ -111,7 +124,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         });
         return;
       }
-      void get().loadState();
+      void get().loadState({ silent: true });
     });
     gameGateway.connect();
   },

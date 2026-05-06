@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { firstLocalAgentId } from '../chat/taskOrchestrationPrompt';
 import * as gameApi from '../services/gameApi';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
+import { isPeerVisitorAgent } from './buildingLayout';
 import { AddAgentPanel } from './AddAgentPanel';
 import { AgentDetailPanel } from './AgentDetailPanel';
 import { MAIN_MENUS } from './menuConfig';
@@ -17,9 +19,12 @@ export function BottomSheetHost() {
   const snapshot = useGameStore((s) => s.snapshot);
   const loadState = useGameStore((s) => s.loadState);
   const gatewayStatus = useGameStore((s) => s.gatewayStatus);
+  const selectedAgentId = useUiStore((s) => s.selectedAgentId);
+  const setSelectedTask = useUiStore((s) => s.setSelectedTask);
 
   const [newTaskName, setNewTaskName] = useState('新任务');
   const [newTaskProf, setNewTaskProf] = useState('程序员');
+  const [userSkillExcerpt, setUserSkillExcerpt] = useState('');
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
@@ -43,14 +48,35 @@ export function BottomSheetHost() {
 
   const onCreateTask = async () => {
     try {
-      await gameApi.postCreateTask({
+      const res = await gameApi.postCreateTask({
         name: newTaskName.trim() || '新任务',
         required_profession: newTaskProf,
         difficulty: 2,
         reward: 100,
       });
+      const created = res.task;
       closeBottomSheet();
-      void loadState();
+      setSelectedTask(created.id);
+      await loadState();
+      const snap = useGameStore.getState().snapshot;
+      const sel = snap?.agents.find((a) => a.id === selectedAgentId) ?? null;
+      const orchId =
+        selectedAgentId && sel && !isPeerVisitorAgent(sel) ? selectedAgentId : firstLocalAgentId(snap);
+      if (!orchId) {
+        setToast('任务已创建；未找到本机 Agent，无法自动生成任务流程（请稍后在任务监测中手动「重新执行」）。');
+        return;
+      }
+      const excerpt = userSkillExcerpt.trim();
+      const gen = await gameApi.postTaskWorkflowGenerate({
+        task_id: created.id,
+        agent_id: orchId,
+        ...(excerpt ? { user_skill_excerpt: excerpt } : {}),
+      });
+      if (!gen.workflow_applied) {
+        setToast('任务已创建；未能从模型回复中解析出流程 JSON（可检查 Agent 回复或稍后重试）。');
+      }
+      await loadState();
+      setUserSkillExcerpt('');
     } catch (e) {
       setToast((e as Error).message);
     }
@@ -117,6 +143,28 @@ export function BottomSheetHost() {
             </option>
           ))}
         </select>
+        <label style={{ display: 'block', color: colors.text, fontSize: 12, marginBottom: 6 }}>
+          自定义任务分析 / SKILL 摘录（可选）
+        </label>
+        <textarea
+          value={userSkillExcerpt}
+          onChange={(e) => setUserSkillExcerpt(e.target.value)}
+          placeholder="可粘贴你的任务拆解 SKILL 或分析要点；留空则仅按任务卡片由后端注入 Schema 生成流程。"
+          rows={4}
+          style={{
+            width: '100%',
+            marginBottom: 16,
+            padding: 8,
+            background: '#0a0a15',
+            color: '#fff',
+            border: `1px solid ${colors.border}`,
+            borderRadius: 4,
+            boxSizing: 'border-box',
+            fontFamily: 'inherit',
+            fontSize: 11,
+            resize: 'vertical',
+          }}
+        />
         <button type="button" onClick={() => void onCreateTask()}>
           创建
         </button>

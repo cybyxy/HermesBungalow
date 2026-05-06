@@ -43,6 +43,17 @@ def test_tick_advances_time(svc: GameService):
     assert snap["time"] != t0 or svc.world.day > day0
 
 
+def test_delete_task_removes_and_unknown_fails(svc: GameService):
+    assert svc.world.tasks, "fixture world should include tasks"
+    tid = int(svc.world.tasks[0].id)
+    r = svc.delete_task(tid)
+    assert r.get("ok") is True
+    assert not any(x.id == tid for x in svc.world.tasks)
+    r2 = svc.delete_task(tid)
+    assert r2.get("ok") is False
+    assert r2.get("error") == "task_not_found"
+
+
 def test_persist_roundtrip_room_ids(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_BUNGALOW_SKIP_HERMES_AGENT_SYNC", "1")
     monkeypatch.setenv("HERMES_BUNGALOW_SKIP_HERMES_SESSION_INIT", "1")

@@ -7,6 +7,7 @@ import * as gameApi from '../services/gameApi';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
 import type { Agent, GameWorldSnapshot } from '../types/game';
+import { isPeerVisitorAgent } from '../ui/buildingLayout';
 
 const sessionsRef: Record<string, string> = {};
 
@@ -30,13 +31,14 @@ export function agentReplyHeadline(agent: Agent): string {
   return p ? `${agent.name} · ${p}` : agent.name;
 }
 
-/** 用户 `@同伴|…` 且未选顶栏 Agent 时，用「另一名」作 API 的 agent_id（发起点）。 */
+/** 用户 `@同伴|…` 且未选顶栏 Agent 时，用「另一名」作 API 的 agent_id（发起点）。跨机访客不能当编排主 agent。 */
 function orchestratorForRelay(snapshot: GameWorldSnapshot | null, selected: Agent | null, relayPeer: Agent): Agent | null {
-  if (selected?.id) return selected;
-  return snapshot?.agents.find((a) => a.id !== relayPeer.id) ?? null;
+  if (selected && !isPeerVisitorAgent(selected)) return selected;
+  return snapshot?.agents.find((a) => a.id !== relayPeer.id && !isPeerVisitorAgent(a)) ?? null;
 }
 
-async function runOrchestratedAndFlushUi(
+/** 与底栏发送一致：``POST …/agent-chat-orchestrated/run`` + SSE。 */
+export async function runOrchestratedAndFlushUi(
   snapshot: GameWorldSnapshot | null,
   orchestratorId: string,
   message: string,

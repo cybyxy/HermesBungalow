@@ -263,6 +263,7 @@ export function CenterStage(props: {
         style={{
           position: 'absolute',
           inset: 0,
+          zIndex: 1,
           background: C.bg,
           overflow: 'auto',
           display: 'flex',
@@ -299,7 +300,7 @@ export function CenterStage(props: {
           top: layoutPx.topBar,
           bottom: layoutPx.bottomBar,
           width: studioRightPanelCollapsed ? layoutPx.sidePanelCollapsed : layoutPx.sidePanel,
-          zIndex: 60,
+          zIndex: 70,
           pointerEvents: 'none',
           transition: 'width 0.2s ease-out',
           fontFamily: 'system-ui, sans-serif',

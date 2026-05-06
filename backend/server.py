@@ -419,6 +419,39 @@ async def post_task_complete(request: Request) -> JSONResponse:
     return JSONResponse(res)
 
 
+async def post_task_delete(request: Request) -> JSONResponse:
+    body = read_json_body(await request.body())
+    res = game.delete_task(int(body.get("task_id", 0)))
+    game.persist()
+    if not res.get("ok"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse(res)
+
+
+async def post_task_workflow_generate(request: Request) -> JSONResponse:
+    """可选 ``user_skill_excerpt``；提示词与 JSON Schema 由后端拼接并调 Hermes 编排（单主 Agent、无 auto_peer）。"""
+    body = read_json_body(await request.body())
+    task_id = int(body.get("task_id", 0))
+    agent_id = str(body.get("agent_id") or "").strip()
+    raw_ex = body.get("user_skill_excerpt")
+    excerpt = str(raw_ex).strip() if raw_ex is not None else None
+    if not task_id or not agent_id:
+        return JSONResponse({"ok": False, "error": "task_id_and_agent_id_required"}, status_code=400)
+    loop = asyncio.get_event_loop()
+    try:
+        res = await loop.run_in_executor(
+            None,
+            lambda: game.generate_task_workflow_with_llm(agent_id, task_id, excerpt),
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "workflow_generate_failed", "detail": str(e)}, status_code=500)
+    if not res.get("ok"):
+        err = str(res.get("error") or "bad_request")
+        code = 404 if err == "agent_not_found" else 400
+        return JSONResponse(res, status_code=code)
+    return JSONResponse(res)
+
+
 async def post_greeting(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
     res = game.greeting(str(body.get("agent_id_a", "")), str(body.get("agent_id_b", "")))
@@ -706,6 +739,11 @@ async def post_agent_chat_orchestrated(request: Request) -> JSONResponse:
         game.monitor_record_orchestrate(wo_id, message, primary.id, result)
     except Exception:
         pass
+    try:
+        game.apply_game_events_from_orchestrate_result(result)
+    except Exception:
+        pass
+    game.persist()
     result = dict(result)
     result["work_order_id"] = wo_id
     return JSONResponse(result)
@@ -735,6 +773,11 @@ def _orchestrate_sse_worker(
             game.monitor_record_orchestrate(wo_id, message, primary.id, result)
         except Exception:
             pass
+        try:
+            game.apply_game_events_from_orchestrate_result(result)
+        except Exception:
+            pass
+        game.persist()
         sink({"type": "turn_done", "run_id": run_id})
     except ValueError as e:
         game.monitor_abort_work_order(wo_id, str(e))
@@ -995,6 +1038,8 @@ routes: list[Route | WebSocketRoute] = [
     Route("/api/game/task", post_task, methods=["POST"]),
     Route("/api/game/task/assign", post_task_assign, methods=["POST"]),
     Route("/api/game/task/complete", post_task_complete, methods=["POST"]),
+    Route("/api/game/task/delete", post_task_delete, methods=["POST"]),
+    Route("/api/game/task/workflow/generate", post_task_workflow_generate, methods=["POST"]),
     Route("/api/game/greeting", post_greeting, methods=["POST"]),
     Route("/api/game/collaboration", post_collaboration, methods=["POST"]),
     Route("/api/game/competition/history", get_competition_history, methods=["GET"]),

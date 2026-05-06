@@ -176,6 +176,36 @@ export async function postTaskAssign(taskId: number, agentId?: string | null): P
   return parseJson(res);
 }
 
+export async function postTaskDelete(taskId: number): Promise<{ ok: boolean; task_id?: number; error?: string }> {
+  const res = await fetch('/api/game/task/delete', {
+    method: 'POST',
+    headers: JSON_HDR,
+    body: JSON.stringify({ task_id: taskId }),
+  });
+  return parseJson(res);
+}
+
+/** 后端拼接 JSON Schema + 可选用户 SKILL 摘录，调用 LLM 后解析并写入 ``workflow_steps`` */
+export async function postTaskWorkflowGenerate(payload: {
+  task_id: number;
+  agent_id: string;
+  user_skill_excerpt?: string;
+}): Promise<{
+  ok: boolean;
+  workflow_applied?: boolean;
+  task?: GameTask;
+  orchestrate?: unknown;
+  error?: string;
+  detail?: string;
+}> {
+  const res = await fetch('/api/game/task/workflow/generate', {
+    method: 'POST',
+    headers: JSON_HDR,
+    body: JSON.stringify(payload),
+  });
+  return parseJson(res);
+}
+
 export async function postLlmApplyTags(text: string): Promise<{ extracted: unknown[]; applied: unknown[] }> {
   const res = await fetch('/api/game/llm/apply-tags', {
     method: 'POST',

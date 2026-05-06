@@ -187,3 +187,12 @@ export function hitTest(mx: number, my: number, regions: HitRegion[]): HitRegion
   }
   return null;
 }
+
+/** 跨机访客：不可作为本机编排入口（与底栏 / 任务重跑一致）。 */
+export function isPeerVisitorAgent(agent: Agent): boolean {
+  const url = (agent.peer_relay_base_url ?? '').trim();
+  const rid = (agent.peer_relay_agent_id ?? '').trim();
+  if (url && rid) return true;
+  if (agent.bungalow_peer_api != null && Number(agent.bungalow_peer_api) === 1) return true;
+  return false;
+}

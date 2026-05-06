@@ -33,7 +33,7 @@ export function App() {
   useEffect(() => {
     if (!snapshot) return;
     const id = window.setInterval(() => {
-      void gameApi.postGameTick().then(() => loadState()).catch(() => {});
+      void gameApi.postGameTick().then(() => loadState({ silent: true })).catch(() => {});
     }, GAME_TICK_MS);
     return () => window.clearInterval(id);
   }, [snapshot, loadState]);
