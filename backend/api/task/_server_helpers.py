@@ -26,7 +26,7 @@ _ORCH_SSE_QUEUES: dict[str, queue.Queue] = {}
 
 _MULTI_ROUND_LOCK = threading.Lock()
 _MULTI_ROUND_SESSIONS: dict[str, dict[str, Any]] = {}
-_MULTI_ROUND_TTL_SEC = int(os.getenv("HERMES_BUNGALOW_MULTI_ROUND_TTL_SEC", "1800"))
+_MULTI_ROUND_TTL_SEC = int(os.getenv("HERMES_BUNGALOW_MULTI_ROUND_TTL_SEC", "600"))
 
 
 def _cleanup_stale_multi_round_sessions() -> None:

@@ -280,11 +280,18 @@ def orchestrated_peer_turns_sync(
         invoker_session_id=sid0,
     )
 
+    if not prim.get("ok"):
+        termination = "primary_agent_error"
+    elif delegations:
+        termination = None  # 有待处理委派，会话继续
+    else:
+        termination = "completed"  # 无委派，本轮自然结束
+
     result = {
         "ok": bool(prim.get("ok")),
         "primary": prim,
         "delegations": delegations,
-        "termination_reason": None,
+        "termination_reason": termination,
     }
 
     if inject_receipt and delegations:

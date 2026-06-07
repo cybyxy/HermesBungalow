@@ -341,11 +341,17 @@ def _multi_round_sse_worker(
         result_dict = dict(result)
         result_dict["work_order_id"] = wo_id
         round_index = 0
+        term = result.get("termination_reason")
         with _MULTI_ROUND_LOCK:
             mr = _MULTI_ROUND_SESSIONS.get(session_id)
             if mr and mr.get("status") == "active":
                 mr["rounds"].append(result_dict)
                 mr["created_at"] = time.time()
+                if term and term != "completed":
+                    # 出错则标记会话终止
+                    mr["status"] = "error"
+                elif term == "completed":
+                    mr["status"] = "completed"
                 round_index = len(mr["rounds"])
 
         sink({
@@ -354,14 +360,23 @@ def _multi_round_sse_worker(
         })
     except ValueError as e:
         task_service.monitor_abort_work_order(wo_id, str(e))
+        with _MULTI_ROUND_LOCK:
+            mr = _MULTI_ROUND_SESSIONS.get(session_id)
+            if mr: mr["status"] = "error"
         sink({"type": "error", "run_id": run_id, "message": str(e), "fatal": True})
         sink({"type": "round_done", "run_id": run_id, "session_id": session_id, "round_index": -1})
     except LookupError:
         task_service.monitor_abort_work_order(wo_id, "target_agent_not_found")
+        with _MULTI_ROUND_LOCK:
+            mr = _MULTI_ROUND_SESSIONS.get(session_id)
+            if mr: mr["status"] = "error"
         sink({"type": "error", "run_id": run_id, "message": "target_agent_not_found", "fatal": True})
         sink({"type": "round_done", "run_id": run_id, "session_id": session_id, "round_index": -1})
     except Exception as e:
         task_service.monitor_abort_work_order(wo_id, str(e))
+        with _MULTI_ROUND_LOCK:
+            mr = _MULTI_ROUND_SESSIONS.get(session_id)
+            if mr: mr["status"] = "error"
         sink({"type": "error", "run_id": run_id, "message": str(e), "fatal": True})
         sink({"type": "round_done", "run_id": run_id, "session_id": session_id, "round_index": -1})
 
@@ -380,6 +395,8 @@ async def post_multi_round_run(request: Request) -> JSONResponse:
     if not primary:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
 
+    _cleanup_stale_multi_round_sessions()
+
     existing_sid = str(body.get("session_id") or "").strip()
     if existing_sid:
         with _MULTI_ROUND_LOCK:
@@ -387,7 +404,8 @@ async def post_multi_round_run(request: Request) -> JSONResponse:
         if mr and mr.get("status") == "active":
             session_id = existing_sid
         else:
-            session_id = existing_sid
+            # 已完结或过期会话 → 新建 session
+            session_id = uuid.uuid4().hex
     else:
         session_id = uuid.uuid4().hex
 
