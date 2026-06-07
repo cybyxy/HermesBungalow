@@ -62,7 +62,7 @@ export async function runOrchestratedAndFlushUi(
     if (wo) useUiStore.getState().setMonitorFocusWorkOrderId(wo);
     await consumeMultiRoundSse(raw.run_id, sid, snapshot, orchestratorId, loadState_);
     // 自动激活多轮会话，后续发送自动走 continue 路径
-    if (sid && !existingSessionId) {
+    if (sid && sid !== existingSessionId) {
       useUiStore.getState().setMultiRoundSession(sid);
     }
   } finally {
@@ -106,7 +106,11 @@ export async function continueMultiRoundDiscussion(
     if (!raw.ok || !raw.run_id) {
       throw new Error(raw.error || 'multi_round_run_failed');
     }
-    await consumeMultiRoundSse(raw.run_id, raw.session_id || sessionId, snapshot, orchestratorId, loadState_);
+    const newSid = raw.session_id || sessionId;
+    if (newSid !== sessionId) {
+      useUiStore.getState().setMultiRoundSession(newSid);
+    }
+    await consumeMultiRoundSse(raw.run_id, newSid, snapshot, orchestratorId, loadState_);
   } finally {
     store.finishCenterAgentInference(orchestratorId, '');
   }
