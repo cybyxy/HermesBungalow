@@ -1,4 +1,4 @@
-import { Children, isValidElement } from 'react';
+import { Children, isValidElement, memo } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { Components } from 'react-markdown';
 import ReactMarkdown from 'react-markdown';
@@ -144,7 +144,7 @@ export const inferenceMdComponents: Components = {
   ),
 };
 
-export function InferenceMarkdownBody(props: { body: string }) {
+export const InferenceMarkdownBody = memo(function InferenceMarkdownBody(props: { body: string }) {
   return (
     <div style={{ fontSize: 11, lineHeight: 1.45, color: '#c8d4e0', wordBreak: 'break-word' }}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={inferenceMdComponents}>
@@ -152,4 +152,4 @@ export function InferenceMarkdownBody(props: { body: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});

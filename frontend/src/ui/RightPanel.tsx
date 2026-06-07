@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, memo } from 'react';
 import type { CSSProperties } from 'react';
 import type { TaskWorldSnapshot } from '../types/game';
 import { useUiStore, type InferenceEntry } from '../store/uiStore';
@@ -15,7 +15,7 @@ const blockTitle: CSSProperties = {
   marginBottom: 8,
 };
 
-function InferenceBody(props: {
+const InferenceBody = memo(function InferenceBody(props: {
   variant: InferenceEntry['variant'];
   body: string;
   markdownEditor?: boolean;
@@ -44,7 +44,7 @@ function InferenceBody(props: {
   }
 
   return <InferenceMarkdownBody body={body} />;
-}
+});
 
 /** 用户侧气泡头像（与 Agent 圆形风格一致，固定在消息右侧）。 */
 function UserAvatar(props: { size?: number }) {

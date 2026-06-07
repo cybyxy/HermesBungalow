@@ -1,9 +1,44 @@
 /**
  * SSE 消费：编排会话事件 → inferenceLog / 画布状态。
  * 同 step_id 的 reasoning_delta 合并到一条 reasoning 气泡（appendToInference）。
+ *
+ * 多 Agent 并发推理时，text_delta / reasoning_delta 频率极高（每秒数十次）。
+ * 每次 delta 直接写 Zustand 会触发 RightPanel 全量重渲染（200 条带 Markdown 的 DOM），
+ * 主线程被 React reconciliation 堵死 → 前端无响应。
+ *
+ * 这里用模块级 buffer：delta 文本先累积在 Map 里，每 80ms 批量 flush 到 Zustand，
+ * 将重渲染次数从 ~50/s 降到 ~12/s，消除卡顿。
  */
 import { useUiStore } from '../store/uiStore';
 import type { Agent, TaskWorldSnapshot } from '../types/game';
+
+// ── Delta batching ────────────────────────────────────────────────────
+const DELTA_FLUSH_MS = 80;
+const _deltaBuf = new Map<string, string>();
+let _flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function _flushDeltaBuf(appendTo: (id: string, chunk: string) => void) {
+  _flushTimer = null;
+  for (const [id, chunk] of _deltaBuf) {
+    appendTo(id, chunk);
+  }
+  _deltaBuf.clear();
+}
+
+function _batchDelta(id: string, text: string, appendTo: (id: string, chunk: string) => void) {
+  const prev = _deltaBuf.get(id) || '';
+  _deltaBuf.set(id, prev + text);
+  if (!_flushTimer) {
+    _flushTimer = setTimeout(() => _flushDeltaBuf(appendTo), DELTA_FLUSH_MS);
+  }
+}
+
+function _flushPending(appendTo: (id: string, chunk: string) => void) {
+  if (_flushTimer) {
+    clearTimeout(_flushTimer);
+    _flushDeltaBuf(appendTo);
+  }
+}
 
 let sseActiveHermesStreamId: string | null = null;
 const stepReasoningEntryId = new Map<string, string>();
@@ -70,13 +105,13 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
         });
         if (replyKey) stepReasoningEntryId.set(replyKey, replyId);
       } else {
-        appendTo(replyId, text);
+        _batchDelta(replyId, text, appendTo);
       }
       break;
     }
     case 'reasoning_delta': {
       const id = stepId ? stepReasoningEntryId.get(stepId) : undefined;
-      if (id) appendTo(id, String(ev.text ?? ''));
+      if (id) _batchDelta(id, String(ev.text ?? ''), appendTo);
       break;
     }
     case 'tool_start': {
@@ -100,6 +135,7 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
       break;
     }
     case 'assistant_message': {
+      _flushPending(appendTo);
       const md = String(ev.markdown || '');
       if (!md.trim() || !agentId) break;
       const replyKey = stepId ? `${stepId}:reply` : '';
@@ -119,6 +155,7 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
       break;
     }
     case 'step_done': {
+      _flushPending(appendTo);
       if (stepId) {
         stepReasoningEntryId.delete(stepId);
         stepReasoningEntryId.delete(`${stepId}:reply`);
@@ -141,6 +178,7 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
       break;
     }
     case 'error': {
+      _flushPending(appendTo);
       append({
         variant: 'error',
         headline: '系统',
@@ -151,6 +189,7 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
       break;
     }
     case 'stopped': {
+      _flushPending(appendTo);
       append({
         variant: 'status',
         headline: '已停止',
@@ -161,6 +200,7 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
       break;
     }
     case 'turn_done': {
+      _flushPending(appendTo);
       sseActiveHermesStreamId = null;
       stepReasoningEntryId.clear();
       const st = useUiStore.getState().agentInferState;
@@ -172,6 +212,7 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
       break;
     }
     case 'round_done': {
+      _flushPending(appendTo);
       sseActiveHermesStreamId = null;
       stepReasoningEntryId.clear();
       const st = useUiStore.getState().agentInferState;
