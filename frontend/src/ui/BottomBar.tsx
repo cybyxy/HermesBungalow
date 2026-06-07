@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { stopStudioChat, submitStudioChat } from '../chat/studioChatActions';
+import { forceStopAllInference, stopStudioChat, submitStudioChat } from '../chat/studioChatActions';
 import * as gameApi from '../services/gameApi';
 import { useTaskStore } from '../store/taskStore';
 import { useUiStore, type DockedPanelKind } from '../store/uiStore';
@@ -68,10 +68,17 @@ export function BottomBar(props: { snapshot: TaskWorldSnapshot | null; gatewaySt
   const selectedOrchestrating = Boolean(
     selectedAgentId && agentInferState[selectedAgentId]?.phase === 'thinking' && !selectedStreamId,
   );
+  const anyAgentThinking = Object.values(agentInferState).some(
+    (v) => v?.phase === 'thinking' || v?.phase === 'tool',
+  );
   const multiRoundSessionId = useUiStore((s) => s.multiRoundSessionId);
   const multiRoundCount = useUiStore((s) => s.multiRoundCount);
   const setMultiRoundSession = useUiStore((s) => s.setMultiRoundSession);
   const inputBlocked = Boolean(selectedStreamId || selectedOrchestrating);
+
+  const handleForceStop = useCallback(async () => {
+    await forceStopAllInference(multiRoundSessionId);
+  }, [multiRoundSessionId]);
 
   const handleStop = useCallback(async () => {
     if (multiRoundSessionId) {
@@ -212,6 +219,12 @@ export function BottomBar(props: { snapshot: TaskWorldSnapshot | null; gatewaySt
 
   return (
     <>
+      <style>{`
+        @keyframes pulse-stop {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.55; }
+        }
+      `}</style>
       <footer style={bar}>
         <div style={{ display: 'flex', alignItems: 'center', alignSelf: 'flex-end', gap: 5, flexShrink: 0 }}>
           {MAIN_MENUS.map((m) => {
@@ -281,6 +294,22 @@ export function BottomBar(props: { snapshot: TaskWorldSnapshot | null; gatewaySt
         />
 
         <div style={{ display: 'flex', alignItems: 'center', alignSelf: 'flex-end', gap: 4, flexShrink: 0 }}>
+          {anyAgentThinking && (
+            <button
+              type="button"
+              onClick={handleForceStop}
+              style={{
+                ...footerBarBtn,
+                color: '#f66',
+                border: '1px solid #a33',
+                background: 'rgba(120,20,20,0.6)',
+                fontWeight: 'bold',
+                animation: 'pulse-stop 1.2s ease-in-out infinite',
+              }}
+            >
+              强制中止
+            </button>
+          )}
           <button type="button" style={footerBarBtn} onClick={() => openFloatingWindow({ kind: 'newTask' })}>
             新建
           </button>

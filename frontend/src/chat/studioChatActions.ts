@@ -87,6 +87,47 @@ export async function stopStudioChat(): Promise<void> {
   useUiStore.getState().clearAgentStream(aid);
 }
 
+/** 强制中止所有正在推理的 Agent。 */
+export async function forceStopAllInference(multiRoundSessionId?: string | null): Promise<void> {
+  const store = useUiStore.getState();
+
+  // 1. 中止多轮会话
+  if (multiRoundSessionId) {
+    try {
+      await gameApi.postMultiRoundStop({ session_id: multiRoundSessionId });
+    } catch {
+      /* ignore */
+    }
+    store.setMultiRoundSession(null);
+  }
+
+  // 2. 中止活跃的 SSE 流
+  const sid = getSseActiveHermesStreamId();
+  if (sid) {
+    try {
+      await gameApi.cancelGameAgentStream(sid);
+    } catch {
+      /* ignore */
+    }
+    clearSseActiveHermesStreamId();
+  }
+
+  // 3. 清理所有 Agent 的推理状态
+  const streamIds = { ...store.agentStreamIds };
+  for (const [aid] of Object.entries(streamIds)) {
+    store.clearAgentStream(aid);
+    store.finishCenterAgentInference(aid, '已中止');
+  }
+
+  // 4. 清理所有 thinking 状态
+  const inferState = store.agentInferState;
+  for (const [aid, v] of Object.entries(inferState)) {
+    if (v?.phase === 'thinking' || v?.phase === 'tool') {
+      store.finishCenterAgentInference(aid, '已中止');
+    }
+  }
+}
+
 /** Continue a multi-round discussion with a user continuation message via SSE. */
 export async function continueMultiRoundDiscussion(
   snapshot: TaskWorldSnapshot | null,
