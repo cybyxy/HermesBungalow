@@ -90,15 +90,18 @@ function userInferenceTargetName(e: InferenceEntry, snapshot: TaskWorldSnapshot)
   return 'Agent';
 }
 
-/** 首行「职业」文案：系统 / Agent 职业（无则退回 headline 后缀）。 */
-function inferenceRoleLabel(e: InferenceEntry, agent: { profession?: string } | undefined): string {
+/** 首行标签：Agent 名称（职业）；无则退回 headline 后缀。 */
+function inferenceRoleLabel(e: InferenceEntry, agent: { name?: string; display_name?: string; profession?: string } | undefined): string {
   if (e.variant === 'user') return '';
   if (e.variant === 'error') {
     const h = (e.headline || '').trim();
     return h && h !== '系统' ? h : '系统';
   }
-  const p = (agent?.profession || '').trim();
-  if (p) return p;
+  const agName = agent?.display_name || agent?.name || '';
+  const prof = (agent?.profession || '').trim();
+  if (agName && prof) return `${agName}（${prof}）`;
+  if (agName) return agName;
+  if (prof) return prof;
   const h = e.headline || '';
   const i = h.indexOf(' · ');
   if (i >= 0) return h.slice(i + 3).trim() || h;
