@@ -160,14 +160,21 @@ def get_hermes_home_for_profile(name: str) -> Path:
     cached paths, or the process-level _active_profile global.
 
     Falls back to _DEFAULT_HERMES_HOME (same as 'default') when *name* is None,
-    empty, 'default', or does not match the profile-name format (rejects path
-    traversal such as '../../etc').
+    empty, 'default', or contains path separators (rejects path traversal such as
+    '../../etc').  Non-ASCII names (e.g. Chinese) are supported via direct
+    directory existence check.
     """
-    if not name or name == 'default' or not _PROFILE_ID_RE.match(name):
+    if not name or name == 'default':
+        return _DEFAULT_HERMES_HOME
+    # Reject path traversal separators regardless of encoding
+    if '/' in name or '\\' in name or '\x00' in name:
         return _DEFAULT_HERMES_HOME
     profile_dir = _DEFAULT_HERMES_HOME / 'profiles' / name
     if profile_dir.is_dir():
         return profile_dir
+    # Strict regex fallback for legacy ASCII names that may not exist yet
+    if not _PROFILE_ID_RE.match(name):
+        return _DEFAULT_HERMES_HOME
     return _DEFAULT_HERMES_HOME
 
 
@@ -329,28 +336,58 @@ def switch_profile(name: str, *, process_wide: bool = True) -> dict:
 
 
 def list_profiles_api() -> list:
-    """List all profiles with metadata, serialized for JSON response."""
+    """List all profiles with metadata, serialized for JSON response.
+
+    Merges hermes_cli.profiles.list_profiles() (rich metadata) with filesystem
+    scan so that profiles unknown to hermes_cli (e.g. created externally or with
+    non-ASCII names) are still discovered.
+    """
+    active = get_active_profile_name()
+
+    # Rich metadata from hermes_cli (may miss some profiles)
+    cli_infos: dict[str, dict] = {}
     try:
         from hermes_cli.profiles import list_profiles
-        infos = list_profiles()
+        for p in list_profiles():
+            cli_infos[p.name] = {
+                'name': p.name,
+                'path': str(p.path),
+                'is_default': p.is_default,
+                'is_active': p.name == active,
+                'gateway_running': getattr(p, 'gateway_running', False),
+                'model': getattr(p, 'model', None),
+                'provider': getattr(p, 'provider', None),
+                'has_env': getattr(p, 'has_env', False),
+                'skill_count': getattr(p, 'skill_count', 0),
+            }
     except ImportError:
-        # hermes_cli not available -- scan ~/.hermes/profiles/ directly
-        infos = _scan_profiles_dir()
+        pass
 
-    active = get_active_profile_name()
+    # Filesystem scan catches profiles hermes_cli doesn't know about
+    fs_infos = _scan_profiles_dir()
     result = []
-    for p in infos:
-        result.append({
-            'name': p.name,
-            'path': str(p.path),
-            'is_default': p.is_default,
-            'is_active': p.name == active,
-            'gateway_running': getattr(p, 'gateway_running', False),
-            'model': getattr(p, 'model', None),
-            'provider': getattr(p, 'provider', None),
-            'has_env': getattr(p, 'has_env', False),
-            'skill_count': getattr(p, 'skill_count', 0),
-        })
+    seen: set[str] = set()
+    for p in fs_infos:
+        if p.name in cli_infos:
+            result.append(cli_infos[p.name])
+        else:
+            result.append({
+                'name': p.name,
+                'path': str(p.path),
+                'is_default': p.is_default,
+                'is_active': p.name == active,
+                'gateway_running': False,
+                'model': None,
+                'provider': None,
+                'has_env': False,
+                'skill_count': 0,
+            })
+        seen.add(p.name)
+    # Add any cli profiles not on disk (unlikely but harmless)
+    for name, entry in cli_infos.items():
+        if name not in seen:
+            result.append(entry)
+
     return result
 
 

@@ -1,345 +1,282 @@
 /**
- * 整页 Phaser：顶栏为 React DOM；中央游戏区 + 底栏壳层在 Phaser（+ DOM textarea）。
+ * 卡片式 UI 中央舞台：任务管理（左）+ 办公室房间网格（中）+ 推理面板（右）。
+ * 房间是纯视觉容器，agent 卡片可在房间间移动（前端状态管理，无模拟逻辑）。
  */
-import { useEffect, useLayoutEffect, useRef } from 'react';
-import type { Agent, GameWorldSnapshot } from '../types/game';
-import type { AgentInferenceState } from '../store/uiStore';
-import { useGameStore } from '../store/gameStore';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Agent, TaskWorldSnapshot } from '../types/game';
 import { useUiStore } from '../store/uiStore';
-import { syncHermesSessionsFromSnapshot } from '../chat/studioChatActions';
-import { registerStudioCollabWalk } from '../collab/studioCollabWalkBridge';
-import { C, computeBuildingLayout, getRoomGridCell } from './buildingLayout';
-import { computeFullPageLayout } from './fullPageLayout';
-import { TaskMonitorPanel } from './TaskMonitorPanel';
+import { agentChatOrchestrated } from '../services/gameApi';
+import { LeftStudioPanel } from './TaskMonitorPanel';
+import { OfficeRoomCard } from './OfficeRoomCard';
 import { RightPanel } from './RightPanel';
 import { TopBar } from './TopBar';
-import { colors, layoutPx, studioGlass } from './theme';
-import {
-  mountStudioGame,
-  type AgentSpriteVisual,
-  type StudioCtxBridge,
-  type StudioGameApi,
-} from '../phaser/studioGame';
-import type { Direction } from './spriteMap';
+import { BottomBar } from './BottomBar';
+import { colors } from './theme';
+import { buildRoomList, defaultRoomForProfession } from './officeLayout';
 
-const FRAME_MS = 150;
-const FRAME_COUNT = 3;
-const IDLE_DOWN_FRAME_MS = 240;
+const ROOM_NAMES_KEY = 'hermes-bungalow-room-names';
 
-interface AgentSpriteState {
-  dir: Direction;
-  frame: number;
-  isMoving: boolean;
-}
-
-function dirFromDelta(dx: number, dy: number): Direction {
-  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
-  return dy > 0 ? 'down' : 'up';
+function loadRoomNames(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(ROOM_NAMES_KEY);
+    return raw ? JSON.parse(raw) as Record<string, string> : {};
+  } catch {
+    return {};
+  }
 }
 
 export function CenterStage(props: {
-  snapshot: GameWorldSnapshot;
+  snapshot: TaskWorldSnapshot;
   selectedAgentId: string | null;
-  centerInference: Record<string, AgentInferenceState>;
   gatewayStatus: string;
   loading: boolean;
   onSelectAgent: (id: string) => void;
-  onMoveAgent: (agentId: string, roomName: string) => void;
   onOpenAgentDetail: (id: string) => void;
   onRefresh: () => void;
 }) {
   const {
     snapshot,
     selectedAgentId,
-    centerInference,
     gatewayStatus,
     loading,
     onSelectAgent,
-    onMoveAgent,
     onOpenAgentDetail,
     onRefresh,
   } = props;
-  const studioRightPanelCollapsed = useUiStore((s) => s.studioRightPanelCollapsed);
-  const toggleStudioRightPanelCollapsed = useUiStore((s) => s.toggleStudioRightPanelCollapsed);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const gameRef = useRef<StudioGameApi | null>(null);
 
-  const walkTickRef = useRef(0);
-  const spriteStateRef = useRef<Record<string, AgentSpriteState>>({});
-  const prevLocationRef = useRef<Record<string, string>>({});
-  const snapshotRef = useRef(snapshot);
-  const selectedIdRef = useRef(selectedAgentId);
-  const inferenceRef = useRef(centerInference);
-  const gatewayRef = useRef(gatewayStatus);
-  const loadingRef = useRef(loading);
-  const handlersRef = useRef({
-    onSelectAgent,
-    onMoveAgent,
-    onOpenAgentDetail,
-    onRefresh,
-  });
-  const studioCtxRef = useRef<StudioCtxBridge | null>(null);
-  snapshotRef.current = snapshot;
-  selectedIdRef.current = selectedAgentId;
-  inferenceRef.current = centerInference;
-  gatewayRef.current = gatewayStatus;
-  loadingRef.current = loading;
-  handlersRef.current = { onSelectAgent, onMoveAgent, onOpenAgentDetail, onRefresh };
+  const openFloatingWindow = useUiStore((s) => s.openFloatingWindow);
+  const appendInference = useUiStore((s) => s.appendInference);
 
-  if (!studioCtxRef.current) {
-    studioCtxRef.current = {
-      getPack: () => {
-        const wrap = wrapRef.current;
-        const W = Math.max(32, wrap?.clientWidth ?? 0);
-        const H = Math.max(32, wrap?.clientHeight ?? 0);
-        const ui = useUiStore.getState();
-        const rightPanelCollapsed = ui.studioRightPanelCollapsed;
-        const fullLayout = computeFullPageLayout(W, H, { rightPanelCollapsed });
-        const cw = fullLayout.center.w;
-        const ch = fullLayout.center.h;
-        const snap = snapshotRef.current;
-        const sel = selectedIdRef.current;
-        const centerInference = inferenceRef.current;
-        const walkFrame = walkTickRef.current % FRAME_COUNT;
-        const now = performance.now();
-        const L = computeBuildingLayout(cw, ch);
-        const { roomSlots } = L;
-        const agentVisuals: Record<string, AgentSpriteVisual> = {};
-        snap.agents.forEach((agent: Agent) => {
-          const pos = roomSlots[agent.location];
-          if (!pos) return;
-          const state = spriteStateRef.current[agent.id] ?? { dir: 'down' as Direction, frame: 0, isMoving: false };
-          const renderDir: Direction = state.isMoving ? state.dir : 'down';
-          const phaseOff = (agent.id.charCodeAt(0) % 17) * IDLE_DOWN_FRAME_MS;
-          const idleDownFrame = Math.floor((now + phaseOff) / IDLE_DOWN_FRAME_MS) % FRAME_COUNT;
-          const renderFrame = state.isMoving ? walkFrame : idleDownFrame;
-          agentVisuals[agent.id] = { dir: renderDir, frame: renderFrame };
+  // agent -> 房间 分配（纯前端状态）
+  const [agentRoom, setAgentRoom] = useState<Record<string, string>>({});
+
+  // 房间自定义名称（localStorage 持久化）
+  const [roomNames, setRoomNames] = useState<Record<string, string>>(loadRoomNames);
+
+  const renameRoom = useCallback((roomId: string, name: string) => {
+    setRoomNames((prev) => {
+      const next = { ...prev, [roomId]: name };
+      try { localStorage.setItem(ROOM_NAMES_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
+  /** 新 agent 加入时自动按职业分配默认房间 */
+  const agents = snapshot.agents ?? [];
+
+  /** 动态房间列表：4 固定 + max(0, agentCount-1) 动态房间 */
+  const rooms = useMemo(() => buildRoomList(agents.length), [agents.length]);
+  const roomAssignments = useMemo(() => {
+    const map: Record<string, string> = { ...agentRoom };
+    let updated = false;
+    for (const a of agents) {
+      if (!map[a.id]) {
+        map[a.id] = defaultRoomForProfession(a.profession || '');
+        updated = true;
+      }
+    }
+    if (updated) {
+      // 异步更新避免 setState during render
+      queueMicrotask(() => setAgentRoom(map));
+    }
+    return map;
+  }, [agents, agentRoom]);
+
+  /** 按房间分组 agent */
+  const roomGroups = useMemo(() => {
+    const grouped = new Map<string, Agent[]>();
+    for (const r of rooms) grouped.set(r.id, []);
+    for (const a of agents) {
+      const roomId = roomAssignments[a.id] || 'lobby';
+      const list = grouped.get(roomId);
+      if (list) list.push(a);
+      else (grouped.get('lobby') ?? grouped.set('lobby', []).get('lobby'))!.push(a);
+    }
+    return rooms.map((room) => ({
+      ...room,
+      agents: grouped.get(room.id) ?? [],
+    }));
+  }, [agents, roomAssignments, rooms]);
+
+  const moveAgentToRoom = (agentId: string, roomId: string) => {
+    setAgentRoom((prev) => ({ ...prev, [agentId]: roomId }));
+  };
+
+  // 空闲 agent 串门 + 同房间自主交流
+  const roomAssignmentsRef = useRef(roomAssignments);
+  roomAssignmentsRef.current = roomAssignments;
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
+  const chatCooldowns = useRef<Map<string, number>>(new Map());
+
+  const roomsRef = useRef(rooms);
+  roomsRef.current = rooms;
+
+  /** 从 room id 找房间显示名称 */
+  const roomLabel = useCallback((roomId: string) => {
+    return roomsRef.current.find((r) => r.id === roomId)?.name ?? roomId;
+  }, []);
+
+  const triggerSocialChat = useCallback(
+    async (speaker: Agent, listener: Agent, roomId: string) => {
+      const pairKey = [speaker.id, listener.id].sort().join('::');
+      const now = Date.now();
+      const last = chatCooldowns.current.get(pairKey) ?? 0;
+      if (now - last < 45000) return; // 45s 冷却，避免刷屏
+      chatCooldowns.current.set(pairKey, now);
+
+      const speakerName = speaker.display_name || speaker.name;
+      const listenerName = listener.display_name || listener.name;
+      const rname = roomLabel(roomId);
+      const greeting = `${speakerName}（${speaker.profession || '同事'}）在${rname}碰到${listenerName}，主动聊了起来。随便聊聊吧～`;
+
+      try {
+        const res = await agentChatOrchestrated({
+          agent_id: speaker.id,
+          message: `@${listenerName} | ${greeting}`,
         });
-
-        return {
-          w: W,
-          h: H,
-          fullLayout,
-          rightPanelCollapsed,
-          snapshot: snap,
-          selectedAgentId: sel,
-          selectedTaskId: ui.selectedTaskId,
-          centerInference,
-          agentVisuals,
-          gatewayStatus: gatewayRef.current,
-          loading: loadingRef.current,
-          bottomSheet: ui.bottomSheet,
-        };
-      },
-      handlers: {
-        onSelectAgent: (id: string) => handlersRef.current.onSelectAgent(id),
-        onMoveAgent: (agentId: string, roomName: string) =>
-          void handlersRef.current.onMoveAgent(agentId, roomName),
-        onOpenAgentDetail: (id: string) => handlersRef.current.onOpenAgentDetail(id),
-        onRefresh: () => handlersRef.current.onRefresh(),
-        onToggleMenu: (key: string) => {
-          const ui = useUiStore.getState();
-          if (ui.bottomSheet.kind === 'menu' && ui.bottomSheet.menuKey === key) ui.closeBottomSheet();
-          else ui.openBottomSheet({ kind: 'menu', menuKey: key });
-        },
-        onQuickNewTask: () => useUiStore.getState().openBottomSheet({ kind: 'newTask' }),
-        onQuickAssign: () => {
-          const tid = useUiStore.getState().selectedTaskId;
-          const aid = useUiStore.getState().selectedAgentId;
-          if (tid == null || !aid) return;
-          void useGameStore.getState().assignTask(tid, aid).then(() => useGameStore.getState().loadState());
-        },
-        onQuickSkills: () => useUiStore.getState().openBottomSheet({ kind: 'skills' }),
-      },
-    };
-  }
-
-  useEffect(() => {
-    syncHermesSessionsFromSnapshot(snapshot);
-  }, [snapshot]);
-
-  useEffect(() => {
-    snapshot.agents.forEach((agent: Agent) => {
-      if (!spriteStateRef.current[agent.id]) {
-        spriteStateRef.current[agent.id] = { dir: 'down', frame: 0, isMoving: false };
-      }
-    });
-
-    snapshot.agents.forEach((agent: Agent) => {
-      const prev = prevLocationRef.current[agent.id];
-      if (prev !== undefined && prev !== agent.location) {
-        const from = getRoomGridCell(prev);
-        const to = getRoomGridCell(agent.location);
-        let dir: Direction = spriteStateRef.current[agent.id]?.dir ?? 'down';
-        if (from && to) {
-          const dx = to.col - from.col;
-          const dy = to.row - from.row;
-          if (dx !== 0 || dy !== 0) dir = dirFromDelta(dx, dy);
+        if (!res?.ok) {
+          appendInference({
+            variant: 'error',
+            agentId: listener.id,
+            headline: `${speakerName} → ${listenerName}   ${rname}`,
+            body: '对方暂时无法回应',
+          });
+          return;
         }
-        spriteStateRef.current[agent.id] = {
-          ...spriteStateRef.current[agent.id],
-          dir,
-          isMoving: true,
-        };
+        const delegation = res.delegations?.[0];
+        const reply = delegation?.reply || '';
+        appendInference({
+          variant: reply ? 'reply' : 'status',
+          agentId: listener.id,
+          headline: `${speakerName} → ${listenerName}   ${rname}`,
+          body: reply || '(对方没有说话)',
+        });
+      } catch {
+        appendInference({
+          variant: 'error',
+          agentId: listener.id,
+          headline: '闲聊失败',
+          body: `${speakerName} → ${listenerName} 连接异常`,
+        });
       }
-      prevLocationRef.current[agent.id] = agent.location;
-    });
-  }, [snapshot.agents]);
+    },
+    [appendInference, roomLabel],
+  );
 
   useEffect(() => {
-    const id = setInterval(() => {
-      walkTickRef.current = (walkTickRef.current + 1) % (FRAME_COUNT * 16);
-    }, FRAME_MS);
-    return () => clearInterval(id);
-  }, []);
-
-  useLayoutEffect(() => {
-    const wrap = wrapRef.current;
-    const ctx = studioCtxRef.current;
-    if (!wrap || !ctx) return;
-
-    const mount = () => {
-      if (gameRef.current) {
-        gameRef.current.layoutToHost();
-        gameRef.current.sync(ctx.getPack());
-      } else {
-        gameRef.current = mountStudioGame(wrap, ctx);
-        gameRef.current.sync(ctx.getPack());
-      }
-      registerStudioCollabWalk(
-        (fromId, peerId, opts) =>
-          gameRef.current?.runCollabApproachWalk(fromId, peerId, opts) ?? Promise.resolve(false),
-        (fromId) => gameRef.current?.runCollabWalkReturnToSpawn(fromId) ?? Promise.resolve(false),
-        (fromId) => gameRef.current?.clearCollabWalkFootOverride(fromId),
-      );
-    };
-
-    mount();
-
-    let raf = 0;
-    const loop = () => {
-      if (gameRef.current && ctx) gameRef.current.sync(ctx.getPack());
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-
-    const ro = new ResizeObserver(() => {
-      mount();
-    });
-    ro.observe(wrap);
-    return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-      registerStudioCollabWalk(null, null, null);
-      gameRef.current?.destroy();
-      gameRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      Object.keys(spriteStateRef.current).forEach((id) => {
-        if (spriteStateRef.current[id].isMoving) {
-          spriteStateRef.current[id] = { ...spriteStateRef.current[id], isMoving: false };
-        }
+    let pending = false;
+    const tick = () => {
+      if (pending) return; // 上一个 API 调用还没回来则跳过
+      const curAgents = agentsRef.current;
+      const curRooms = roomAssignmentsRef.current;
+      const idle = curAgents.filter((a) => !a.current_task_id);
+      if (idle.length === 0) return;
+      const agent = idle[Math.floor(Math.random() * idle.length)];
+      const currentRoom = curRooms[agent.id] || 'lobby';
+      const isLord = agent.name === 'default'; // 崽崽（城主）可自由进出经理室
+      const otherRooms = roomsRef.current.map((r) => r.id).filter((id) => {
+        if (id === currentRoom) return false;
+        if (id === 'manager' && !isLord) return false; // 非城主不能随意进经理室
+        return true;
       });
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [snapshot.agents]);
+      if (otherRooms.length === 0) return;
+      const nextRoom = otherRooms[Math.floor(Math.random() * otherRooms.length)];
+
+      setAgentRoom((prev) => ({ ...prev, [agent.id]: nextRoom }));
+
+      // 检查目标房间是否有其他空闲 agent，有则触发自主交流
+      const mates = idle.filter((a) => {
+        if (a.id === agent.id) return false;
+        const r = curRooms[a.id] || 'lobby';
+        return r === nextRoom;
+      });
+      if (mates.length > 0) {
+        const mate = mates[Math.floor(Math.random() * mates.length)];
+        pending = true;
+        triggerSocialChat(agent, mate, nextRoom).finally(() => { pending = false; });
+      }
+    };
+
+    const id = setInterval(tick, 180000 + Math.random() * 120000);
+    return () => clearInterval(id);
+  }, [triggerSocialChat]);
+
+  const handleChatAgent = (agentId: string) => {
+    onSelectAgent(agentId);
+    openFloatingWindow({ kind: 'agent', agentId });
+  };
+
+  const handleDetailAgent = (agentId: string) => {
+    onSelectAgent(agentId);
+    openFloatingWindow({ kind: 'agent', agentId });
+  };
 
   return (
-    <div
-      style={{
-        flex: 1,
-        minWidth: 0,
-        minHeight: 0,
-        width: '100%',
-        height: '100%',
-        position: 'relative',
-      }}
-    >
-      <div
-        ref={wrapRef}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 1,
-          background: C.bg,
-          overflow: 'auto',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, minWidth: 0 }}>
+      <TopBar
+        snapshot={snapshot}
+        gatewayStatus={gatewayStatus}
+        loading={loading}
+        onRefresh={onRefresh}
+        selectedAgentId={selectedAgentId}
+        onOpenAgentDetail={onOpenAgentDetail}
       />
-      <div
-        style={{
-          position: 'absolute',
-          left: 0,
-          right: 0,
-          top: 0,
-          height: layoutPx.topBar,
-          zIndex: 75,
-          pointerEvents: 'auto',
-        }}
-      >
-        <TopBar
-          snapshot={snapshot}
-          gatewayStatus={gatewayStatus}
-          loading={loading}
-          onRefresh={onRefresh}
-          selectedAgentId={selectedAgentId}
-          onOpenAgentDetail={onOpenAgentDetail}
-        />
-      </div>
-      <TaskMonitorPanel snapshot={snapshot} />
-      <div
-        aria-label="会话与过程"
-        style={{
-          position: 'absolute',
-          right: 0,
-          top: layoutPx.topBar,
-          bottom: layoutPx.bottomBar,
-          width: studioRightPanelCollapsed ? layoutPx.sidePanelCollapsed : layoutPx.sidePanel,
-          zIndex: 70,
-          pointerEvents: 'none',
-          transition: 'width 0.2s ease-out',
-          fontFamily: 'system-ui, sans-serif',
-        }}
-      >
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+        {/* 左侧：任务管理面板 */}
+        <div style={{ position: 'relative', flexShrink: 0, height: '100%' }}>
+          <LeftStudioPanel snapshot={snapshot} />
+        </div>
+
+        {/* 中央：办公室房间网格 */}
         <div
           style={{
-            pointerEvents: 'auto',
-            height: '100%',
+            flex: 1,
+            overflowY: 'auto',
+            padding: 14,
             display: 'flex',
-            flexDirection: 'column',
-            ...studioGlass.panel,
-            borderLeft: `2px solid ${colors.border}`,
-            boxSizing: 'border-box',
+            flexWrap: 'wrap',
+            alignContent: 'flex-start',
+            gap: 14,
+            background: `
+              linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px),
+              #0d0d1a
+            `,
+            backgroundSize: '40px 40px',
           }}
         >
-          {studioRightPanelCollapsed ? (
-            <button
-              type="button"
-              title="展开会话与过程"
-              onClick={() => toggleStudioRightPanelCollapsed()}
-              style={{
-                flex: 1,
-                width: '100%',
-                border: 'none',
-                background: 'rgba(30,30,50,0.55)',
-                color: colors.gold,
-                cursor: 'pointer',
-                fontSize: 14,
-                padding: 0,
-              }}
-            >
-              ◀
-            </button>
-          ) : (
-            <RightPanel snapshot={snapshot} />
-          )}
+          {roomGroups.map((room) => (
+            <OfficeRoomCard
+              key={room.id}
+              room={{ ...room, name: roomNames[room.id] || room.name }}
+              allRooms={rooms}
+              selectedAgentId={selectedAgentId}
+              onSelectAgent={onSelectAgent}
+              onChatAgent={handleChatAgent}
+              onDetailAgent={handleDetailAgent}
+              onMoveAgent={moveAgentToRoom}
+              onRenameRoom={renameRoom}
+            />
+          ))}
+        </div>
+
+        {/* 右侧：推理面板 */}
+        <div
+          style={{
+            width: 380,
+            flexShrink: 0,
+            borderLeft: `1px solid ${colors.border}`,
+            overflowY: 'auto',
+            background: '#0a0a15',
+          }}
+        >
+          <RightPanel snapshot={snapshot} />
         </div>
       </div>
+
+      {/* 底部：聊天输入栏 */}
+      <BottomBar snapshot={snapshot} gatewayStatus={gatewayStatus} />
     </div>
   );
 }

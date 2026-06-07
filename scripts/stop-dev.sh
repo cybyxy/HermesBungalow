@@ -62,7 +62,7 @@ stop_by_pid_file() {
 
 stop_by_pid_file "backend" "${BACKEND_PID_FILE}"
 stop_by_pid_file "frontend" "${FRONTEND_PID_FILE}"
-kill_port 8000
+kill_port 8765
 kill_port 3000
 rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true
 rm -f "${ROOT_DIR}/.dev-start.lock" >/dev/null 2>&1 || true

@@ -78,7 +78,7 @@ export function AgentAvatar(props: {
 
   return (
     <span
-      title={title ?? (agent ? `${agent.name} · ${agent.profession}` : '')}
+      title={title ?? (agent ? `${agent.display_name || agent.name} · ${agent.profession}` : '')}
       style={{ position: 'relative', display: 'inline-flex' }}
     >
       <span style={outer}>
@@ -121,21 +121,6 @@ export function AgentAvatar(props: {
           label
         )}
       </span>
-      {/* 状态角标（圆形头像右下角，外层relative定位） */}
-      {agent && (
-        <span
-          style={{
-            position: 'absolute',
-            bottom: 0,
-            right: 0,
-            fontSize: Math.max(8, Math.round(size * 0.28)),
-            lineHeight: 1,
-            pointerEvents: 'none',
-          }}
-        >
-          {agent.status === 'working' ? '💻' : agent.status === 'resting' ? '😴' : '🟡'}
-        </span>
-      )}
     </span>
   );
 }

@@ -1,7 +1,18 @@
-import type { CSSProperties } from 'react';
-import type { Agent, GameWorldSnapshot } from '../types/game';
+import { type CSSProperties, useCallback, useEffect, useState } from 'react';
+import type { Agent, TaskWorldSnapshot } from '../types/game';
 import { AgentAvatar } from './AgentAvatar';
 import { colors, layoutPx } from './theme';
+
+const STUDIO_NAME_KEY = 'hermes-bungalow-studio-name';
+
+function loadStudioName(): string {
+  try {
+    const v = localStorage.getItem(STUDIO_NAME_KEY);
+    return v || 'Hermes 数字工作室';
+  } catch {
+    return 'Hermes 数字工作室';
+  }
+}
 
 const bar: CSSProperties = {
   height: layoutPx.topBar,
@@ -16,7 +27,7 @@ const bar: CSSProperties = {
 };
 
 export function TopBar(props: {
-  snapshot: GameWorldSnapshot | null;
+  snapshot: TaskWorldSnapshot | null;
   gatewayStatus: string;
   loading: boolean;
   onRefresh: () => void;
@@ -24,13 +35,61 @@ export function TopBar(props: {
   onOpenAgentDetail: (agentId: string) => void;
 }) {
   const { snapshot, gatewayStatus, loading, onRefresh, selectedAgentId, onOpenAgentDetail } = props;
+  const [studioName, setStudioName] = useState(loadStudioName);
+  const [editing, setEditing] = useState(false);
+
+  const saveStudioName = useCallback((name: string) => {
+    const v = name.trim();
+    if (v) {
+      setStudioName(v);
+      try { localStorage.setItem(STUDIO_NAME_KEY, v); } catch { /* ignore */ }
+    }
+    setEditing(false);
+  }, []);
+
+  // Sync across tabs
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === STUDIO_NAME_KEY && e.newValue) setStudioName(e.newValue);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   return (
     <header style={bar}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-        <strong style={{ color: colors.gold, fontSize: 16 }}>Hermes 数字工作室</strong>
+        {editing ? (
+          <input
+            type="text"
+            defaultValue={studioName}
+            onBlur={(e) => saveStudioName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') saveStudioName(e.currentTarget.value); }}
+            autoFocus
+            style={{
+              background: '#1a1a30',
+              color: colors.gold,
+              border: `1px solid ${colors.gold}`,
+              borderRadius: 4,
+              fontSize: 16,
+              fontWeight: 600,
+              padding: '2px 6px',
+              fontFamily: 'inherit',
+              maxWidth: 280,
+            }}
+          />
+        ) : (
+          <strong
+            style={{ color: colors.gold, fontSize: 16, cursor: 'pointer' }}
+            onClick={() => setEditing(true)}
+            title="点击修改工作室名称"
+          >
+            {studioName}
+          </strong>
+        )}
         {snapshot && (
           <span style={{ color: colors.text, fontSize: 12 }}>
-            第 {snapshot.day} 天 {snapshot.time} · 💰 {snapshot.money} · 👥 {snapshot.agents.length} · 📋 {snapshot.tasks.length}
+            👥 {snapshot.agents.length} · 📋 {snapshot.tasks.length}
           </span>
         )}
       </div>
@@ -60,13 +119,6 @@ export function TopBar(props: {
         })}
       </div>
       <div style={{ justifySelf: 'end', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        {snapshot && (
-          <span style={{ color: colors.text, fontSize: 11, textAlign: 'right' }}>
-            <span style={{ color: colors.gold }}>👑 Lv.{snapshot.lord_level}</span>
-            <br />
-            <span style={{ fontSize: 10 }}>XP: {snapshot.lord_xp}</span>
-          </span>
-        )}
         <span style={{ color: '#555', fontSize: 10 }} title="开发用">GW:{gatewayStatus}</span>
         <button type="button" onClick={() => onRefresh()} disabled={loading} style={{ fontSize: 11, padding: '6px 10px' }}>
           {loading ? '…' : '刷新'}

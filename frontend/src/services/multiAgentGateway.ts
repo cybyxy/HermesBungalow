@@ -29,7 +29,7 @@ function multiAgentWsUrl(): string {
   const isHttps = location.protocol === 'https:';
   const scheme = isHttps ? 'wss' : 'ws';
   const port = import.meta.env.DEV
-    ? (import.meta.env.VITE_BACKEND_PORT ?? '8000')
+    ? (import.meta.env.VITE_BACKEND_PORT ?? '8765')
     : location.port;
   return `${scheme}://${location.hostname}:${port}/ws/multi-agent`;
 }

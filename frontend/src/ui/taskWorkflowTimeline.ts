@@ -1,4 +1,4 @@
-import type { GameWorldSnapshot } from '../types/game';
+import type { TaskWorldSnapshot } from '../types/game';
 
 const TASK_FLOW_KINDS = new Set([
   'task_create',
@@ -25,7 +25,7 @@ function numTaskId(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function agentName(snapshot: GameWorldSnapshot | null, agentId: unknown): string {
+function agentName(snapshot: TaskWorldSnapshot | null, agentId: unknown): string {
   const id = String(agentId ?? '').trim();
   if (!id) return '—';
   const a = snapshot?.agents.find((x) => x.id === id);
@@ -36,7 +36,7 @@ function agentName(snapshot: GameWorldSnapshot | null, agentId: unknown): string
 export function buildTaskWorkflowTimeline(
   eventLog: Record<string, unknown>[] | undefined,
   taskId: number,
-  snapshot: GameWorldSnapshot | null,
+  snapshot: TaskWorldSnapshot | null,
 ): TaskWorkflowRow[] {
   const tid = Number(taskId);
   if (!Number.isFinite(tid)) return [];

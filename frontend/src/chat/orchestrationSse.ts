@@ -3,7 +3,7 @@
  * 同 step_id 的 reasoning_delta 合并到一条 reasoning 气泡（appendToInference）。
  */
 import { useUiStore } from '../store/uiStore';
-import type { Agent, GameWorldSnapshot } from '../types/game';
+import type { Agent, TaskWorldSnapshot } from '../types/game';
 
 let sseActiveHermesStreamId: string | null = null;
 const stepReasoningEntryId = new Map<string, string>();
@@ -22,15 +22,16 @@ function agentReplyHeadline(agent: Agent | undefined): string {
   return p ? `${agent.name} · ${p}` : agent.name;
 }
 
-function resolveAgent(snapshot: GameWorldSnapshot | null, agentId: string | null | undefined): Agent | undefined {
+function resolveAgent(snapshot: TaskWorldSnapshot | null, agentId: string | null | undefined): Agent | undefined {
   if (!snapshot || !agentId) return undefined;
   return snapshot.agents.find((a) => a.id === agentId);
 }
 
-export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot: GameWorldSnapshot | null): void {
+export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot: TaskWorldSnapshot | null): void {
   const t = String(ev.type || '');
   const append = useUiStore.getState().appendInference;
   const appendTo = useUiStore.getState().appendToInference;
+  const patchInfer = useUiStore.getState().patchInference;
   const beginThink = useUiStore.getState().beginCenterAgentThinking;
   const setTool = useUiStore.getState().setCenterAgentTool;
   const finishInfer = useUiStore.getState().finishCenterAgentInference;
@@ -51,6 +52,25 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
           agentId,
         });
         stepReasoningEntryId.set(stepId, rid);
+      }
+      break;
+    }
+    case 'text_delta': {
+      const text = String(ev.text ?? '');
+      if (!text || !agentId) break;
+      const replyKey = stepId ? `${stepId}:reply` : '';
+      let replyId = replyKey ? stepReasoningEntryId.get(replyKey) : undefined;
+      if (!replyId) {
+        const ag = resolveAgent(snapshot, agentId);
+        replyId = append({
+          variant: 'reply',
+          headline: agentReplyHeadline(ag),
+          body: text,
+          agentId,
+        });
+        if (replyKey) stepReasoningEntryId.set(replyKey, replyId);
+      } else {
+        appendTo(replyId, text);
       }
       break;
     }
@@ -82,17 +102,27 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
     case 'assistant_message': {
       const md = String(ev.markdown || '');
       if (!md.trim() || !agentId) break;
-      const ag = resolveAgent(snapshot, agentId);
-      append({
-        variant: 'reply',
-        headline: agentReplyHeadline(ag),
-        body: md,
-        agentId,
-      });
+      const replyKey = stepId ? `${stepId}:reply` : '';
+      const existingId = replyKey ? stepReasoningEntryId.get(replyKey) : undefined;
+      if (existingId) {
+        patchInfer(existingId, { body: md });
+        stepReasoningEntryId.delete(replyKey);
+      } else {
+        const ag = resolveAgent(snapshot, agentId);
+        append({
+          variant: 'reply',
+          headline: agentReplyHeadline(ag),
+          body: md,
+          agentId,
+        });
+      }
       break;
     }
     case 'step_done': {
-      if (stepId) stepReasoningEntryId.delete(stepId);
+      if (stepId) {
+        stepReasoningEntryId.delete(stepId);
+        stepReasoningEntryId.delete(`${stepId}:reply`);
+      }
       if (agentId) finishInfer(agentId, '');
       break;
     }
@@ -141,6 +171,29 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
       }
       break;
     }
+    case 'round_done': {
+      sseActiveHermesStreamId = null;
+      stepReasoningEntryId.clear();
+      const st = useUiStore.getState().agentInferState;
+      for (const [aid, v] of Object.entries(st)) {
+        if (v?.phase === 'thinking' || v?.phase === 'tool') {
+          finishInfer(aid, '');
+        }
+      }
+      const roundIdx = typeof ev.round_index === 'number' ? ev.round_index : 0;
+      if (roundIdx > 0) {
+        useUiStore.getState().setMultiRoundCount(roundIdx);
+        append({
+          variant: 'status',
+          headline: `Round ${roundIdx} 完成`,
+          body: ev.termination_reason
+            ? `收敛方式: ${String(ev.termination_reason)}`
+            : '本轮讨论已结束，可继续追加输入。',
+          agentId: null,
+        });
+      }
+      break;
+    }
     default:
       break;
   }
@@ -148,11 +201,11 @@ export function applyOrchestrationSseEvent(ev: Record<string, unknown>, snapshot
 
 export function consumeOrchestratedSse(
   runId: string,
-  snapshot: GameWorldSnapshot | null,
+  snapshot: TaskWorldSnapshot | null,
   orchestratorId: string,
   loadState: () => void,
 ): Promise<void> {
-  const url = `/api/game/agent-chat-orchestrated/stream?run_id=${encodeURIComponent(runId)}`;
+  const url = `/api/task/agent-chat-orchestrated/stream?run_id=${encodeURIComponent(runId)}`;
   return new Promise((resolve, reject) => {
     const es = new EventSource(url);
     es.onmessage = (e) => {
@@ -160,6 +213,44 @@ export function consumeOrchestratedSse(
         const ev = JSON.parse(e.data) as Record<string, unknown>;
         applyOrchestrationSseEvent(ev, snapshot);
         if (ev.type === 'turn_done') {
+          es.close();
+          loadState();
+          resolve();
+        }
+      } catch (err) {
+        es.close();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
+    es.onerror = () => {
+      es.close();
+      useUiStore.getState().appendInference({
+        variant: 'error',
+        headline: '系统',
+        body: 'SSE 连接中断',
+        agentId: orchestratorId,
+      });
+      reject(new Error('sse_error'));
+    };
+  });
+}
+
+/** SSE consumer for multi-round orchestration. Resolves on ``round_done`` — keeps going on other events. */
+export function consumeMultiRoundSse(
+  runId: string,
+  sessionId: string,
+  snapshot: TaskWorldSnapshot | null,
+  orchestratorId: string,
+  loadState: () => void,
+): Promise<void> {
+  const url = `/api/task/multi-round/stream?session_id=${encodeURIComponent(sessionId)}&run_id=${encodeURIComponent(runId)}`;
+  return new Promise((resolve, reject) => {
+    const es = new EventSource(url);
+    es.onmessage = (e) => {
+      try {
+        const ev = JSON.parse(e.data) as Record<string, unknown>;
+        applyOrchestrationSseEvent(ev, snapshot);
+        if (ev.type === 'round_done') {
           es.close();
           loadState();
           resolve();

@@ -29,14 +29,44 @@ export interface ClarifyPrompt {
   resolve: (answer: string) => void;
 }
 
-/** 底部统一弹窗容器：根据 kind 切换内容（仅 × 关闭，见 PopupSheet 默认）。 */
-export type BottomSheetState =
-  | { kind: 'closed' }
-  | { kind: 'menu'; menuKey: string }
-  | { kind: 'agent'; agentId: string }
-  | { kind: 'newTask' }
-  | { kind: 'addAgent' }
-  | { kind: 'skills' };
+// ── 底部停靠面板 ──
+export type DockedPanelKind =
+  | 'closed'
+  | 'agentList'
+  | 'taskList'
+  | 'modelList'
+  | 'channelList'
+  | 'skills'
+  | 'social'
+  | 'event'
+  | 'help';
+
+export interface DockedPanelState {
+  kind: DockedPanelKind;
+}
+
+// ── 浮动非模态窗口 ──
+export type FloatingWindowKind =
+  | 'agent'
+  | 'newTask'
+  | 'addAgent'
+  | 'addModel'
+  | 'addChannel'
+  | 'modelDetail'
+  | 'channelConfig';
+
+export interface FloatingWindowState {
+  id: string;
+  kind: FloatingWindowKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  zIndex: number;
+  agentId?: string;
+  providerId?: string;
+  channelId?: string;
+}
 
 /** 单个 Agent 在中央画布上的推理状态 */
 export interface AgentInferenceState {
@@ -72,6 +102,12 @@ interface UiStore {
   agentInferState: Record<string, AgentInferenceState>;
   /** Per-agent Hermes SSE stream_id (multiple agents may infer concurrently). */
   agentStreamIds: Record<string, string>;
+  /** Active multi-round orchestrated discussion session ID. */
+  multiRoundSessionId: string | null;
+  setMultiRoundSession: (id: string | null) => void;
+  /** How many rounds completed in current multi-round session (for UI display). */
+  multiRoundCount: number;
+  setMultiRoundCount: (n: number) => void;
   setSelectedAgent: (id: string | null) => void;
   setSelectedTask: (id: number | null) => void;
   clearSelection: () => void;
@@ -92,9 +128,21 @@ interface UiStore {
   /** Clarify modal — set when SSE sends a clarify event, cleared when user answers. */
   clarifyPrompt: ClarifyPrompt | null;
   setClarifyPrompt: (p: ClarifyPrompt | null) => void;
-  bottomSheet: BottomSheetState;
-  openBottomSheet: (p: Exclude<BottomSheetState, { kind: 'closed' }>) => void;
-  closeBottomSheet: () => void;
+  // ── 新面板系统 ──
+  dockedPanel: DockedPanelState;
+  setDockedPanel: (p: Exclude<DockedPanelState, { kind: 'closed' }>) => void;
+  closeDockedPanel: () => void;
+  floatingWindows: FloatingWindowState[];
+  floatingWindowZCounter: number;
+  openFloatingWindow: (params: { kind: 'agent'; agentId: string }
+    | { kind: 'newTask' } | { kind: 'addAgent' }
+    | { kind: 'addModel' } | { kind: 'addChannel' }
+    | { kind: 'modelDetail'; providerId: string }
+    | { kind: 'channelConfig'; channelId: string }) => string;
+  closeFloatingWindow: (id: string) => void;
+  focusFloatingWindow: (id: string) => void;
+  updateFloatingWindowPosition: (id: string, x: number, y: number) => void;
+  updateFloatingWindowSize: (id: string, width: number, height: number) => void;
 }
 
 const MAX_INFERENCE = 200;
@@ -139,6 +187,10 @@ export const useUiStore = create<UiStore>()(
       inferenceLog: [],
       agentInferState: {},
       agentStreamIds: {},
+      multiRoundSessionId: null,
+      setMultiRoundSession: (id) => set({ multiRoundSessionId: id, multiRoundCount: id ? undefined : 0 }),
+      multiRoundCount: 0,
+      setMultiRoundCount: (n) => set({ multiRoundCount: n }),
       setSelectedAgent: (id) => set({ selectedAgentId: id }),
       setSelectedTask: (id) => set({ selectedTaskId: id }),
       clearSelection: () => set({ selectedAgentId: null, selectedTaskId: null }),
@@ -231,9 +283,69 @@ export const useUiStore = create<UiStore>()(
         set({ inferenceLog: [], agentInferState: {}, agentStreamIds: {} }),
       clarifyPrompt: null,
       setClarifyPrompt: (p) => set({ clarifyPrompt: p }),
-      bottomSheet: { kind: 'closed' },
-      openBottomSheet: (p) => set({ bottomSheet: p }),
-      closeBottomSheet: () => set({ bottomSheet: { kind: 'closed' } }),
+      // ── 新面板系统 ──
+      dockedPanel: { kind: 'closed' },
+      setDockedPanel: (p) => set((s) => ({
+        dockedPanel: s.dockedPanel.kind === p.kind ? { kind: 'closed' } : p,
+      })),
+      closeDockedPanel: () => set({ dockedPanel: { kind: 'closed' } }),
+      floatingWindows: [],
+      floatingWindowZCounter: 1000,
+      openFloatingWindow: (params) => {
+        const id = `fw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        set((s) => {
+          const count = s.floatingWindows.length;
+          const baseX = Math.max(60, (window.innerWidth - 720) / 2);
+          const baseY = Math.max(60, (window.innerHeight - 540) / 2);
+          const cascade = (count * 30) % 200;
+          const nextZ = s.floatingWindowZCounter + 1;
+          const base = {
+            id,
+            x: baseX + cascade,
+            y: baseY + cascade,
+            width: 720,
+            height: 540,
+            zIndex: nextZ,
+          };
+          let w: FloatingWindowState;
+          if (params.kind === 'agent') {
+            w = { ...base, kind: 'agent', agentId: params.agentId };
+          } else if (params.kind === 'modelDetail') {
+            w = { ...base, kind: 'modelDetail', providerId: params.providerId };
+          } else if (params.kind === 'channelConfig') {
+            w = { ...base, kind: 'channelConfig', channelId: params.channelId };
+          } else {
+            w = { ...base, kind: params.kind };
+          }
+          return {
+            floatingWindows: [...s.floatingWindows, w],
+            floatingWindowZCounter: nextZ,
+          };
+        });
+        return id;
+      },
+      closeFloatingWindow: (id) => set((s) => ({
+        floatingWindows: s.floatingWindows.filter((w) => w.id !== id),
+      })),
+      focusFloatingWindow: (id) => set((s) => {
+        const nextZ = s.floatingWindowZCounter + 1;
+        return {
+          floatingWindows: s.floatingWindows.map((w) =>
+            w.id === id ? { ...w, zIndex: nextZ } : w,
+          ),
+          floatingWindowZCounter: nextZ,
+        };
+      }),
+      updateFloatingWindowPosition: (id, x, y) => set((s) => ({
+        floatingWindows: s.floatingWindows.map((w) =>
+          w.id === id ? { ...w, x, y } : w,
+        ),
+      })),
+      updateFloatingWindowSize: (id, width, height) => set((s) => ({
+        floatingWindows: s.floatingWindows.map((w) =>
+          w.id === id ? { ...w, width, height } : w,
+        ),
+      })),
     }),
     {
       name: 'hermes-bungalow-inference-v1',

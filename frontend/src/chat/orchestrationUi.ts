@@ -2,7 +2,7 @@
  * Renders backend `agent-chat-orchestrated` JSON into the center inference log.
  */
 import { useUiStore } from '../store/uiStore';
-import type { Agent, GameWorldSnapshot } from '../types/game';
+import type { Agent, TaskWorldSnapshot } from '../types/game';
 import type {
   AgentChatOrchestratedResult,
   OrchestrationDelegationRow,
@@ -60,7 +60,7 @@ function appendTraceRows(agentId: string | null, rows: OrchestrationTraceRow[] |
   }
 }
 
-function walkDelegations(snapshot: GameWorldSnapshot | null, delegations: OrchestrationDelegationRow[]): void {
+function walkDelegations(snapshot: TaskWorldSnapshot | null, delegations: OrchestrationDelegationRow[]): void {
   const append = useUiStore.getState().appendInference;
   for (const d of delegations) {
     const peer = gameApi.resolveGameAgent(snapshot?.agents, d.target);
@@ -89,7 +89,7 @@ function walkDelegations(snapshot: GameWorldSnapshot | null, delegations: Orches
 
 /** Append primary reply (if any) and the delegation tree from one orchestrate response. */
 export function appendOrchestratedInference(
-  snapshot: GameWorldSnapshot | null,
+  snapshot: TaskWorldSnapshot | null,
   primaryAgentId: string,
   res: AgentChatOrchestratedResult,
 ): void {

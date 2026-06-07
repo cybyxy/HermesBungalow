@@ -1,42 +1,43 @@
 import { useEffect } from 'react';
-import { useGameStore } from './store/gameStore';
+import { useTaskStore } from './store/taskStore';
 import { useUiStore } from './store/uiStore';
-import * as gameApi from './services/gameApi';
 import { CenterStage } from './ui/CenterStage';
-import { BottomSheetHost } from './ui/BottomSheetHost';
 import { ClarifyModal } from './ui/ClarifyModal';
-/** 5 秒真实时间 ≈ 1 游戏分钟 */
-const GAME_TICK_MS = 5000;
+import { DockPanel } from './ui/DockPanel';
+import { FloatingWindowsHost } from './ui/FloatingWindowsHost';
 
 export function App() {
-  const snapshot = useGameStore((s) => s.snapshot);
-  const loading = useGameStore((s) => s.loading);
-  const error = useGameStore((s) => s.error);
-  const gatewayStatus = useGameStore((s) => s.gatewayStatus);
-  const loadState = useGameStore((s) => s.loadState);
-  const moveAgent = useGameStore((s) => s.moveAgent);
-  const connectGateway = useGameStore((s) => s.connectGateway);
-  const disconnectGateway = useGameStore((s) => s.disconnectGateway);
+  const snapshot = useTaskStore((s) => s.snapshot);
+  const loading = useTaskStore((s) => s.loading);
+  const error = useTaskStore((s) => s.error);
+  const gatewayStatus = useTaskStore((s) => s.gatewayStatus);
+  const loadState = useTaskStore((s) => s.loadState);
+  const loadConfiguredModels = useTaskStore((s) => s.loadConfiguredModels);
+  const loadConfiguredChannels = useTaskStore((s) => s.loadConfiguredChannels);
+  const connectGateway = useTaskStore((s) => s.connectGateway);
+  const disconnectGateway = useTaskStore((s) => s.disconnectGateway);
 
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
-  const agentInferState = useUiStore((s) => s.agentInferState);
   const setSelectedAgent = useUiStore((s) => s.setSelectedAgent);
   const clearSelection = useUiStore((s) => s.clearSelection);
-  const openBottomSheet = useUiStore((s) => s.openBottomSheet);
+  const openFloatingWindow = useUiStore((s) => s.openFloatingWindow);
 
   useEffect(() => {
     void loadState();
+    void loadConfiguredModels();
+    void loadConfiguredChannels();
     connectGateway();
     return () => disconnectGateway();
-  }, [loadState, connectGateway, disconnectGateway]);
+  }, [loadState, loadConfiguredModels, loadConfiguredChannels, connectGateway, disconnectGateway]);
 
+  // 初始自动选择城主 agent
   useEffect(() => {
-    if (!snapshot) return;
-    const id = window.setInterval(() => {
-      void gameApi.postGameTick().then(() => loadState({ silent: true })).catch(() => {});
-    }, GAME_TICK_MS);
-    return () => window.clearInterval(id);
-  }, [snapshot, loadState]);
+    if (!snapshot || selectedAgentId) return;
+    const lord = snapshot.agents.find(
+      (a) => (a.profile ?? '') === 'default' || (a.profession ?? '') === '城主',
+    );
+    if (lord) setSelectedAgent(lord.id);
+  }, [snapshot, selectedAgentId, setSelectedAgent]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -58,6 +59,13 @@ export function App() {
         color: '#eee',
       }}
     >
+      <style>{`
+        *::-webkit-scrollbar { width: 5px; height: 5px; }
+        *::-webkit-scrollbar-track { background: transparent; }
+        *::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 10px; }
+        *::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+        * { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.08) transparent; }
+      `}</style>
       {error && (
         <div style={{ color: '#f66', padding: '8px 16px', fontSize: 13 }}>
           {error}（请先启动后端：<code>cd backend && PYTHONPATH=. python3 server.py</code>）
@@ -73,20 +81,19 @@ export function App() {
           <CenterStage
             snapshot={snapshot}
             selectedAgentId={selectedAgentId}
-            centerInference={agentInferState}
             gatewayStatus={gatewayStatus}
             loading={loading}
             onSelectAgent={setSelectedAgent}
-            onMoveAgent={(id, room) => void moveAgent(id, room)}
             onOpenAgentDetail={(id) => {
               setSelectedAgent(id);
-              openBottomSheet({ kind: 'agent', agentId: id });
+              openFloatingWindow({ kind: 'agent', agentId: id });
             }}
             onRefresh={() => void loadState()}
           />
         </div>
       )}
-      <BottomSheetHost />
+      <DockPanel />
+      <FloatingWindowsHost />
       <ClarifyModal />
     </div>
   );

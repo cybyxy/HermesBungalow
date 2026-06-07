@@ -8,7 +8,7 @@ function defaultGatewayWsUrl(): string {
   const scheme = isHttps ? 'wss' : 'ws';
   // Avoid Vite's ws proxy — it often logs EPIPE when the backend closes or the tab refreshes.
   if (import.meta.env.DEV) {
-    const port = import.meta.env.VITE_BACKEND_PORT ?? '8000';
+    const port = import.meta.env.VITE_BACKEND_PORT ?? '8765';
     return `${scheme}://${location.hostname}:${port}/ws/gateway`;
   }
   return `${scheme}://${location.host}/ws/gateway`;
@@ -57,7 +57,7 @@ export class HermesGameGateway {
     this.ws = ws;
     ws.onopen = () => {
       this.setStatus('connected');
-      ws.send(JSON.stringify({ type: 'game_event_sub', channels: ['task', 'agent_status', 'competition', 'social'] }));
+      ws.send(JSON.stringify({ type: 'game_event_sub', channels: ['task'] }));
     };
     ws.onerror = () => { /* let onclose handle final status */ };
     ws.onclose = () => {

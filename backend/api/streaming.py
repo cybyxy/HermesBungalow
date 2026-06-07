@@ -1294,6 +1294,8 @@ def _run_agent_streaming(
     old_exec_ask = None
     old_session_key = None
     old_hermes_home = None
+    old_skills_home = None
+    old_skills_dir = None
 
     # ── MCP Server Discovery (lazy import, idempotent) ──
     # discover_mcp_tools() is called here (rather than at server startup) so that
@@ -1392,6 +1394,15 @@ def _run_agent_streaming(
             os.environ['HERMES_SESSION_KEY'] = session_id
             if _profile_home:
                 os.environ['HERMES_HOME'] = _profile_home
+                # Patch skills_tool module-level cache so each agent sees their own skills
+                try:
+                    import tools.skills_tool as _sk
+                    old_skills_home = _sk.HERMES_HOME
+                    old_skills_dir = _sk.SKILLS_DIR
+                    _sk.HERMES_HOME = Path(_profile_home)
+                    _sk.SKILLS_DIR = Path(_profile_home) / 'skills'
+                except (ImportError, AttributeError):
+                    pass
         # Lock released — agent runs without holding it
         # Register a gateway-style notify callback so the approval system can
         # push the `approval` SSE event the moment a dangerous command is
@@ -2234,6 +2245,15 @@ def _run_agent_streaming(
                 else: os.environ['HERMES_SESSION_KEY'] = old_session_key
                 if old_hermes_home is None: os.environ.pop('HERMES_HOME', None)
                 else: os.environ['HERMES_HOME'] = old_hermes_home
+                # Restore skills_tool module-level cache
+                try:
+                    import tools.skills_tool as _sk
+                    if old_skills_home is not None:
+                        _sk.HERMES_HOME = old_skills_home
+                    if old_skills_dir is not None:
+                        _sk.SKILLS_DIR = old_skills_dir
+                except (ImportError, AttributeError):
+                    pass
 
     except Exception as e:
         print('[webui] stream error:\n' + traceback.format_exc(), flush=True)

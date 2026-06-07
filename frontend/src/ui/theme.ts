@@ -77,28 +77,11 @@ export function professionColor(profession: string): string {
   return professionMap[profession] ?? colors.text;
 }
 
-export function statusLabelCn(status: string): string {
-  if (status === 'working') return '工作中';
-  if (status === 'idle') return '空闲';
-  if (status === 'resting') return '休息中';
-  if (status === 'social') return '社交中';
-  if (status === 'walking') return '移动中';
-  return status;
-}
-
-export function statusColor(status: string): string {
-  if (status === 'working') return '#90EE90';
-  if (status === 'idle') return colors.gold;
-  if (status === 'resting') return '#87CEEB';
-  if (status === 'social') return '#DDA0DD';
-  if (status === 'walking') return '#87CEFA';
-  return '#888';
-}
-
 export function taskStatusLabelCn(status: string): { text: string; color: string } {
   if (status === 'pending') return { text: '待接取', color: colors.text };
   if (status === 'in_progress') return { text: '进行中', color: colors.gold };
   if (status === 'completed') return { text: '已完成', color: '#228B22' };
   if (status === 'failed') return { text: '失败', color: colors.gold };
+  if (status === 'locked') return { text: '锁定', color: '#FF6347' };
   return { text: status, color: colors.text };
 }

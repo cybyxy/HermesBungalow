@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 HERMES_BASE = Path.home() / ".hermes"
 HERMES_PROFILES_DIR = HERMES_BASE / "profiles"
-AGENT_BASE_PORT = 8001
+AGENT_BASE_PORT = 8100
 
 
 def _read_profile_description(hermes_home: Path) -> str:
@@ -203,7 +203,7 @@ class AgentProcess:
     def _is_port_in_use(self, port: int) -> bool:
         """Check if a port is already listening on 127.0.0.1."""
         try:
-            with socket.create_server(("127.0.0.1", port), reuse_addr=True) as s:
+            with socket.create_server(("127.0.0.1", port), reuse_port=True) as s:
                 return False
         except OSError:
             return True
@@ -235,6 +235,13 @@ class AgentProcess:
 
             # ── Step 3: Build environment ────────────────────────────────
             env = dict(os.environ)
+            # 确保局域网 Ollama 地址绕过 HTTP 代理，并移除 httpx 不支持的 socks 代理
+            for key in ("no_proxy", "NO_PROXY"):
+                existing = env.get(key, "")
+                if "192.168.1.3" not in existing:
+                    env[key] = f"{existing},192.168.1.3" if existing else "192.168.1.3"
+            for key in ("all_proxy", "ALL_PROXY"):
+                env.pop(key, None)
             env["HERMES_HOME"] = self.hermes_home
             env["HERMES_PROFILE"] = self.profile
             env["HERMES_WEBUI_AGENT_DIR"] = str(Path.home() / ".hermes" / "hermes-agent")
@@ -249,7 +256,7 @@ class AgentProcess:
                 )
                 return
 
-            script_path = Path(__file__).parent / "agent_server.py"
+            script_path = Path(__file__).parent.parent / "agent_server.py"
             args = [
                 python,
                 str(script_path),
@@ -324,6 +331,25 @@ class AgentManager:
         self._lock = threading.Lock()
         self._agents: dict[str, AgentProcess] = {}
 
+    def register_profile(self, profile: str, hermes_home: str, description: str = "") -> int:
+        """Register a newly created profile so its subprocess can be started without restart."""
+        from pathlib import Path
+        if profile in PROFILE_CONFIG:
+            return PROFILE_CONFIG[profile]["port"]
+        # Find the next available port
+        used_ports = {cfg["port"] for cfg in PROFILE_CONFIG.values()}
+        port = AGENT_BASE_PORT
+        while port in used_ports:
+            port += 1
+        desc = description or _read_profile_description(Path(hermes_home))
+        PROFILE_CONFIG[profile] = {
+            "port": port,
+            "hermes_home": hermes_home,
+            "description": desc or profile,
+        }
+        logger.info("[AgentMgr] Registered new profile '%s' on port %d", profile, port)
+        return port
+
     def get(self, profile: str) -> AgentProcess:
         if profile not in PROFILE_CONFIG:
             raise ValueError(f"Unknown profile: '{profile}' — available: {list(PROFILE_CONFIG.keys())}")
@@ -337,6 +363,7 @@ class AgentManager:
         """Start the agent if not already running, then wait for its /health endpoint."""
         logger.info("[AgentMgr] ensure_running profile='%s'", profile)
         agent = self.get(profile)
+        agent.start()
         self._wait_for_agent(agent)
         return agent
 
@@ -355,7 +382,9 @@ class AgentManager:
                 )
                 raise RuntimeError(f"Agent process for profile '{agent.profile}' died immediately")
             try:
-                resp = httpx.get(f"{agent.base_url}/health", timeout=1.0)
+                # 本地 health check 必须绕过环境代理（尤其 socks:// 不被 httpx 支持）
+                with httpx.Client(trust_env=False) as client:
+                    resp = client.get(f"{agent.base_url}/health", timeout=1.0)
                 if resp.status_code == 200:
                     pid = agent._proc.pid if agent._proc else None
                     logger.info(
@@ -366,7 +395,7 @@ class AgentManager:
                         agent.base_url,
                     )
                     return
-            except httpx.ConnectError:
+            except (httpx.ConnectError, httpx.ProxyError, Exception):
                 pass
             time.sleep(0.3)
         raise TimeoutError(
@@ -565,7 +594,7 @@ class MultiAgentGateway:
                                 "session_id": session.session_id,
                                 "message": pending_message,
                                 "model": None,
-                                "workspace": str(Path.home() / "ai_projects" / "HermesBungalow"),
+                                "workspace": str(Path.home() / "ai_projects" / "HermesBungalow" / "agent_workspace"),
                             },
                         )
 

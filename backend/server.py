@@ -74,31 +74,53 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from api.game.gateway_hub import GatewayHub, gateway_enabled
+from api.task.gateway_hub import GatewayHub, gateway_enabled
 from api.multi_agent_gateway import start_all_agents, stop_all_agents
-from api.game.handoff_parser import is_broadcast_all_handoff_token, parse_user_handoff_prefix
+from api.task.handoff_parser import is_broadcast_all_handoff_token, parse_user_handoff_prefix
 from api.config import MAX_UPLOAD_BYTES
-from api.game.service import GameService, bungalow_session_tls_for_agent_id, read_json_body
+from api.task.service import TaskService, bungalow_session_tls_for_agent_id, read_json_body
 from api.models import get_session
 from api.upload import _sanitize_upload_name
 from api.workspace import safe_resolve_ws
 from api.routes import handle_get as hermes_handle_get
 from api.routes import handle_post as hermes_handle_post
 
-game = GameService()
+task_service = TaskService()
 hub = GatewayHub()
 
 from api.streaming import register_bungalow_game_service
 
-register_bungalow_game_service(game)
+register_bungalow_game_service(task_service)
 WS_INCOMING_MAX_BYTES = 65536
 
-from api.game import agent as bung_agent
+from api.task import orchestration as bung_agent
+from api.task.routes_model_config import (
+    get_model_config,
+    post_model_config,
+    post_model_provider,
+    get_provider_profiles,
+    post_fetch_remote_models,
+    get_configured_models,
+    get_configured_channels,
+    post_channel_config,
+)
+from api.task.routes_chat import (
+    post_lord_chat,
+    post_agent_social_chat,
+    post_multi_round_run,
+    post_multi_round_start,
+    post_multi_round_continue,
+    post_multi_round_stop,
+    get_multi_round_session,
+    get_multi_round_list,
+    get_multi_round_stream,
+)
+from api.task.routes_task import post_lord_create_task
 
 
 def _sync_session_turn(session_id: str, message: str, *, bungalow_agent_id: str | None = None) -> dict[str, Any]:
     """Run one Hermes turn on an existing session (keeps conversation history)."""
-    return bung_agent.sync_session_turn(session_id, message, game, bungalow_agent_id=bungalow_agent_id)
+    return bung_agent.sync_session_turn(session_id, message, task_service, bungalow_agent_id=bungalow_agent_id)
 
 
 def _orchestrated_peer_turns_sync(
@@ -114,7 +136,7 @@ def _orchestrated_peer_turns_sync(
         primary_agent,
         user_message,
         auto_peer,
-        game,
+        task_service,
         primary_attachments=primary_attachments,
         event_sink=event_sink,
         run_id=run_id,
@@ -133,7 +155,7 @@ def _run_recursive_peer_invokes(
     run_id: str = "",
 ) -> list[dict[str, Any]]:
     return bung_agent.run_recursive_peer_invokes(
-        game,
+        task_service,
         invoker_agent,
         invoke_rows,
         depth,
@@ -161,9 +183,8 @@ def _orchestrate_turn_sync(
     """Sync core of orchestrated chat (JSON and SSE workers)."""
     uh = parse_user_handoff_prefix(message)
     if uh:
-        with game._lock:
-            agents = list(game.world.agents)
-        peer_hint = _build_peer_hint_lines(agents) if auto_peer and len(agents) > 1 else ""
+        with task_service._lock:
+            agents = list(task_service.world.agents)
         token = str(uh.get("token") or "").strip()
         sub = str(uh.get("message") or "").strip()
         if not sub:
@@ -172,7 +193,7 @@ def _orchestrate_turn_sync(
             if len(agents) < 2:
                 raise ValueError("need_two_agents_for_broadcast")
             delegations = _run_recursive_peer_invokes(
-                primary, [(token, sub)], 0, "", peer_hint, agents, event_sink=event_sink, run_id=run_id
+                primary, [(token, sub)], 0, "", "", agents, event_sink=event_sink, run_id=run_id
             )
             return {
                 "ok": True,
@@ -183,7 +204,7 @@ def _orchestrate_turn_sync(
         if not peer:
             raise LookupError("target_agent_not_found")
         delegations = _run_recursive_peer_invokes(
-            primary, [(token, sub)], 0, "", peer_hint, agents, event_sink=event_sink, run_id=run_id
+            primary, [(token, sub)], 0, "", "", agents, event_sink=event_sink, run_id=run_id
         )
         return {
             "ok": True,
@@ -195,17 +216,14 @@ def _orchestrate_turn_sync(
     )
 
 
-def _build_peer_hint_lines(agents: list[Any]) -> str:
-    return bung_agent.build_peer_hint_lines(agents)
-
 
 def _resolve_game_agent_token(token: str):
     t = token.strip()
     if not t:
         return None
     tl = t.lower()
-    with game._lock:
-        agents = list(game.world.agents)
+    with task_service._lock:
+        agents = list(task_service.world.agents)
     for a in agents:
         if a.id == t:
             return a
@@ -332,28 +350,28 @@ async def _dispatch_hermes_via_adapter(request: Request) -> Response:
 
 
 def _wire_emit() -> None:
-    game.set_emit(lambda ch, data: hub.enqueue_event(ch, data))
+    task_service.set_emit(lambda ch, data: hub.enqueue_event(ch, data))
 
 
 _wire_emit()
 
 
 async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"ok": True, "service": "hermes-bungalow-game"})
+    return JSONResponse({"ok": True, "service": "hermes-bungalow-task"})
 
 
 async def get_state(_: Request) -> JSONResponse:
-    return JSONResponse(game.snapshot())
+    return JSONResponse(task_service.snapshot())
 
 
 async def get_agents(_: Request) -> JSONResponse:
     rows: list[dict[str, Any]] = []
-    for a in game.world.agents:
+    for a in task_service.world.agents:
         d = dict(a.to_dict())
-        sid = game.get_hermes_session_id(a.id)
+        sid = task_service.get_hermes_session_id(a.id)
         if not sid:
             try:
-                sid = game.ensure_hermes_session_for_agent(a.id)
+                sid = task_service.ensure_hermes_session_for_agent(a.id)
             except Exception:
                 sid = ""
         d["hermes_session_id"] = sid or ""
@@ -362,24 +380,24 @@ async def get_agents(_: Request) -> JSONResponse:
 
 
 async def get_tasks(_: Request) -> JSONResponse:
-    return JSONResponse({"tasks": [t.to_dict() for t in game.world.tasks]})
+    return JSONResponse({"tasks": [t.to_dict() for t in task_service.world.tasks]})
 
 
 async def get_rooms(_: Request) -> JSONResponse:
-    return JSONResponse({"rooms": [r.to_dict() for r in game.world.rooms]})
+    return JSONResponse({"rooms": [r.to_dict() for r in task_service.world.rooms]})
 
 
 async def post_agent(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
-    agent = game.add_agent(body)
-    game.persist()
+    agent = task_service.add_agent(body)
+    task_service.persist()
     return JSONResponse({"ok": True, "agent": agent.to_dict()})
 
 
 async def post_agent_update(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
-    agent = game.update_agent(body)
-    game.persist()
+    agent = task_service.update_agent(body)
+    task_service.persist()
     if not agent:
         return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
     return JSONResponse({"ok": True, "agent": agent.to_dict()})
@@ -387,24 +405,34 @@ async def post_agent_update(request: Request) -> JSONResponse:
 
 async def post_agent_move(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
-    ok = game.move_agent(str(body.get("agent_id", "")), str(body.get("room_id", "")))
-    game.persist()
+    ok = task_service.move_agent(str(body.get("agent_id", "")), str(body.get("room_id", "")))
+    task_service.persist()
     if not ok:
         return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
     return JSONResponse({"ok": True})
 
 
+async def post_agent_delete(request: Request) -> JSONResponse:
+    body = read_json_body(await request.body())
+    res = task_service.delete_agent(str(body.get("agent_id", "")))
+    task_service.persist()
+    if not res.get("ok"):
+        code = 403 if res.get("error") == "cannot_delete_default_agent" else 400
+        return JSONResponse(res, status_code=code)
+    return JSONResponse(res)
+
+
 async def post_task(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
-    task = game.create_task(body)
-    game.persist()
+    task = task_service.create_task(body)
+    task_service.persist()
     return JSONResponse({"ok": True, "task": task.to_dict()})
 
 
 async def post_task_assign(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
-    res = game.assign_task(int(body.get("task_id", 0)), body.get("agent_id"))
-    game.persist()
+    res = task_service.assign_task(int(body.get("task_id", 0)), body.get("agent_id"))
+    task_service.persist()
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
     return JSONResponse(res)
@@ -412,8 +440,8 @@ async def post_task_assign(request: Request) -> JSONResponse:
 
 async def post_task_complete(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
-    res = game.complete_task(int(body.get("task_id", 0)), int(body.get("quality", 0)))
-    game.persist()
+    res = task_service.complete_task(int(body.get("task_id", 0)), int(body.get("quality", 0)))
+    task_service.persist()
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
     return JSONResponse(res)
@@ -421,8 +449,8 @@ async def post_task_complete(request: Request) -> JSONResponse:
 
 async def post_task_delete(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
-    res = game.delete_task(int(body.get("task_id", 0)))
-    game.persist()
+    res = task_service.delete_task(int(body.get("task_id", 0)))
+    task_service.persist()
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
     return JSONResponse(res)
@@ -441,7 +469,7 @@ async def post_task_workflow_generate(request: Request) -> JSONResponse:
     try:
         res = await loop.run_in_executor(
             None,
-            lambda: game.generate_task_workflow_with_llm(agent_id, task_id, excerpt),
+            lambda: task_service.generate_task_workflow_with_llm(agent_id, task_id, excerpt),
         )
     except Exception as e:
         return JSONResponse({"ok": False, "error": "workflow_generate_failed", "detail": str(e)}, status_code=500)
@@ -454,8 +482,8 @@ async def post_task_workflow_generate(request: Request) -> JSONResponse:
 
 async def post_greeting(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
-    res = game.greeting(str(body.get("agent_id_a", "")), str(body.get("agent_id_b", "")))
-    game.persist()
+    res = task_service.greeting(str(body.get("agent_id_a", "")), str(body.get("agent_id_b", "")))
+    task_service.persist()
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
     return JSONResponse(res)
@@ -463,15 +491,15 @@ async def post_greeting(request: Request) -> JSONResponse:
 
 async def post_collaboration(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
-    res = game.collaboration(int(body.get("task_id", 0)))
-    game.persist()
+    res = task_service.collaboration(int(body.get("task_id", 0)))
+    task_service.persist()
     if not res.get("ok"):
         return JSONResponse(res, status_code=404)
     return JSONResponse(res)
 
 
 async def get_competition_history(_: Request) -> JSONResponse:
-    return JSONResponse({"history": game.world.competition_history})
+    return JSONResponse({"history": task_service.world.competition_history})
 
 
 async def post_announcement(request: Request) -> JSONResponse:
@@ -486,44 +514,44 @@ async def post_announcement(request: Request) -> JSONResponse:
 
 
 async def get_save(_: Request) -> JSONResponse:
-    from api.game.persistence import get_save_meta
+    from api.task.persistence import get_save_meta
 
-    meta = get_save_meta(game._conn, "default")
-    return JSONResponse({"slot": "default", "meta": meta, "snapshot": game.snapshot()})
+    meta = get_save_meta(task_service._conn, "default")
+    return JSONResponse({"slot": "default", "meta": meta, "snapshot": task_service.snapshot()})
 
 
 async def put_save(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
     slot = str(body.get("slot", "default"))
     if "snapshot" in body:
-        from api.game.persistence import world_from_dict
+        from api.task.persistence import world_from_dict
 
-        with game._lock:
-            game._world = world_from_dict(body["snapshot"])
-        game.sync_room_occupancy()
-    game.persist(slot)
+        with task_service._lock:
+            task_service._world = world_from_dict(body["snapshot"])
+        task_service.sync_room_occupancy()
+    task_service.persist(slot)
     return JSONResponse({"ok": True, "slot": slot})
 
 
 async def post_llm_apply_tags(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
     text = str(body.get("text", ""))
-    result = game.apply_llm_tags(text)
-    game.persist()
+    result = task_service.apply_llm_tags(text)
+    task_service.persist()
     return JSONResponse({"ok": True, **result})
 
 
 async def post_game_tick(request: Request) -> JSONResponse:
     body = read_json_body(await request.body())
     minutes = body.get("minutes")
-    snap = game.tick_time(int(minutes) if minutes is not None else None)
-    game.persist()
+    snap = task_service.tick_time(int(minutes) if minutes is not None else None)
+    task_service.persist()
     return JSONResponse({"ok": True, **snap})
 
 
 async def post_sync_hermes_agents(_: Request) -> JSONResponse:
-    synced = game.sync_agents_from_hermes()
-    return JSONResponse({"ok": True, "synced": synced, "agent_count": len(game.world.agents)})
+    synced = task_service.sync_agents_from_hermes()
+    return JSONResponse({"ok": True, "synced": synced, "agent_count": len(task_service.world.agents)})
 
 
 def _slug_profile_name(raw: str) -> str:
@@ -566,22 +594,37 @@ async def post_create_hermes_profile_agent(request: Request) -> JSONResponse:
         if memory:
             (home / "memory.md").write_text(memory, encoding="utf-8")
 
+        # 重置克隆自 default 的 MEMORY.md，避免新 Agent 继承 崽崽 的身份记忆。
+        mem_dir = home / "memories"
+        mem_file = mem_dir / "MEMORY.md"
+        if mem_file.exists():
+            mem_file.write_text(f"身份：{display_name}，Hermes 数字工作室成员。\n", encoding="utf-8")
+
         # Switch process-wide so game sync reads this new profile immediately.
         switch_profile(profile_name, process_wide=True)
-        game.sync_agents_from_hermes()
+        task_service.sync_agents_from_hermes()
         # sync 重建「无旧档」的 Agent 时未带 gender，dataclass 默认 male；此处写回创建向导里选的性别。
-        for a in game.world.agents:
+        for a in task_service.world.agents:
             if str(getattr(a, "profile", "") or "").strip() == profile_name:
-                game.update_agent({"id": a.id, "gender": gender_resolved})
+                task_service.update_agent({"id": a.id, "gender": gender_resolved})
                 break
-        game.persist()
+        task_service.persist()
+
+        # 立即注册新 profile 并启动 agent 子进程（无需重启后端）。
+        try:
+            from api.multi_agent_gateway import MANAGER
+            MANAGER.register_profile(str(profile_name), str(home), display_name)
+            MANAGER.ensure_running(str(profile_name))
+        except Exception as e:
+            logging.warning("Failed to start agent subprocess for '%s': %s", profile_name, e)
+
         return JSONResponse(
             {
                 "ok": True,
                 "profile": prof,
                 "profile_name": profile_name,
                 "display_name": display_name,
-                "agent_count": len(game.world.agents),
+                "agent_count": len(task_service.world.agents),
             }
         )
     except FileExistsError:
@@ -594,7 +637,7 @@ async def get_agent_profile_files(request: Request) -> JSONResponse:
     agent_id = str(request.query_params.get("agent_id") or "").strip()
     if not agent_id:
         return JSONResponse({"ok": False, "error": "agent_id_required"}, status_code=400)
-    agent = next((a for a in game.world.agents if a.id == agent_id), None)
+    agent = next((a for a in task_service.world.agents if a.id == agent_id), None)
     if not agent:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
     profile = str(getattr(agent, "profile", "default") or "default")
@@ -606,7 +649,33 @@ async def get_agent_profile_files(request: Request) -> JSONResponse:
         memory_path = home / "memory.md"
         soul = soul_path.read_text(encoding="utf-8") if soul_path.exists() else ""
         memory = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
-        return JSONResponse({"ok": True, "profile": profile, "soul": soul, "memory": memory})
+        # 扫描 ~/.hermes/skills/ 目录，列出所有可用技能
+        skills: list[dict[str, str]] = []
+        skills_dir = Path(Path.home() / ".hermes" / "skills")
+        if skills_dir.is_dir():
+            for cat_dir in sorted(skills_dir.iterdir()):
+                if not cat_dir.is_dir() or cat_dir.name.startswith('.'):
+                    continue
+                for skill_dir in sorted(cat_dir.iterdir()):
+                    if not skill_dir.is_dir():
+                        continue
+                    skmd = skill_dir / "SKILL.md"
+                    if not skmd.exists():
+                        continue
+                    text = skmd.read_text(encoding="utf-8")
+                    name = skill_dir.name
+                    desc = ""
+                    if text.startswith("---"):
+                        parts = text.split("---", 2)
+                        if len(parts) >= 3:
+                            for line in parts[1].split("\n"):
+                                line = line.strip()
+                                if line.startswith("name:"):
+                                    name = line.split(":", 1)[1].strip()
+                                elif line.startswith("description:"):
+                                    desc = line.split(":", 1)[1].strip().strip('"')
+                    skills.append({"name": name, "description": desc, "category": cat_dir.name})
+        return JSONResponse({"ok": True, "profile": profile, "soul": soul, "memory": memory, "skills": skills})
     except Exception as e:
         return JSONResponse({"ok": False, "error": "read_profile_files_failed", "detail": str(e)}, status_code=500)
 
@@ -616,7 +685,7 @@ async def post_agent_profile_files_save(request: Request) -> JSONResponse:
     agent_id = str(body.get("agent_id") or "").strip()
     if not agent_id:
         return JSONResponse({"ok": False, "error": "agent_id_required"}, status_code=400)
-    agent = next((a for a in game.world.agents if a.id == agent_id), None)
+    agent = next((a for a in task_service.world.agents if a.id == agent_id), None)
     if not agent:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
     profile = str(getattr(agent, "profile", "default") or "default")
@@ -641,8 +710,8 @@ async def post_agent_profile_files_save(request: Request) -> JSONResponse:
             memory_path.write_text(memory, encoding="utf-8")
         # Sync game-side projection from profile files so UI reflects latest identity.
         if has_soul or reset_soul:
-            game.sync_agents_from_hermes()
-            game.persist()
+            task_service.sync_agents_from_hermes()
+            task_service.persist()
         return JSONResponse({"ok": True, "profile": profile})
     except Exception as e:
         return JSONResponse({"ok": False, "error": "save_profile_files_failed", "detail": str(e)}, status_code=500)
@@ -662,19 +731,19 @@ async def post_agent_relay_chat(request: Request) -> JSONResponse:
     agent = _resolve_game_agent_token(token)
     if not agent:
         return JSONResponse({"ok": False, "error": "target_agent_not_found", "token": token}, status_code=404)
-    wo_id = game.monitor_start_work_order(f"relay → {token}: {message}", agent.id)
+    wo_id = task_service.monitor_start_work_order(f"relay → {token}: {message}", agent.id)
     loop = asyncio.get_event_loop()
     try:
-        sid = game.ensure_hermes_session_for_agent(agent.id)
+        sid = task_service.ensure_hermes_session_for_agent(agent.id)
         result = await loop.run_in_executor(
             None,
             partial(_sync_session_turn, sid, message, bungalow_agent_id=agent.id),
         )
     except Exception as e:
-        game.monitor_abort_work_order(wo_id, str(e))
+        task_service.monitor_abort_work_order(wo_id, str(e))
         return JSONResponse({"ok": False, "error": "relay_failed", "detail": str(e)}, status_code=500)
     try:
-        game.monitor_record_relay(wo_id, agent.id, message, result)
+        task_service.monitor_record_relay(wo_id, agent.id, message, result)
     except Exception:
         pass
     result = dict(result)
@@ -706,7 +775,7 @@ async def post_agent_chat_orchestrated(request: Request) -> JSONResponse:
     primary = _resolve_game_agent_token(agent_id)
     if not primary:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
-    wo_id = game.monitor_start_work_order(message, primary.id)
+    wo_id = task_service.monitor_start_work_order(message, primary.id)
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(
@@ -723,27 +792,27 @@ async def post_agent_chat_orchestrated(request: Request) -> JSONResponse:
         )
     except ValueError as e:
         code = str(e)
-        game.monitor_abort_work_order(wo_id, code)
+        task_service.monitor_abort_work_order(wo_id, code)
         if code == "empty_handoff_body":
             return JSONResponse({"ok": False, "error": "empty_handoff_body"}, status_code=400)
         if code == "need_two_agents_for_broadcast":
             return JSONResponse({"ok": False, "error": "need_two_agents_for_broadcast"}, status_code=400)
         return JSONResponse({"ok": False, "error": "orchestrate_failed", "detail": code}, status_code=500)
     except LookupError:
-        game.monitor_abort_work_order(wo_id, "target_agent_not_found")
+        task_service.monitor_abort_work_order(wo_id, "target_agent_not_found")
         return JSONResponse({"ok": False, "error": "target_agent_not_found"}, status_code=404)
     except Exception as e:
-        game.monitor_abort_work_order(wo_id, str(e))
+        task_service.monitor_abort_work_order(wo_id, str(e))
         return JSONResponse({"ok": False, "error": "orchestrate_failed", "detail": str(e)}, status_code=500)
     try:
-        game.monitor_record_orchestrate(wo_id, message, primary.id, result)
+        task_service.monitor_record_orchestrate(wo_id, message, primary.id, result)
     except Exception:
         pass
     try:
-        game.apply_game_events_from_orchestrate_result(result)
+        task_service.apply_game_events_from_orchestrate_result(result)
     except Exception:
         pass
-    game.persist()
+    task_service.persist()
     result = dict(result)
     result["work_order_id"] = wo_id
     return JSONResponse(result)
@@ -770,25 +839,25 @@ def _orchestrate_sse_worker(
             primary, message, auto_peer, primary_attachments, event_sink=sink, run_id=run_id
         )
         try:
-            game.monitor_record_orchestrate(wo_id, message, primary.id, result)
+            task_service.monitor_record_orchestrate(wo_id, message, primary.id, result)
         except Exception:
             pass
         try:
-            game.apply_game_events_from_orchestrate_result(result)
+            task_service.apply_game_events_from_orchestrate_result(result)
         except Exception:
             pass
-        game.persist()
+        task_service.persist()
         sink({"type": "turn_done", "run_id": run_id})
     except ValueError as e:
-        game.monitor_abort_work_order(wo_id, str(e))
+        task_service.monitor_abort_work_order(wo_id, str(e))
         sink({"type": "error", "run_id": run_id, "message": str(e), "fatal": True})
         sink({"type": "turn_done", "run_id": run_id})
     except LookupError:
-        game.monitor_abort_work_order(wo_id, "target_agent_not_found")
+        task_service.monitor_abort_work_order(wo_id, "target_agent_not_found")
         sink({"type": "error", "run_id": run_id, "message": "target_agent_not_found", "fatal": True})
         sink({"type": "turn_done", "run_id": run_id})
     except Exception as e:
-        game.monitor_abort_work_order(wo_id, str(e))
+        task_service.monitor_abort_work_order(wo_id, str(e))
         sink({"type": "error", "run_id": run_id, "message": str(e), "fatal": True})
         sink({"type": "turn_done", "run_id": run_id})
 
@@ -809,7 +878,7 @@ async def post_agent_chat_orchestrated_run(request: Request) -> JSONResponse:
     primary = _resolve_game_agent_token(agent_id)
     if not primary:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
-    wo_id = game.monitor_start_work_order(message, primary.id)
+    wo_id = task_service.monitor_start_work_order(message, primary.id)
     run_id = uuid.uuid4().hex
     q: queue.Queue[dict[str, Any]] = queue.Queue()
     with _ORCH_SSE_LOCK:
@@ -864,14 +933,14 @@ async def post_agent_stream_cancel(request: Request) -> JSONResponse:
 
 
 async def get_monitor_work_orders(_: Request) -> JSONResponse:
-    return JSONResponse({"ok": True, "work_orders": game.monitor_list_work_orders(80)})
+    return JSONResponse({"ok": True, "work_orders": task_service.monitor_list_work_orders(80)})
 
 
 async def get_monitor_work_order_detail(request: Request) -> JSONResponse:
     wo_id = str(request.path_params.get("wo_id") or "").strip()
     if not wo_id:
         return JSONResponse({"ok": False, "error": "missing_id"}, status_code=400)
-    d = game.monitor_get_work_order_detail(wo_id)
+    d = task_service.monitor_get_work_order_detail(wo_id)
     if not d:
         return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
     return JSONResponse({"ok": True, "work_order": d})
@@ -881,7 +950,7 @@ async def get_monitor_artifact_body(request: Request) -> JSONResponse:
     aid = str(request.path_params.get("artifact_id") or "").strip()
     if not aid:
         return JSONResponse({"ok": False, "error": "missing_id"}, status_code=400)
-    row = game.monitor_get_artifact_body(aid)
+    row = task_service.monitor_get_artifact_body(aid)
     if not row:
         return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
     return JSONResponse({"ok": True, "artifact": row})
@@ -898,7 +967,7 @@ async def post_game_hermes_session(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
     loop = asyncio.get_event_loop()
     try:
-        sid = await loop.run_in_executor(None, game.ensure_hermes_session_for_agent, agent.id)
+        sid = await loop.run_in_executor(None, task_service.ensure_hermes_session_for_agent, agent.id)
     except KeyError:
         return JSONResponse({"ok": False, "error": "agent_not_found"}, status_code=404)
     return JSONResponse({"ok": True, "session_id": sid})
@@ -927,8 +996,8 @@ async def post_game_agent_upload_attachment(request: Request) -> JSONResponse:
     raw_bytes = raw
 
     def _save() -> dict[str, Any]:
-        with bungalow_session_tls_for_agent_id(game, aid):
-            sid = game.ensure_hermes_session_for_agent(aid)
+        with bungalow_session_tls_for_agent_id(task_service, aid):
+            sid = task_service.ensure_hermes_session_for_agent(aid)
             s = get_session(sid)
             workspace = Path(s.workspace)
             safe_name = _sanitize_upload_name(filename)
@@ -991,8 +1060,8 @@ async def gateway_ws(ws: WebSocket) -> None:
                     await ws.send_text(
                         json.dumps({"type": "chat_stream", "content": ch, "done": False}, ensure_ascii=False)
                     )
-                result = game.apply_llm_tags(text)
-                game.persist()
+                result = task_service.apply_llm_tags(text)
+                task_service.persist()
                 await ws.send_text(
                     json.dumps(
                         {"type": "chat_done", "content": text, "game_events": result},
@@ -1028,43 +1097,65 @@ async def lifespan(_: Starlette):
 
 routes: list[Route | WebSocketRoute] = [
     Route("/health", health, methods=["GET"]),
-    Route("/api/game/state", get_state, methods=["GET"]),
-    Route("/api/game/agents", get_agents, methods=["GET"]),
-    Route("/api/game/tasks", get_tasks, methods=["GET"]),
-    Route("/api/game/rooms", get_rooms, methods=["GET"]),
-    Route("/api/game/agent", post_agent, methods=["POST"]),
-    Route("/api/game/agent/update", post_agent_update, methods=["POST"]),
-    Route("/api/game/agent/move", post_agent_move, methods=["POST"]),
-    Route("/api/game/task", post_task, methods=["POST"]),
-    Route("/api/game/task/assign", post_task_assign, methods=["POST"]),
-    Route("/api/game/task/complete", post_task_complete, methods=["POST"]),
-    Route("/api/game/task/delete", post_task_delete, methods=["POST"]),
-    Route("/api/game/task/workflow/generate", post_task_workflow_generate, methods=["POST"]),
-    Route("/api/game/greeting", post_greeting, methods=["POST"]),
-    Route("/api/game/collaboration", post_collaboration, methods=["POST"]),
-    Route("/api/game/competition/history", get_competition_history, methods=["GET"]),
-    Route("/api/game/announcement", post_announcement, methods=["POST"]),
-    Route("/api/game/save", get_save, methods=["GET"]),
-    Route("/api/game/save", put_save, methods=["PUT"]),
-    Route("/api/game/llm/apply-tags", post_llm_apply_tags, methods=["POST"]),
-    Route("/api/game/tick", post_game_tick, methods=["POST"]),
-    Route("/api/game/agents/sync-hermes", post_sync_hermes_agents, methods=["POST"]),
-    Route("/api/game/agent/create-from-hermes-profile", post_create_hermes_profile_agent, methods=["POST"]),
-    Route("/api/game/agent/profile-files", get_agent_profile_files, methods=["GET"]),
-    Route("/api/game/agent/profile-files/save", post_agent_profile_files_save, methods=["POST"]),
-    Route("/api/game/agent-relay", post_agent_relay_chat, methods=["POST"]),
-    Route("/api/game/agent-chat-orchestrated", post_agent_chat_orchestrated, methods=["POST"]),
-    Route("/api/game/agent-chat-orchestrated/run", post_agent_chat_orchestrated_run, methods=["POST"]),
-    Route("/api/game/agent-chat-orchestrated/stream", get_agent_chat_orchestrated_stream, methods=["GET"]),
-    Route("/api/game/agent-stream/cancel", post_agent_stream_cancel, methods=["POST"]),
-    Route("/api/game/monitor/work-orders", get_monitor_work_orders, methods=["GET"]),
-    Route("/api/game/monitor/work-orders/{wo_id}", get_monitor_work_order_detail, methods=["GET"]),
-    Route("/api/game/monitor/artifacts/{artifact_id}", get_monitor_artifact_body, methods=["GET"]),
-    Route("/api/game/hermes/session", post_game_hermes_session, methods=["POST"]),
-    Route("/api/game/agent/upload-attachment", post_game_agent_upload_attachment, methods=["POST"]),
+    Route("/api/task/state", get_state, methods=["GET"]),
+    Route("/api/task/agents", get_agents, methods=["GET"]),
+    Route("/api/task/tasks", get_tasks, methods=["GET"]),
+    Route("/api/task/rooms", get_rooms, methods=["GET"]),
+    Route("/api/task/agent", post_agent, methods=["POST"]),
+    Route("/api/task/agent/update", post_agent_update, methods=["POST"]),
+    Route("/api/task/agent/move", post_agent_move, methods=["POST"]),
+    Route("/api/task/agent/delete", post_agent_delete, methods=["POST"]),
+    Route("/api/task/task", post_task, methods=["POST"]),
+    Route("/api/task/task/assign", post_task_assign, methods=["POST"]),
+    Route("/api/task/task/complete", post_task_complete, methods=["POST"]),
+    Route("/api/task/task/delete", post_task_delete, methods=["POST"]),
+    Route("/api/task/task/workflow/generate", post_task_workflow_generate, methods=["POST"]),
+    Route("/api/task/greeting", post_greeting, methods=["POST"]),
+    Route("/api/task/collaboration", post_collaboration, methods=["POST"]),
+    Route("/api/task/competition/history", get_competition_history, methods=["GET"]),
+    Route("/api/task/announcement", post_announcement, methods=["POST"]),
+    Route("/api/task/save", get_save, methods=["GET"]),
+    Route("/api/task/save", put_save, methods=["PUT"]),
+    Route("/api/task/llm/apply-tags", post_llm_apply_tags, methods=["POST"]),
+    Route("/api/task/tick", post_game_tick, methods=["POST"]),
+    Route("/api/task/agents/sync-hermes", post_sync_hermes_agents, methods=["POST"]),
+    Route("/api/task/agent/create-from-hermes-profile", post_create_hermes_profile_agent, methods=["POST"]),
+    Route("/api/task/agent/profile-files", get_agent_profile_files, methods=["GET"]),
+    Route("/api/task/agent/profile-files/save", post_agent_profile_files_save, methods=["POST"]),
+    Route("/api/task/lord/chat", post_lord_chat, methods=["POST"]),
+    Route("/api/task/lord/create-task", post_lord_create_task, methods=["POST"]),
+    Route("/api/task/agent/social-chat", post_agent_social_chat, methods=["POST"]),
+    Route("/api/task/agent-relay", post_agent_relay_chat, methods=["POST"]),
+    Route("/api/task/agent-chat-orchestrated", post_agent_chat_orchestrated, methods=["POST"]),
+    Route("/api/task/agent-chat-orchestrated/run", post_agent_chat_orchestrated_run, methods=["POST"]),
+    Route("/api/task/agent-chat-orchestrated/stream", get_agent_chat_orchestrated_stream, methods=["GET"]),
+    Route("/api/task/agent-stream/cancel", post_agent_stream_cancel, methods=["POST"]),
+    Route("/api/task/monitor/work-orders", get_monitor_work_orders, methods=["GET"]),
+    Route("/api/task/monitor/work-orders/{wo_id}", get_monitor_work_order_detail, methods=["GET"]),
+    Route("/api/task/monitor/artifacts/{artifact_id}", get_monitor_artifact_body, methods=["GET"]),
+    Route("/api/task/hermes/session", post_game_hermes_session, methods=["POST"]),
+    Route("/api/task/agent/upload-attachment", post_game_agent_upload_attachment, methods=["POST"]),
     Route("/api/session/new", hermes_api_post, methods=["POST"]),
     Route("/api/chat/start", hermes_api_post, methods=["POST"]),
     Route("/api/chat/stream", hermes_api_get, methods=["GET"]),
+    # ── Model config ──
+    Route("/api/task/model-config", get_model_config, methods=["GET"]),
+    Route("/api/task/model-config", post_model_config, methods=["POST"]),
+    Route("/api/task/model-config/provider", post_model_provider, methods=["POST"]),
+    Route("/api/task/provider-profiles", get_provider_profiles, methods=["GET"]),
+    Route("/api/task/models/fetch", post_fetch_remote_models, methods=["POST"]),
+    Route("/api/task/configured-models", get_configured_models, methods=["GET"]),
+    Route("/api/task/configured-channels", get_configured_channels, methods=["GET"]),
+    Route("/api/task/channel-config", post_channel_config, methods=["POST"]),
+    # ── Multi-round ──
+    Route("/api/task/multi-round/run", post_multi_round_run, methods=["POST"]),
+    Route("/api/task/multi-round/start", post_multi_round_start, methods=["POST"]),
+    Route("/api/task/multi-round/continue", post_multi_round_continue, methods=["POST"]),
+    Route("/api/task/multi-round/stop", post_multi_round_stop, methods=["POST"]),
+    Route("/api/task/multi-round/list", get_multi_round_list, methods=["GET"]),
+    Route("/api/task/multi-round/stream", get_multi_round_stream, methods=["GET"]),
+    Route("/api/task/multi-round/{session_id}", get_multi_round_session, methods=["GET"]),
+    # ── Legacy Hermes fallback ──
     Route("/api/providers", hermes_api_get, methods=["GET"]),
     Route("/api/providers", hermes_api_post, methods=["POST"]),
     Route("/api/models", hermes_api_get, methods=["GET"]),
@@ -1102,7 +1193,7 @@ def _uvicorn_log_config() -> dict[str, Any]:
 
 def main() -> None:
     host = os.getenv("HOST", "127.0.0.1")
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("PORT", "8765"))
     uvicorn.run(
         app,
         host=host,

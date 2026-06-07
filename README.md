@@ -4,7 +4,7 @@
 
 [PRD v1.1](docs/PRD-Hermes数字工作室完整版.md)
 [游戏域](docs/API_CONTRACTS.md)
-[Phase 6](docs/task-tracker.md)
+[Phase 7](docs/task-tracker.md)
 
 ---
 
@@ -14,18 +14,15 @@ Hermes 数字工作室是一款 **Rimworld风格** 的多Agent养成经营游戏
 
 ---
 
-## 当前架构（2026-05-04）
-
+## 当前架构（2026-06-06）
 
 | 层级           | 技术                                     | 说明                   |
 | ------------ | -------------------------------------- | -------------------- |
-| **前端**       | React 18 + Vite + TypeScript           | 多面板管理界面              |
-| **游戏渲染**     | Phaser 3.80 + A*寻路插件                   | 中央基地活动空间             |
+| **前端**       | React 18 + Vite + TypeScript           | 纯 React 卡片 UI         |
 | **状态管理**     | Zustand 5.x                            | 游戏状态统一管理             |
-| **后端**       | Starlette + Uvicorn                    | REST API + WebSocket |
-| **多Agent通信** | WebSocket `/ws/gateway` + `/ws/caicai` | Agent进程间通信           |
+| **后端**       | Starlette + Uvicorn                    | REST API + WebSocket + SSE |
+| **LLM 推理**   | hermes-agent（`~/.hermes/hermes-agent/`）| Agent 对话推理引擎          |
 | **持久化**      | SQLite                                 | 本地存档                 |
-
 
 ---
 
@@ -35,19 +32,29 @@ Hermes 数字工作室是一款 **Rimworld风格** 的多Agent养成经营游戏
 
 - Node.js >= 18
 - Python >= 3.10
+- **hermes-agent** 安装到 `~/.hermes/hermes-agent/`（含 venv + 全部依赖）
+
+### 安装 hermes-agent
+
+```bash
+cp -r /path/to/hermes-agent ~/.hermes/hermes-agent
+cd ~/.hermes/hermes-agent && bash setup-hermes.sh
+```
 
 ### 启动步骤
 
 ```bash
-# 1) 前端（Vite）
-cd frontend
-npm install
-npm run dev -- --host 0.0.0.0 --port 3000
+# 一键启动
+bash scripts/start-dev.sh
 
-# 2) 后端（游戏 API + Gateway）
+# 或手动启动
+# 1) 后端
 cd backend
-pip install -r requirements.txt
-PYTHONPATH=. python3 server.py
+PYTHONPATH=. uvicorn server:app --host 0.0.0.0 --port 8765
+
+# 2) 前端（另一个终端）
+cd frontend
+VITE_BACKEND_PORT=8765 npx vite --host 0.0.0.0 --port 3000
 ```
 
 - 前端地址：`http://127.0.0.1:3000`
@@ -61,47 +68,52 @@ PYTHONPATH=. python3 server.py
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Client (Browser)                          │
-│  React + Zustand + Phaser 3.80 + TypeScript                    │
+│  React + Zustand + TypeScript（纯卡片 UI，无游戏引擎）              │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │  TopBar │     CenterStage (Phaser Game)   │  RightPanel   │  │
-│  │  44px   │     基地 + Agent导航 + 推理气泡   │  任务列表     │  │
-│  │─────────┼───────────────────────────────┼───────────────│  │
-│  │ LeftPanel│                             │  日志列表     │  │
-│  │ 角色列表 │                             │  任务监视面板 │  │
-│  │─────────┼───────────────────────────────┼───────────────│  │
-│  │          BottomBar（推理流式输出）        │              │  │
-│  └─────────┴───────────────────────────────┴──────────────┘  │
+│  │  TopBar │   RoomGrid（房间网格）  │  RightPanel（推理面板）  │  │
+│  │─────────┼──────────────────────┼────────────────────────│  │
+│  │ LeftStudio│  AgentCard + RoomCard │  任务/日志列表         │  │
+│  │ Panel（任务）│  对话卡片 overlay   │  推理时间线            │  │
+│  │─────────┼──────────────────────┼────────────────────────│  │
+│  │          BottomBar（聊天输入 + 菜单）                       │  │
+│  └─────────┴──────────────────────┴────────────────────────┘  │
 │                              │                                   │
 │  ┌──────────────────────────┼────────────────────────────────┐ │
-│  │ WebSocket /ws/gateway    │ WebSocket /ws/caicai           │ │
-│  └──────────────────────────┼────────────────────────────────┘ │
-└──────────────────────────────┼──────────────────────────────────┘
-                               │
-                    ┌──────────┴──────────┐
-                    │   Backend :8765     │
-                    │   Starlette/Uvicorn  │
-                    │  ┌──────────────┐   │
-                    │  │ REST /api/*  │   │
-                    │  │ WS  /ws/*    │   │
-                    │  │  SQLite      │   │
-                    │  │ Agent进程Hub │   │
-                    │  └──────────────┘   │
-                    └──────────────────────┘
+│  │ REST /api/*    │  WS /ws/gateway  │  SSE /api/.../stream │ │
+│  └────────────────┼──────────────────┼──────────────────────┘ │
+└───────────────────┼──────────────────┼─────────────────────────┘
+                    │                  │
+         ┌──────────┴──────────┐       │
+         │   Backend :8765     │       │
+         │   Starlette/Uvicorn  │       │
+         │  ┌──────────────┐   │       │
+         │  │ REST /api/*  │   │       │
+         │  │ WS  /ws/*    │   │◄──────┘
+         │  │ SSE stream   │   │
+         │  │  SQLite      │   │
+         │  │ LLM Events   │   │
+         │  │ Task DAG     │   │
+         │  └──────────────┘   │
+         └──────────┬──────────┘
+                    │
+         ┌──────────┴──────────┐
+         │  hermes-agent       │
+         │  ~/.hermes/hermes-agent/
+         │  LLM 推理引擎 (venv)  │
+         └──────────────────────┘
 ```
 
 ### 技术栈
 
-
 | 层级           | 技术选型                         | 说明                           |
 | ------------ | ---------------------------- | ---------------------------- |
-| **前端框架**     | React 18 + Vite + TypeScript | 面板化 UI 与快速迭代                 |
+| **前端框架**     | React 18 + Vite + TypeScript | 纯卡片 UI，无游戏引擎                 |
 | **状态管理**     | Zustand 5.x                  | 游戏状态、任务、事件统一管理               |
-| **游戏渲染**     | Phaser 3.80 + A*寻路插件         | 中央基地活动空间 + 智能导航              |
-| **后端框架**     | Starlette + Uvicorn          | 高性能异步 ASGI 服务                |
-| **游戏域 API**  | REST                         | `/api/game/`*                |
-| **多Agent通信** | WebSocket                    | `/ws/gateway` + `/ws/caicai` |
+| **后端框架**     | Starlette + Uvicorn          | 高性能异步 ASGI 服务（52 条路由）        |
+| **任务域 API**  | REST                         | `/api/task/*`                |
+| **实时通信**    | WebSocket + SSE              | `/ws/gateway` + 编排 SSE 流       |
+| **LLM 推理**   | hermes-agent                 | Agent 对话、任务编排、自然语言项目创建       |
 | **持久化**      | SQLite                       | 本地存档                         |
-
 
 ---
 
@@ -111,21 +123,28 @@ PYTHONPATH=. python3 server.py
 
 - **城主（主Agent）**：玩家扮演，管理基地
 - **子Agent**：通过 Hermes Profile 配置生成
-- **职业**：设计师、程序员、测试员、分析师等
-- **关系阶段**：陌生 → 认识 → 朋友 → 挚友
+- **职业**：设计师、程序员、测试员、分析师、项目经理等
+- **状态**：idle → working → social → resting → walking
 
 ### 任务系统
 
-- **任务池**：自动生成，支持多复杂度
-- **分配**：城主手动分配或AI自动分配
+- **任务链 DAG**：任务支持 `depends_on` 前置依赖，被阻塞任务为 `locked` 状态
+- **自然语言建项目**：城主输入 "我要做用户系统" → LLM 分解为多任务项目（`task_chain_create`）
+- **批量创建**：支持批内依赖索引解析
+- **认领机制**：仅 unlocked + pending 任务可被认领
 - **协作**：多Agent合力完成高复杂度任务
 - **竞争**：同职业Agent抢同一任务时随机抽签
-- **任务监视**：实时追踪任务状态，台账化管理（T-005 进行中）
+
+### 会话架构
+
+- **城主单一入口**：`POST /api/task/lord/chat` — 自动注入任务链上下文
+- **消息回执**：@handoff peer 回复回注到发起者 session
+- **多轮协作**：max_rounds + 产出物终止条件
+- **空闲闲聊**：Agent 社交聊天（`POST /api/task/agent/social-chat`）
 
 ### 社交系统
 
 - **打招呼**：房间相遇触发，10分钟冷却
-- **协作**：头顶气泡3秒 + 会话记录
 - **情绪感染**：Agent间情绪相互影响
 
 ---
@@ -136,124 +155,123 @@ PYTHONPATH=. python3 server.py
 HermesBungalow/
 ├── frontend/
 │   └── src/
-│       ├── App.tsx                          # 主入口（93行）
+│       ├── App.tsx                          # 主入口
 │       ├── main.tsx                         # React 挂载
-│       ├── ui/                              # UI 组件
+│       ├── ui/                              # UI 组件（纯 React 卡片）
+│       │   ├── CenterStage.tsx              # 主布局（TopBar + LeftPanel + RoomGrid + RightPanel + BottomBar）
+│       │   ├── RoomGrid.tsx                 # 房间网格（CSS Grid）
+│       │   ├── AgentCard.tsx                # Agent 卡片（头像/状态条/操作按钮）
+│       │   ├── RoomCard.tsx                 # 房间卡片（Agent列表容器）
+│       │   ├── ConversationCard.tsx         # 双人对话卡片
+│       │   ├── StatusBar.tsx                 # 通用进度条
 │       │   ├── TopBar.tsx                   # 顶栏
-│       │   ├── CenterStage.tsx              # 中央舞台(Phaser游戏容器)
-│       │   ├── LeftPanel.tsx                # 左面板（Agent列表）
-│       │   ├── RightPanel.tsx               # 右面板（任务/日志）
-│       │   ├── BottomBar.tsx                # 底栏（推理流式输出）
-│       │   ├── TaskMonitorPanel.tsx         # 任务监视面板（411行）
+│       │   ├── BottomBar.tsx                # 底栏（聊天输入框 + 发送 + 图片上传 + 菜单）
+│       │   ├── TaskMonitorPanel.tsx         # 左侧任务管理面板
+│       │   ├── RightPanel.tsx               # 右侧推理/日志面板
 │       │   ├── AgentDetailPanel.tsx         # Agent详情面板
 │       │   ├── AddAgentPanel.tsx            # 添加Agent面板
+│       │   ├── BottomSheetHost.tsx          # 底部抽屉（菜单/新建任务/Agent详情）
 │       │   ├── MenuPanel.tsx                # 菜单面板
+│       │   ├── PopupSheet.tsx               # 气泡弹窗
 │       │   ├── ClarifyModal.tsx             # 澄清弹窗
 │       │   ├── Modal.tsx                    # 通用弹窗
-│       │   ├── BottomSheetHost.tsx          # 底部抽屉
-│       │   ├── PopupSheet.tsx               # 气泡弹窗
 │       │   ├── AgentAvatar.tsx              # Agent头像
 │       │   ├── MarkdownWorkspace.tsx         # Markdown工作区
 │       │   ├── MermaidRenderer.tsx          # Mermaid图表渲染
 │       │   ├── inferenceMarkdown.tsx        # 推理输出Markdown
-│       │   ├── buildingLayout.ts            # 建筑布局计算
-│       │   ├── fullPageLayout.ts           # 全页面布局计算
+│       │   ├── buildingLayout.ts            # 建筑布局（仅保留 isPeerVisitorAgent）
 │       │   ├── spriteMap.ts                 # Sprite图谱
 │       │   ├── personSprites.ts             # 人物精灵定义
 │       │   ├── menuConfig.ts                # 菜单配置
-│       │   └── theme.ts                     # 主题样式
+│       │   └── theme.ts                     # 主题/颜色/玻璃态样式
 │       ├── store/                           # Zustand 状态
-│       │   ├── gameStore.ts                 # 游戏状态
+│       │   ├── taskStore.ts                 # 任务世界状态
 │       │   └── uiStore.ts                   # UI状态
 │       ├── services/                        # 服务层
-│       │   ├── gameApi.ts                   # 游戏API（620行）
-│       │   ├── gameGateway.ts               # 游戏WebSocket（103行）
-│       │   └── multiAgentGateway.ts         # 多Agent网关（207行）
+│       │   ├── gameApi.ts                   # API 导出枢纽（重导出 agentApi/taskApi/chatApi/monitorApi/multiRoundApi）
+│       │   ├── agentApi.ts                  # Agent CRUD + profile
+│       │   ├── taskApi.ts                   # 任务 CRUD + DAG
+│       │   ├── chatApi.ts                   # 聊天 + 编排
+│       │   ├── modelConfigApi.ts            # 模型/渠道配置
+│       │   ├── monitorApi.ts                # 任务监视台账
+│       │   ├── multiRoundApi.ts             # 多轮协作
+│       │   ├── gameGateway.ts               # WebSocket 广播网关
+│       │   └── multiAgentGateway.ts         # 多Agent WebSocket
 │       ├── chat/                            # 聊天与编排
 │       │   ├── studioChatActions.ts         # 聊天动作
-│       │   ├── orchestrationUi.ts           # 编排UI（136行）
-│       │   └── orchestrationSse.ts          # 编排SSE（183行）
-│       ├── phaser/                          # Phaser游戏引擎
-│       │   ├── studioGame.ts                # 主游戏（1138行）
-│       │   ├── studioShellUi.ts             # Shell UI层
-│       │   ├── studioInferenceBubbles.ts    # 推理气泡
-│       │   ├── studioMaskedScrollText.ts    # 滚动文字
-│       │   ├── officeTiledMap.ts            # Tiled地图
-│       │   ├── officeObstacleGrid.ts         # 障碍网格
-│       │   ├── officeApproachPath.ts         # 寻路路径
-│       │   ├── phaserPlugins.d.ts           # 插件类型
-│       │   └── plugins/
-│       │       ├── AStarPathfinderPlugin.ts  # A*寻路插件
-│       │       ├── astarCore.ts             # A*核心算法
-│       │       └── index.ts                 # 插件导出
-│       ├── collab/
-│       │   └── studioCollabWalkBridge.ts    # 协作行走桥接
-│       ├── types/
-│       │   └── game.ts                      # 游戏类型定义
-│       └── utils/
-│           └── publicAssetUrl.ts            # 公共资源URL
+│       │   ├── orchestrationUi.ts           # 编排UI
+│       │   └── orchestrationSse.ts          # 编排SSE
+│       └── types/
+│           └── game.ts                      # 游戏类型定义（含 depends_on, parent_task_id）
 ├── backend/
-│   ├── server.py                            # 主服务器（1071行）
-│   ├── agent_server.py                      # Agent服务进程
+│   ├── server.py                            # 主服务器（52 条路由 + 编排 SSE）
 │   └── api/
-│       ├── routes.py                        # 路由（3725行）
-│       ├── game/
-│       │   ├── service.py                  # 游戏业务逻辑
-│       │   ├── models.py                   # 数据模型
-│       │   ├── persistence.py              # 持久化（SQLite）
-│       │   ├── agent.py                    # Agent逻辑
-│       │   ├── competition.py             # 竞争机制
-│       │   ├── gateway_hub.py             # 网关Hub
-│       │   ├── handoff_parser.py          # 转交解析
-│       │   ├── monitor_store.py           # 任务监视存储
-│       │   └── llm_events.py             # LLM事件
-│       ├── streaming.py                    # 流式输出
-│       ├── profiles.py                     # Agent Profile
-│       ├── hermes_personalities.py         # Agent人格
-│       ├── multi_agent_gateway.py         # 多Agent网关
-│       ├── agent_sessions.py              # Agent会话
-│       ├── state_sync.py                  # 状态同步
-│       ├── updates.py                     # 增量更新
-│       ├── commands.py                    # 命令处理
-│       ├── background.py                  # 后台任务
+│       ├── routes.py                        # Hermes WebUI 路由桥接
+│       ├── streaming.py                     # SSE 流式引擎 + AIAgent 懒加载
+│       ├── task/
+│       │   ├── service.py                   # 核心任务逻辑（任务链 DAG、依赖计算、认领、批量创建）
+│       │   ├── models.py                    # 数据模型（Agent, Task, Room, TaskWorld）
+│       │   ├── persistence.py              # SQLite 持久化
+│       │   ├── orchestration.py            # LLM 编排引擎（回执注入、多轮协作、城主入口）
+│       │   ├── gateway_hub.py              # WebSocket 广播 Hub
+│       │   ├── events.py                   # GAME_EVENT 解析（task_chain_create, artifact_create 等）
+│       │   ├── context.py                  # LLM 上下文生成（项目创建/任务链/团队状态）
+│       │   ├── agents.py                   # Agent 管理（创建/删除/sync-hermes/profile-files）
+│       │   ├── task_ops.py                 # 任务 CRUD + DAG + 锁定重算
+│       │   ├── peers.py                    # Agent 同伴关系逻辑
+│       │   ├── receipt.py                  # 消息回执逻辑
+│       │   ├── session_turn.py             # 会话回合管理
+│       │   ├── multi_round.py              # 多轮协作会话
+│       │   ├── stream_drain.py             # SSE 排流工具
+│       │   ├── hermes_sessions.py          # Hermes 会话管理
+│       │   ├── main_agent_entry.py         # 城主入口编排
+│       │   ├── handoff_parser.py           # @handoff 解析
+│       │   ├── monitor_store.py            # 任务监视台账
+│       │   ├── monitor_ops.py              # 监控操作
+│       │   ├── routes_chat.py              # 聊天/编排/多轮路由
+│       │   ├── routes_task.py              # 任务路由
+│       │   ├── routes_agent.py             # Agent 路由
+│       │   ├── routes_model_config.py      # 模型配置路由
+│       │   ├── routes_monitor.py           # 监控路由
+│       │   └── _server_helpers.py          # 服务端辅助函数
+│       ├── multi_agent_gateway.py          # 多Agent子进程管理
 │       └── ...
 ├── docs/
-│   ├── PRD-Hermes数字工作室完整版.md       # PRD v1.1
-│   ├── task-tracker.md                    # 任务台账
-│   ├── API_CONTRACTS.md                  # 接口规范
-│   ├── 2.0-UI设计方向.md                 # v2.0 UI方向
-│   ├── HermesBungalow2/                   # v2.0规划文档
-│   └── 规划/                             # 21个子模块设计
+│   ├── README.md                            # 文档索引
+│   ├── PRD-Hermes数字工作室完整版.md         # PRD v1.1
+│   ├── API_CONTRACTS.md                    # API 契约真源表
+│   ├── task-tracker.md                      # 任务台账
+│   ├── 设计规范/（7 个合并规范文档）
+│   ├── 版本规划/（v2.0 规划文档）
+│   ├── 原型/（13 个 HTML 原型模块）
+│   └── assets/（头像、布局截图）
 ├── skills/
-│   └── Hermes数字工作室-同伴转交/          # 协作规范
-└── tests/
-    ├── test_game_service.py               # 游戏服务测试
-    ├── test_handoff_orchestration.py      # 转交编排测试
-    └── test_hermes_compression_overlay.py # 压缩覆盖测试
+├── scripts/（start-dev.sh, stop-dev.sh, smoke test）
+└── tests/（4 个测试文件）
 ```
 
 ---
 
 ## 项目阶段进度
 
-
-| 阶段            | 内容                     | 状态     | Commit  |
-| ------------- | ---------------------- | ------ | ------- |
-| Phase 1-2     | 项目初始化（前后端脚手架）          | ✅ 完成   | 321ef2e |
-| Phase 3       | 界面美化（日夜渐变/星空粒子/时钟/能量条） | ✅ 完成   | 0d545c0 |
-| Phase 4       | 场景丰富（书架/打印机/装饰画/隔板等）   | ✅ 完成   | a8a4acb |
-| Phase 5       | Phaser游戏集成 + UI组件重构    | ✅ 完成   | 5caf40b |
-| Phase 6       | 多Agent系统集成             | 🔄 进行中 | —       |
-| ComfyUI Skill | Flux2-Klein图像生成技能      | ✅ 完成   | 5aefdd4 |
-| 办公室草图         | 侧视图布局（最终版 v2）          | ✅ 完成   | 19292c7 |
-
+| 阶段            | 内容                     | 状态     |
+| ------------- | ---------------------- | ------ |
+| Phase 1-2     | 项目初始化（前后端脚手架）       | ✅ 完成   |
+| Phase 3       | 界面美化                 | ✅ 完成   |
+| Phase 4       | 场景丰富                 | ✅ 完成   |
+| Phase 5       | Phaser游戏集成 + UI组件重构  | ✅ 完成   |
+| Phase 6       | 多Agent系统集成            | ✅ 完成   |
+| **Phase 7**   | **架构重构（四阶段）**        | ✅ 完成   |
+| ├ 任务链 DAG   | 任务级依赖 + locked 状态 + 批量创建 | ✅ 完成 |
+| ├ 消息回执回路  | peer 回复回注发起者 session | ✅ 完成 |
+| ├ 卡片 UI     | 移除 Phaser，纯 React 卡片布局 | ✅ 完成 |
+| └ 会话架构     | 城主入口 + 任务上下文 + 多轮协作   | ✅ 完成 |
 
 ---
 
 ## MVP 功能
 
 > **目标**：城主管理基地 → 配置Agent → 分配任务 → 社交互动
-
 
 | #   | 验证项                      | 状态   |
 | --- | ------------------------ | ---- |
@@ -263,36 +281,29 @@ HermesBungalow/
 | 4   | 任务分配与进度跟踪                | ✅ 完成 |
 | 5   | Agent详情弹窗（属性/配置/关系）      | ✅ 完成 |
 | 6   | 添加新Agent（Profile配置）      | ✅ 完成 |
-| 7   | 基地布局展示（城主办/走廊/办公室等）      | ✅ 完成 |
+| 7   | 卡片式房间网格布局               | ✅ 完成 |
 | 8   | 游戏时间推进（5秒=1游戏分钟）         | ✅ 完成 |
 | 9   | 任务监视面板（TaskMonitorPanel） | ✅ 完成 |
 | 10  | 推理输出流式显示优化               | ✅ 完成 |
-| 11  | A*寻路导航（Agent自由移动）        | ✅ 完成 |
-| 12  | 推理气泡（Agent头顶显示思考中）       | ✅ 完成 |
-
+| 11  | 任务链 DAG（自然语言建项目）         | ✅ 完成 |
+| 12  | 城主会话入口 + 消息回执            | ✅ 完成 |
 
 ---
 
 ## 设计文档
-
 
 | 文档                                     | 说明        |
 | -------------------------------------- | --------- |
 | [PRD v1.1](docs/PRD-Hermes数字工作室完整版.md) | 产品需求文档    |
 | [任务台账](docs/task-tracker.md)           | 当前任务进度追踪  |
 | [API契约](docs/API_CONTRACTS.md)         | 接口规范      |
-| [v2.0规划](docs/HermesBungalow2/)        | 任务竞争/数值平衡 |
-| [规划/任务系统](docs/规划/规划-任务系统.md)          | 任务机制设计    |
-| [规划/社交系统](docs/规划/规划-社交系统.md)          | 社交机制设计    |
-| [规划/成就系统](docs/规划/规划-成就系统详细设计.md)      | 成就体系设计    |
-| [规划/事件系统](docs/规划/规划-事件系统详细设计.md)      | 事件驱动设计    |
-| [规划/协作流程状态机](docs/规划/规划-协作流程状态机.md)    | 协作状态管理    |
-
+| [设计规范/01-游戏机制总览](docs/设计规范/01-游戏机制总览.md) | 游戏机制总览    |
+| [设计规范/03-任务与竞争系统](docs/设计规范/03-任务与竞争系统.md) | 任务机制设计    |
+| [设计规范/07-技术架构](docs/设计规范/07-技术架构.md) | 技术架构规范    |
 
 ---
 
 ## 团队成员
-
 
 | 工种    | 同伴   | 状态     |
 | ----- | ---- | ------ |
@@ -307,9 +318,8 @@ HermesBungalow/
 | 技术架构  | @沈枢衡 | 🟡 待激活 |
 | 快速API | @费斯特 | 🟡 待激活 |
 
-
 ---
 
 > 📝 *"一间好的小屋，让每个走进来的Agent都知道自己该做什么、该往哪走。"* — 崽崽
 
-**城主**: 小宝 | **最后更新**: 2026-05-04
+**城主**: 小宝 | **最后更新**: 2026-06-08

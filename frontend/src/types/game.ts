@@ -6,24 +6,16 @@ export interface Agent {
   profession: string;
   profile?: string;
   gender?: string;
-  status: string;
-  location: string;
-  energy: number;
-  mood: number;
-  affection?: number;
-  relation?: number;
-  focus?: number;
-  sleepiness?: number;
-  satiety?: number;
-  speed?: number;
   catchphrase?: string;
   personality?: string;
   memes?: string[];
   reasoning_model?: string;
+  /** 外部渠道平台 key（feishu/discord/telegram/...），空 = 无 */
+  channel?: string;
   current_task_id?: number | null;
   /** Agent skills [{name, level}] */
   skills?: { name: string; level: number }[];
-  /** Server-pooled Hermes chat session for this game agent (see GET /api/game/agents). */
+  /** Server-pooled Hermes chat session for this game agent (see GET /api/task/agents). */
   hermes_session_id?: string;
   /** Direct sprite base name override (e.g. 'badboy', 'student_03'). If set, takes priority over gender/personality matching. */
   avatar?: string;
@@ -42,9 +34,11 @@ export interface TaskWorkflowStep {
   kind: 'analyze' | 'design' | 'implement' | 'test' | 'review' | 'deliver' | 'other';
   estimated_minutes?: number;
   depends_on?: string[];
+  assignee?: string;
+  status?: 'pending' | 'in_progress' | 'completed';
 }
 
-export interface GameTask {
+export interface TaskItem {
   id: number;
   name: string;
   description?: string;
@@ -63,24 +57,40 @@ export interface GameTask {
   catalog?: string;
   /** Agent+LLM 规划步骤（后端写入存档） */
   workflow_steps?: TaskWorkflowStep[];
+  /** 任务级前置依赖：这些 ID 完前本任务 locked */
+  depends_on?: number[];
+  /** 父任务 ID（批量创建时自动设定，0=顶层） */
+  parent_task_id?: number;
 }
 
-export interface GameRoom {
-  id: string;
-  name: string;
-  type: string;
-  agent_ids?: string[];
-}
-
-export interface GameWorldSnapshot {
-  day: number;
-  time: string;
-  money: number;
-  lord_level: number;
-  lord_xp: number;
+export interface TaskWorldSnapshot {
   agents: Agent[];
-  tasks: GameTask[];
-  rooms: GameRoom[];
-  competition_history: Record<string, unknown>[];
+  tasks: TaskItem[];
   event_log?: Record<string, unknown>[];
+}
+
+/** A single round result from orchestrated peer turns. */
+export interface OrchestrationRoundResult {
+  ok: boolean;
+  primary: Record<string, unknown>;
+  delegations?: Record<string, unknown>[];
+  termination_reason?: string | null;
+  work_order_id?: string;
+}
+
+/** Multi-round orchestrated discussion session. */
+export interface MultiRoundSession {
+  session_id: string;
+  primary_agent_id: string;
+  rounds: OrchestrationRoundResult[];
+  status: 'active' | 'completed' | 'cancelled';
+  round_count?: number;
+}
+
+/** Summary item from GET /api/task/multi-round/list. */
+export interface MultiRoundSessionSummary {
+  session_id: string;
+  primary_agent_id: string;
+  round_count: number;
+  status: string;
 }

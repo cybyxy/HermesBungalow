@@ -89,16 +89,19 @@ if [[ -f "${FRONTEND_PID_FILE}" ]]; then
 fi
 
 # Also clear any stray processes already holding dev ports.
-kill_port 8000
+kill_port 8765
 kill_port 3000
+kill_port 4000
 
-echo "[start-dev] starting backend on 127.0.0.1:8000"
+echo "[start-dev] starting backend on 127.0.0.1:8765"
 (
   cd "${ROOT_DIR}/backend" && \
   HERMES_WEBUI_ENABLED=1 \
   HERMES_WEBUI_AUTOSTART=1 \
   HERMES_SKIP_STARTUP_SESSION=1 \
-  PYTHONPATH=. "${BACKEND_PYTHON}" -m uvicorn server:app --host 0.0.0.0 --port 8000
+  http_proxy='' https_proxy='' HTTP_PROXY='' HTTPS_PROXY='' ALL_PROXY='' all_proxy='' \
+  no_proxy='' NO_PROXY='' \
+  PYTHONPATH=. "${BACKEND_PYTHON}" -m uvicorn server:app --host 0.0.0.0 --port 8765
 ) >"${BACKEND_LOG}" 2>&1 &
 backend_pid=$!
 echo "${backend_pid}" > "${BACKEND_PID_FILE}"
@@ -115,30 +118,46 @@ echo "[start-dev] starting frontend on 127.0.0.1:3000"
 frontend_pid=$!
 echo "${frontend_pid}" > "${FRONTEND_PID_FILE}"
 
-if ! wait_port 8000 60; then
-  echo "[start-dev] backend failed to listen on 8000, see ${BACKEND_LOG}"
+echo "[start-dev] starting agent workspace server on 127.0.0.1:4000"
+WORKSPACE_LOG="${ROOT_DIR}/agent_workspace/.dev-workspace.log"
+WORKSPACE_PID_FILE="${ROOT_DIR}/agent_workspace/.dev-workspace.pid"
+(
+  cd "${ROOT_DIR}/agent_workspace" && \
+  python3 -m http.server 4000 --bind 0.0.0.0
+) >"${WORKSPACE_LOG}" 2>&1 &
+workspace_pid=$!
+echo "${workspace_pid}" > "${WORKSPACE_PID_FILE}"
+
+if ! wait_port 8765 60; then
+  echo "[start-dev] backend failed to listen on 8765, see ${BACKEND_LOG}"
   kill "${backend_pid}" >/dev/null 2>&1 || true
   kill "${frontend_pid}" >/dev/null 2>&1 || true
+  kill "${workspace_pid}" >/dev/null 2>&1 || true
   exit 1
 fi
 if ! wait_port 3000 60; then
   echo "[start-dev] frontend failed to listen on 3000, see ${FRONTEND_LOG}"
   kill "${backend_pid}" >/dev/null 2>&1 || true
   kill "${frontend_pid}" >/dev/null 2>&1 || true
+  kill "${workspace_pid}" >/dev/null 2>&1 || true
   exit 1
 fi
 
 # Refresh pid files using real listener pids.
-backend_listener_pid="$(lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+backend_listener_pid="$(lsof -tiTCP:8765 -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
 frontend_listener_pid="$(lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+workspace_listener_pid="$(lsof -tiTCP:4000 -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
 if [[ -n "${backend_listener_pid}" ]]; then
   echo "${backend_listener_pid}" > "${BACKEND_PID_FILE}"
 fi
 if [[ -n "${frontend_listener_pid}" ]]; then
   echo "${frontend_listener_pid}" > "${FRONTEND_PID_FILE}"
 fi
+if [[ -n "${workspace_listener_pid}" ]]; then
+  echo "${workspace_listener_pid}" > "${WORKSPACE_PID_FILE}"
+fi
 
-echo "[start-dev] backend pid=${backend_pid}, frontend pid=${frontend_pid}"
+echo "[start-dev] backend pid=${backend_pid}, frontend pid=${frontend_pid}, workspace pid=${workspace_pid}"
 echo "[start-dev] logs:"
 echo "  - ${BACKEND_LOG}"
 echo "  - ${FRONTEND_LOG}"

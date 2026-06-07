@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
-import type { GameWorldSnapshot } from '../types/game';
+import type { TaskWorldSnapshot } from '../types/game';
 import { useUiStore, type InferenceEntry } from '../store/uiStore';
 import { AgentAvatar } from './AgentAvatar';
 import { InferenceMarkdownBody, inferenceMono } from './inferenceMarkdown';
@@ -75,7 +75,7 @@ function UserAvatar(props: { size?: number }) {
 }
 
 /** 用户消息首行：对话目标 Agent 名称（``agentId``；正文 ``@…|`` 或旧式 ``/relay`` 解析收件人）。 */
-function userInferenceTargetName(e: InferenceEntry, snapshot: GameWorldSnapshot): string {
+function userInferenceTargetName(e: InferenceEntry, snapshot: TaskWorldSnapshot): string {
   const body = (e.body || '').trim();
   const h = gameApi.parseUserHandoffPrefix(body);
   if (h) {
@@ -116,7 +116,7 @@ function entryStyle(v: InferenceEntry['variant']): { border: string; bg: string 
   return { border: '#2a4a3a', bg: 'rgba(26,58,42,0.25)' };
 }
 
-export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
+export function RightPanel(props: { snapshot: TaskWorldSnapshot }) {
   const { snapshot } = props;
   const inferenceLog = useUiStore((s) => s.inferenceLog);
   const clearInferenceLog = useUiStore((s) => s.clearInferenceLog);
@@ -148,15 +148,23 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
   }, [inferenceLog]);
 
   return (
-    <div
-      style={{
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        minHeight: 0,
-        minWidth: 0,
-      }}
-    >
+    <>
+      <style>{`
+        .rb-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
+        .rb-scroll::-webkit-scrollbar-track { background: transparent; }
+        .rb-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 10px; }
+        .rb-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+        .rb-scroll { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.08) transparent; }
+      `}</style>
+      <div
+        style={{
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          minWidth: 0,
+        }}
+      >
       {/* 上半：会话 */}
       <div
         style={{
@@ -207,6 +215,7 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
         </div>
         <div
           ref={scrollRef}
+          className="rb-scroll"
           style={{
             flex: 1,
             overflow: 'auto',
@@ -370,6 +379,7 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
         </div>
         <div
           ref={toolScrollRef}
+          className="rb-scroll"
           style={{
             flex: 1,
             overflow: 'auto',
@@ -452,5 +462,6 @@ export function RightPanel(props: { snapshot: GameWorldSnapshot }) {
         </div>
       </div>
     </div>
+    </>
   );
 }

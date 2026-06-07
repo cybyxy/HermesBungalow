@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from api.game.llm_events import apply_parsed_events, extract_game_event_tags, normalize_workflow_steps
-from api.game.models import Agent, GameWorld, Task
-from api.game.task_workflow_llm import parse_task_workflow_llm_reply
+from api.task.events import apply_parsed_events, extract_game_event_tags, normalize_workflow_steps
+from api.task.models import Agent, TaskWorld, Task
+from api.task.context import parse_task_workflow_llm_reply
 
 
 def test_normalize_workflow_steps_orders_and_kind():
@@ -37,7 +37,7 @@ def test_task_workflow_plan_game_event_roundtrip():
     )
     evs = extract_game_event_tags(blob)
     assert len(evs) == 1
-    w = GameWorld(agents=[Agent(id="A", name="a", profession="p")], tasks=[Task(id=7, name="T")])
+    w = TaskWorld(agents=[Agent(id="A", name="a", profession="p")], tasks=[Task(id=7, name="T")])
     applied = apply_parsed_events(w, evs, emit=None)
     assert len(applied) == 1
     assert w.tasks[0].workflow_steps[0]["id"] == "s1"

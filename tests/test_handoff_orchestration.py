@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from api.game import agent as agent_mod
-from api.game.handoff_parser import parse_user_handoff_prefix, parse_hermes_bungalow_invokes
+from api.task import orchestration as agent_mod
+from api.task.handoff_parser import parse_user_handoff_prefix, parse_hermes_bungalow_invokes
 
 
 def test_parse_user_handoff_at_pipe():

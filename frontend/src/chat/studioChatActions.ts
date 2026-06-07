@@ -1,17 +1,17 @@
 /**
  * Hermes 会话发送 / 停止 — 供 React 底栏与 Phaser 全页 UI 共用。
- * 多 Agent 编排由后端 `/api/game/agent-chat-orchestrated` 执行。
+ * 多 Agent 编排由后端 `/api/task/agent-chat-orchestrated` 执行。
  */
-import { clearSseActiveHermesStreamId, consumeOrchestratedSse, getSseActiveHermesStreamId } from './orchestrationSse';
+import { clearSseActiveHermesStreamId, consumeMultiRoundSse, consumeOrchestratedSse, getSseActiveHermesStreamId } from './orchestrationSse';
 import * as gameApi from '../services/gameApi';
-import { useGameStore } from '../store/gameStore';
+import { useTaskStore } from '../store/taskStore';
 import { useUiStore } from '../store/uiStore';
-import type { Agent, GameWorldSnapshot } from '../types/game';
+import type { Agent, TaskWorldSnapshot } from '../types/game';
 import { isPeerVisitorAgent } from '../ui/buildingLayout';
 
 const sessionsRef: Record<string, string> = {};
 
-export function syncHermesSessionsFromSnapshot(snapshot: GameWorldSnapshot | null): void {
+export function syncHermesSessionsFromSnapshot(snapshot: TaskWorldSnapshot | null): void {
   if (!snapshot) return;
   const valid = new Set(snapshot.agents.map((a) => a.id));
   for (const k of Object.keys(sessionsRef)) {
@@ -22,45 +22,51 @@ export function syncHermesSessionsFromSnapshot(snapshot: GameWorldSnapshot | nul
   }
 }
 
-export function resolveAgent(snapshot: GameWorldSnapshot | null, token: string): Agent | undefined {
+export function resolveAgent(snapshot: TaskWorldSnapshot | null, token: string): Agent | undefined {
   return gameApi.resolveGameAgent(snapshot?.agents, token);
 }
 
 export function agentReplyHeadline(agent: Agent): string {
   const p = (agent.profession || '').trim();
-  return p ? `${agent.name} · ${p}` : agent.name;
+  return p ? `${agent.display_name || agent.name} · ${p}` : (agent.display_name || agent.name);
 }
 
 /** 用户 `@同伴|…` 且未选顶栏 Agent 时，用「另一名」作 API 的 agent_id（发起点）。跨机访客不能当编排主 agent。 */
-function orchestratorForRelay(snapshot: GameWorldSnapshot | null, selected: Agent | null, relayPeer: Agent): Agent | null {
+function orchestratorForRelay(snapshot: TaskWorldSnapshot | null, selected: Agent | null, relayPeer: Agent): Agent | null {
   if (selected && !isPeerVisitorAgent(selected)) return selected;
   return snapshot?.agents.find((a) => a.id !== relayPeer.id && !isPeerVisitorAgent(a)) ?? null;
 }
 
-/** 与底栏发送一致：``POST …/agent-chat-orchestrated/run`` + SSE。 */
+/** 与底栏发送一致：使用 multi-round 端点，每次对话自动支持后续继续。 */
 export async function runOrchestratedAndFlushUi(
-  snapshot: GameWorldSnapshot | null,
+  snapshot: TaskWorldSnapshot | null,
   orchestratorId: string,
   message: string,
   attachments: string[] | undefined,
   loadState_: () => void,
 ): Promise<void> {
-  useUiStore.getState().beginCenterAgentThinking(orchestratorId);
+  const store = useUiStore.getState();
+  store.beginCenterAgentThinking(orchestratorId);
   try {
-    const raw = await gameApi.postAgentChatOrchestratedRun({
+    const existingSessionId = store.multiRoundSessionId;
+    const raw = await gameApi.postMultiRoundRun({
       agent_id: orchestratorId,
       message,
-      auto_peer: true,
-      attachments,
+      session_id: existingSessionId || undefined,
     });
     if (!raw.ok || !raw.run_id) {
-      throw new Error(raw.error || 'orchestrate_run_failed');
+      throw new Error(raw.error || 'multi_round_run_failed');
     }
     const wo = typeof raw.work_order_id === 'string' && raw.work_order_id.trim() ? raw.work_order_id.trim() : '';
+    const sid = raw.session_id || existingSessionId || '';
     if (wo) useUiStore.getState().setMonitorFocusWorkOrderId(wo);
-    await consumeOrchestratedSse(raw.run_id, snapshot, orchestratorId, loadState_);
+    await consumeMultiRoundSse(raw.run_id, sid, snapshot, orchestratorId, loadState_);
+    // 自动激活多轮会话，后续发送自动走 continue 路径
+    if (sid && !existingSessionId) {
+      useUiStore.getState().setMultiRoundSession(sid);
+    }
   } finally {
-    useUiStore.getState().finishCenterAgentInference(orchestratorId, '');
+    store.finishCenterAgentInference(orchestratorId, '');
   }
 }
 
@@ -81,10 +87,35 @@ export async function stopStudioChat(): Promise<void> {
   useUiStore.getState().clearAgentStream(aid);
 }
 
+/** Continue a multi-round discussion with a user continuation message via SSE. */
+export async function continueMultiRoundDiscussion(
+  snapshot: TaskWorldSnapshot | null,
+  orchestratorId: string,
+  sessionId: string,
+  message: string,
+  loadState_: () => void,
+): Promise<void> {
+  const store = useUiStore.getState();
+  store.beginCenterAgentThinking(orchestratorId);
+  try {
+    const raw = await gameApi.postMultiRoundRun({
+      agent_id: orchestratorId,
+      message,
+      session_id: sessionId,
+    });
+    if (!raw.ok || !raw.run_id) {
+      throw new Error(raw.error || 'multi_round_run_failed');
+    }
+    await consumeMultiRoundSse(raw.run_id, raw.session_id || sessionId, snapshot, orchestratorId, loadState_);
+  } finally {
+    store.finishCenterAgentInference(orchestratorId, '');
+  }
+}
+
 export type SubmitChatOptions = {
   text: string;
   pendingFiles: File[];
-  snapshot: GameWorldSnapshot | null;
+  snapshot: TaskWorldSnapshot | null;
   onToast: (msg: string) => void;
   clearInput: () => void;
   clearPendingFiles: () => void;
@@ -100,7 +131,7 @@ export async function submitStudioChat(o: SubmitChatOptions): Promise<void> {
     return;
   }
 
-  const loadState = () => void useGameStore.getState().loadState({ silent: true });
+  const loadState = () => void useTaskStore.getState().loadState({ silent: true });
   const finalizeRound = useUiStore.getState().finalizeInferenceRound;
   const selectedAgentId = useUiStore.getState().selectedAgentId;
   const selectedAgent = snapshot?.agents.find((a) => a.id === selectedAgentId) ?? null;

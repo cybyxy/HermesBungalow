@@ -116,17 +116,16 @@ async def chat_start(request: Request) -> JSONResponse:
     except KeyError:
         s = new_session(session_id=session_id, workspace=workspace, model=model, profile=args.profile)
 
-    # Resolve model (avoid importing full routes.py to prevent circular deps)
+    # Resolve model: explicit request > config default > session cached > fallback
     if model:
         resolved_model = model
     else:
-        resolved_model = s.model
-        if not resolved_model:
-            try:
-                _cfg = get_config()
-                resolved_model = _cfg.get("model") or "mini-max-4-official"
-            except Exception:
-                resolved_model = "mini-max-4-official"
+        try:
+            _cfg = get_config()
+            cfg_model = (_cfg.get("model", {}) or {}).get("default") if isinstance(_cfg.get("model"), dict) else None
+        except Exception:
+            cfg_model = None
+        resolved_model = cfg_model or s.model or "mini-max-4-official"
 
     # Set up streaming infrastructure
     stream_id = uuid.uuid4().hex

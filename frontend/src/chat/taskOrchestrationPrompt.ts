@@ -1,10 +1,10 @@
-import type { GameTask, GameWorldSnapshot } from '../types/game';
+import type { TaskItem, TaskWorldSnapshot } from '../types/game';
 import { isPeerVisitorAgent } from '../ui/buildingLayout';
 
-/** 新建任务后的流程规划由后端 ``POST /api/game/task/workflow/generate`` 拼接 JSON Schema 调用 LLM，不在此构建长提示。 */
+/** 新建任务后的流程规划由后端 ``POST /api/task/task/workflow/generate`` 拼接 JSON Schema 调用 LLM，不在此构建长提示。 */
 
-/** 与后端编排用用户文一致（字段随 GameTask 扩展） */
-export function buildTaskOrchestrationUserMessage(task: GameTask): string {
+/** 与后端编排用用户文一致（字段随 TaskItem 扩展） */
+export function buildTaskOrchestrationUserMessage(task: TaskItem): string {
   const parts: string[] = [`任务名称：${task.name || ''}`];
   const cat = (task.catalog ?? '').trim();
   if (cat) parts.push(`任务目录：${cat}`);
@@ -21,7 +21,7 @@ export function buildTaskOrchestrationUserMessage(task: GameTask): string {
   return (`请着手完成以下任务：\n` + parts.join('\n')).trim();
 }
 
-export function firstLocalAgentId(snapshot: GameWorldSnapshot | null): string {
+export function firstLocalAgentId(snapshot: TaskWorldSnapshot | null): string {
   const hit = snapshot?.agents.find((a) => !isPeerVisitorAgent(a));
   return hit?.id?.trim() ?? '';
 }

@@ -464,6 +464,7 @@ _DEFAULT_TOOLSETS = [
     "skills",
     "terminal",
     "todo",
+    "video_gen",
     "web",
     "webhook",
 ]
@@ -893,6 +894,18 @@ def resolve_model_provider(model_id: str) -> tuple:
     # resolve credentials in streaming.py).
     if model_id.startswith("@") and ":" in model_id:
         provider_hint, bare_model = model_id[1:].split(":", 1)
+        return bare_model, provider_hint, None
+
+    # provider:model format (without @, from game agent reasoning_model).
+    # e.g. "ollama-local:gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+    if ":" in model_id and "/" not in model_id:
+        provider_hint, bare_model = model_id.split(":", 1)
+        providers_cfg = cfg.get("providers", {})
+        if isinstance(providers_cfg, dict) and provider_hint in providers_cfg:
+            pinfo = providers_cfg[provider_hint]
+            if isinstance(pinfo, dict):
+                base_url = (pinfo.get("api") or "").strip()
+                return bare_model, provider_hint, base_url or None
         return bare_model, provider_hint, None
 
     if "/" in model_id:
