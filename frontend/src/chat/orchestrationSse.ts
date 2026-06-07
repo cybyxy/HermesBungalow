@@ -206,13 +206,29 @@ export function consumeOrchestratedSse(
   loadState: () => void,
 ): Promise<void> {
   const url = `/api/task/agent-chat-orchestrated/stream?run_id=${encodeURIComponent(runId)}`;
+  return _sseConnect(url, orchestratorId, snapshot, loadState, 'turn_done');
+}
+
+const SSE_MAX_RETRIES = 3;
+const SSE_RETRY_BASE_MS = 800;
+
+function _sseConnect(
+  url: string,
+  orchestratorId: string,
+  snapshot: TaskWorldSnapshot | null,
+  loadState: () => void,
+  doneType: string,
+  retryCount = 0,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const es = new EventSource(url);
+    let resolved = false;
     es.onmessage = (e) => {
       try {
         const ev = JSON.parse(e.data) as Record<string, unknown>;
         applyOrchestrationSseEvent(ev, snapshot);
-        if (ev.type === 'turn_done') {
+        if (ev.type === doneType) {
+          resolved = true;
           es.close();
           loadState();
           resolve();
@@ -224,6 +240,15 @@ export function consumeOrchestratedSse(
     };
     es.onerror = () => {
       es.close();
+      if (resolved) return;
+      if (retryCount < SSE_MAX_RETRIES) {
+        const delay = SSE_RETRY_BASE_MS * Math.pow(2, retryCount);
+        setTimeout(() => {
+          _sseConnect(url, orchestratorId, snapshot, loadState, doneType, retryCount + 1)
+            .then(resolve, reject);
+        }, delay);
+        return;
+      }
       useUiStore.getState().appendInference({
         variant: 'error',
         headline: '系统',
@@ -244,31 +269,5 @@ export function consumeMultiRoundSse(
   loadState: () => void,
 ): Promise<void> {
   const url = `/api/task/multi-round/stream?session_id=${encodeURIComponent(sessionId)}&run_id=${encodeURIComponent(runId)}`;
-  return new Promise((resolve, reject) => {
-    const es = new EventSource(url);
-    es.onmessage = (e) => {
-      try {
-        const ev = JSON.parse(e.data) as Record<string, unknown>;
-        applyOrchestrationSseEvent(ev, snapshot);
-        if (ev.type === 'round_done') {
-          es.close();
-          loadState();
-          resolve();
-        }
-      } catch (err) {
-        es.close();
-        reject(err instanceof Error ? err : new Error(String(err)));
-      }
-    };
-    es.onerror = () => {
-      es.close();
-      useUiStore.getState().appendInference({
-        variant: 'error',
-        headline: '系统',
-        body: 'SSE 连接中断',
-        agentId: orchestratorId,
-      });
-      reject(new Error('sse_error'));
-    };
-  });
+  return _sseConnect(url, orchestratorId, snapshot, loadState, 'round_done');
 }

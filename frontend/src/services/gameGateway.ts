@@ -6,7 +6,6 @@ export type GatewayStatus = 'disconnected' | 'connecting' | 'connected' | 'error
 function defaultGatewayWsUrl(): string {
   const isHttps = location.protocol === 'https:';
   const scheme = isHttps ? 'wss' : 'ws';
-  // Avoid Vite's ws proxy — it often logs EPIPE when the backend closes or the tab refreshes.
   if (import.meta.env.DEV) {
     const port = import.meta.env.VITE_BACKEND_PORT ?? '8765';
     return `${scheme}://${location.hostname}:${port}/ws/gateway`;
@@ -14,16 +13,18 @@ function defaultGatewayWsUrl(): string {
   return `${scheme}://${location.host}/ws/gateway`;
 }
 
-/**
- * WebSocket client for /ws/gateway.
- * Dev: connects directly to the backend port (same hostname as the page). Prod: same host as the app.
- */
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+
 export class HermesGameGateway {
   private ws: WebSocket | null = null;
   private handlers = new Set<GameEventHandler>();
   private chatHandlers = new Set<ChatStreamHandler>();
   private _status: GatewayStatus = 'disconnected';
   private statusListeners = new Set<(s: GatewayStatus) => void>();
+  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _reconnectAttempt = 0;
+  private _intentionalClose = false;
 
   get status(): GatewayStatus {
     return this._status;
@@ -49,13 +50,26 @@ export class HermesGameGateway {
     return () => this.chatHandlers.delete(handler);
   }
 
+  private _scheduleReconnect() {
+    if (this._reconnectTimer) return;
+    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, this._reconnectAttempt));
+    this._reconnectAttempt += 1;
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (this._intentionalClose) return;
+      this.connect();
+    }, delay);
+  }
+
   connect(url?: string): void {
     if (this.ws?.readyState === WebSocket.OPEN) return;
+    this._intentionalClose = false;
     const u = url ?? defaultGatewayWsUrl();
     this.setStatus('connecting');
     const ws = new WebSocket(u);
     this.ws = ws;
     ws.onopen = () => {
+      this._reconnectAttempt = 0;
       this.setStatus('connected');
       ws.send(JSON.stringify({ type: 'game_event_sub', channels: ['task'] }));
     };
@@ -63,6 +77,9 @@ export class HermesGameGateway {
     ws.onclose = () => {
       this.setStatus('disconnected');
       this.ws = null;
+      if (!this._intentionalClose) {
+        this._scheduleReconnect();
+      }
     };
     ws.onmessage = (ev) => {
       try {
@@ -88,15 +105,15 @@ export class HermesGameGateway {
   }
 
   disconnect(): void {
+    this._intentionalClose = true;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this._reconnectAttempt = 0;
     this.ws?.close();
     this.ws = null;
     this.setStatus('disconnected');
-  }
-
-  sendChat(message: string): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'chat', message }));
-    }
   }
 }
 
